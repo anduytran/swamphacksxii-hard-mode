@@ -263,8 +263,9 @@ async function loadInsights() {
   $("tile-unanswered").classList.toggle("alert", data.unanswered_count > 0);
 
   renderHighlights(data);
-  renderBarList($("chart-asked"), data.most_asked, "times asked", "No questions about specific items yet.");
-  renderBarList($("chart-logged"), data.most_logged, "times put down", "No items logged yet.");
+  const rows = (list) => list.map((r) => ({ label: capitalize(r.name), value: r.count }));
+  Charts.barList($("chart-asked"), rows(data.most_asked), { unit: "times asked", empty: "No questions about specific items yet." });
+  Charts.barList($("chart-logged"), rows(data.most_logged), { unit: "times put down", empty: "No items logged yet." });
   renderActivity(data.activity);
   renderQuestions(data.recent_questions);
 }
@@ -304,81 +305,22 @@ function renderHighlights(data) {
   $("highlight-list").replaceChildren(...notes);
 }
 
-// Single-series horizontal bars; the card title names the series, so no legend.
-function renderBarList(container, rows, unit, emptyText) {
-  if (!rows.length) return emptyState(container, emptyText);
-  const max = Math.max(...rows.map((r) => r.count));
-  container.replaceChildren(
-    ...rows.map((r) => {
-      const row = document.createElement("div");
-      row.className = "bar-row";
-      const label = document.createElement("span");
-      label.className = "bar-label";
-      label.textContent = capitalize(r.name);
-      const track = document.createElement("span");
-      track.className = "bar-track";
-      const bar = document.createElement("span");
-      bar.className = "bar s1";
-      bar.style.width = `${(r.count / max) * 100}%`;
-      track.append(bar);
-      const value = document.createElement("span");
-      value.className = "bar-value";
-      value.textContent = r.count;
-      row.append(label, track, value);
-      attachTooltip(track, `${capitalize(r.name)}: ${r.count} ${unit}`);
-      return row;
-    })
-  );
-}
-
+// Activity buckets: 3-hour blocks of the viewer's local day.
 const BUCKETS = ["12–3a", "3–6a", "6–9a", "9a–12", "12–3p", "3–6p", "6–9p", "9p–12"];
 
 function renderActivity(activity) {
-  const counts = BUCKETS.map(() => ({ memory: 0, question: 0 }));
-  for (const a of activity) counts[Math.floor(new Date(a.timestamp).getHours() / 3)][a.kind] += 1;
-  const max = Math.max(1, ...counts.flatMap((c) => [c.memory, c.question]));
-
-  const chart = $("chart-activity");
-  chart.setAttribute(
-    "aria-label",
-    "Activity by time of day: " +
-      BUCKETS.map((b, i) => `${b}: ${counts[i].memory} put down, ${counts[i].question} questions`).join("; ")
+  const ofKind = (kind) => Charts.bucketByHour(activity.filter((a) => a.kind === kind), { buckets: BUCKETS.length });
+  Charts.columns(
+    $("chart-activity"),
+    {
+      categories: BUCKETS,
+      series: [
+        { name: "Things put down", values: ofKind("memory") },
+        { name: "Questions asked", values: ofKind("question") },
+      ],
+    },
+    { label: "Activity by time of day", table: $("activity-table") }
   );
-  chart.replaceChildren(
-    ...BUCKETS.map((bucket, i) => {
-      const group = document.createElement("div");
-      group.className = "col-group";
-      const bars = document.createElement("div");
-      bars.className = "col-bars";
-      for (const [kind, cls, label] of [["memory", "s1", "put down"], ["question", "s2", "questions"]]) {
-        const bar = document.createElement("span");
-        bar.className = `col ${cls}`;
-        const n = counts[i][kind];
-        bar.style.height = n ? `${(n / max) * 100}%` : "0";
-        const hit = document.createElement("span");
-        hit.className = "col-hit";
-        hit.append(bar);
-        attachTooltip(hit, `${bucket}: ${n} ${label}`);
-        bars.append(hit);
-      }
-      const label = document.createElement("span");
-      label.className = "col-label";
-      label.textContent = bucket;
-      group.append(bars, label);
-      return group;
-    })
-  );
-
-  const table = $("activity-table");
-  table.innerHTML = "<thead><tr><th>Time</th><th>Things put down</th><th>Questions</th></tr></thead>";
-  const body = document.createElement("tbody");
-  BUCKETS.forEach((b, i) => {
-    const tr = body.insertRow();
-    tr.insertCell().textContent = b;
-    tr.insertCell().textContent = counts[i].memory;
-    tr.insertCell().textContent = counts[i].question;
-  });
-  table.append(body);
 }
 
 function renderQuestions(questions) {
@@ -405,21 +347,6 @@ function renderQuestions(questions) {
       return li;
     })
   );
-}
-
-// ---------- tooltip ----------
-
-function attachTooltip(el, text) {
-  const tip = $("tooltip");
-  el.addEventListener("pointerenter", () => {
-    tip.textContent = text;
-    tip.hidden = false;
-  });
-  el.addEventListener("pointermove", (e) => {
-    const x = Math.min(e.clientX + 12, window.innerWidth - tip.offsetWidth - 8);
-    tip.style.transform = `translate(${x}px, ${e.clientY + 12}px)`;
-  });
-  el.addEventListener("pointerleave", () => (tip.hidden = true));
 }
 
 init().catch((err) => {

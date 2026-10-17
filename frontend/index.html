@@ -98,11 +98,11 @@
       <div class="two-col">
         <section class="card">
           <h2>Most asked about</h2>
-          <div id="chart-asked" class="bar-list"></div>
+          <div id="chart-asked"></div>
         </section>
         <section class="card">
           <h2>Most often put down</h2>
-          <div id="chart-logged" class="bar-list"></div>
+          <div id="chart-logged"></div>
         </section>
       </div>
 
@@ -114,12 +114,18 @@
             <span><i class="swatch s2"></i>Questions asked</span>
           </div>
         </div>
-        <div id="chart-activity" class="column-chart" role="img"></div>
+        <div id="chart-activity"></div>
         <details>
           <summary>Show as table</summary>
           <table id="activity-table"></table>
         </details>
       </section>
+
+      <!--
+        Add new visualizations here: a .card with an <h2> and an empty container,
+        filled from loadInsights() with Charts.barList / Charts.columns (charts.js).
+        See README → "Adding a visualization".
+      -->
 
       <section class="card">
         <h2>Recent questions</h2>
@@ -180,6 +186,7 @@
     </li>
   </template>
 
+  <script src="charts.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

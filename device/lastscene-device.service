@@ -1,0 +1,16 @@
+[Unit]
+Description=LastScene wearable client
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/lastscene/device.env
+ExecStart=/usr/bin/python3 /opt/lastscene/lastscene_device.py
+Restart=always
+RestartSec=5
+# Dedicated user with just GPIO, camera and audio access
+User=lastscene
+SupplementaryGroups=gpio video audio
+
+[Install]
+WantedBy=multi-user.target
