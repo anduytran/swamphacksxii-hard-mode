@@ -17,7 +17,7 @@ Guardrails, all checked before a server is created (any one failing means nothin
   * no other trainer server exists (run cleanup first)
   * backups, IPv6, DDoS protection and activation emails off; no snapshots, block storage or reserved IPs
 Then: the server powers itself off when training ends (or fails), and this tool destroys it as soon as
-it stops, after --max-minutes (default 45), on Ctrl-C, or on any error. Stopped Vultr servers still
+it stops, after --max-minutes (default 60), on Ctrl-C, or on any error. Stopped Vultr servers still
 bill; only destroying ends billing.
 """
 
@@ -181,7 +181,7 @@ class Runner:
         r = self.api.request("GET", "/api/v1/training/models/current", ok=(200, 404))
         return r.status_code == 200 and r.json()["version"] == version
 
-    def run(self, env, gpu=False, region="atl", ref="master", epochs=50, max_minutes=45, force=False, poll=30) -> int:
+    def run(self, env, gpu=False, region="atl", ref="master", epochs=100, max_minutes=60, force=False, poll=30) -> int:
         self.guard.check_date()
         version = self.wanted(force)
         if version is None:
@@ -259,8 +259,8 @@ def main():
     p.add_argument("--gpu", action="store_true", help="a GPU plan instead of a 4 vCPU / 8 GB CPU one")
     p.add_argument("--region", default="atl", help="Vultr region id (atl = Atlanta)")
     p.add_argument("--ref", default="master", help="git branch the server trains from")
-    p.add_argument("--epochs", type=int, default=50)
-    p.add_argument("--max-minutes", type=int, default=45)
+    p.add_argument("--epochs", type=int, default=100)
+    p.add_argument("--max-minutes", type=int, default=60)
     p.add_argument("--force", action="store_true", help="train even if the model matches the photos")
     args = p.parse_args()
     if args.env_file:

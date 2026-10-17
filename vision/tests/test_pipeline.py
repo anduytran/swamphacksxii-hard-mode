@@ -14,7 +14,7 @@ from lastscene_pipeline.common import Api, PipelineError, _explain, resolve_mode
 from lastscene_pipeline.detect import ReloadingDetector, folder_frames, load_classes
 from lastscene_pipeline.runtime import decode, letterbox
 from lastscene_pipeline.sync import run_sync
-from lastscene_pipeline.train import photos_per_class, run_train, set_current
+from lastscene_pipeline.train import add_backgrounds, photos_per_class, run_train, set_current, train_yaml
 from tests.test_bridge import _queue_one, bus, make_uploader, server  # noqa: F401
 
 VOCAB = {"household_id": "h1", "version": "v1", "classes": ["keys", "wallet"],
@@ -210,3 +210,21 @@ def test_409_resends_under_a_new_stable_id_and_reports_each_post(tmp_path, bus, 
     assert any("409" in s for _, _, s in up.log)
     # derived from (old id, pairing code): a restart mid-retry picks the same new id
     assert new_id == str(uuid.uuid5(CONFLICT_NAMESPACE, f"{oid}|{up.pairing_code}"))
+
+
+def test_backgrounds_are_unlabeled_copies_and_join_training_only(tmp_path):
+    camera, coco, dataset = tmp_path / "camera", tmp_path / "coco", tmp_path / "dataset"
+    for folder, n in ((camera, 2), (coco, 5)):
+        folder.mkdir()
+        for i in range(n):
+            cv2.imwrite(str(folder / f"{i}.jpg"), np.zeros((8, 8, 3), np.uint8))
+    (camera / "notes.txt").write_text("not an image")
+    dataset.mkdir()
+    assert add_backgrounds(dataset, [camera], coco, 3) == 5  # every camera frame + the first 3 COCO photos
+    names = sorted(f.name for f in (dataset / "background").iterdir())
+    assert names == [f"bg{i:04d}.jpg" for i in range(5)]  # no label files: Ultralytics reads them as "no item"
+    assert add_backgrounds(dataset, [], coco, 1) == 1  # a rerun replaces the folder
+    assert add_backgrounds(dataset) == 0
+    (dataset / "data.yaml").write_text('path: /x\ntrain: images/train\nval: images/train\nnames:\n  0: "pin"\n')
+    text = train_yaml(dataset, dataset / "data.yaml").read_text()
+    assert "train: [images/train, background]" in text and "val: images/train" in text and '0: "pin"' in text
