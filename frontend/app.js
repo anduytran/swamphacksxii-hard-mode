@@ -844,6 +844,12 @@ async function loadPlacesMap() {
 
 let publicDeck = null;
 
+// Sequential amber ramp for the heat map (one hue, dim → bright on the dark map); the
+// legend under the map uses the same stops.
+const HEAT_COLORS = [
+  [90, 52, 8], [140, 82, 6], [190, 112, 4], [226, 146, 30], [246, 180, 80], [255, 222, 160],
+];
+
 // 3D buildings: OpenFreeMap vector tiles (OpenStreetMap data, free, no key). The tile URL
 // carries a dated version, so it's read from the TileJSON once; no buildings if that fails.
 const BUILDINGS_TILEJSON = "https://tiles.openfreemap.org/planet";
@@ -884,22 +890,33 @@ async function loadPublic() {
   $("public-k").textContent = data.min_households;
   const container = $("public-map");
   const cells = data.cells.map((c) => ({ ...c, total: c.left + c.asked }));
-  const maxTotal = Math.max(1, ...cells.map((c) => c.total));
   const layers = [
     basemap(),
     tiles && buildingsLayer(tiles),
-    // Slim cylinders (24 m across) that rise above the rooftops: 30–120 m tall, buildings ~5–60 m.
-    new deck.ColumnLayer({
+    // Heat map: each ~100 m spot glows by how often things were lost or asked about there.
+    // Drawn over the buildings (no depth test) so rooftops don't hide the glow.
+    new deck.HeatmapLayer({
+      id: "public-heat",
+      data: cells,
+      getPosition: (c) => [c.lng, c.lat],
+      getWeight: (c) => c.total,
+      radiusPixels: 95,
+      intensity: 1.2,
+      threshold: 0.04,
+      colorRange: HEAT_COLORS,
+      parameters: { depthCompare: "always", depthWriteEnabled: false },
+    }),
+    // Invisible hit areas over each spot, so hovering still shows what was lost there.
+    new deck.ScatterplotLayer({
       id: "public-cells",
       data: cells,
-      diskResolution: 24,
-      radius: 12,
-      extruded: true,
       getPosition: (c) => [c.lng, c.lat],
-      getElevation: (c) => 30 + (c.total / maxTotal) * 90,
-      getFillColor: (c) => [...MAP_COLORS.lost, 90 + Math.round((c.total / maxTotal) * 165)],
-      material: { ambient: 0.6, diffuse: 0.6, shininess: 20 },
+      getRadius: 55,
+      radiusUnits: "meters",
+      radiusMinPixels: 14,
+      getFillColor: [0, 0, 0, 1], // alpha 0 would also hide it from picking
       pickable: true,
+      parameters: { depthCompare: "always", depthWriteEnabled: false },
     }),
   ];
   const getTooltip = ({ object }) =>

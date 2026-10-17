@@ -703,6 +703,15 @@ input::placeholder { color: var(--faint); }
 .attribution a { color: var(--muted); }
 .places-hint { padding: 0 24px 20px; margin: 10px 0 0; }
 .public-map { height: clamp(380px, 56vw, 620px); }
+.heat-legend { gap: 10px; }
+.heat-ramp {
+  display: inline-block;
+  width: 120px;
+  height: 10px;
+  border-radius: 5px;
+  border: 1px solid var(--line-strong);
+  background: linear-gradient(90deg, rgb(90, 52, 8), rgb(140, 82, 6), rgb(190, 112, 4), rgb(226, 146, 30), rgb(246, 180, 80), rgb(255, 222, 160));
+}
 
 /* ---------- Public map ---------- */
 .public-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); align-items: start; }

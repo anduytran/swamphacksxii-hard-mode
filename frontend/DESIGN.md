@@ -21,7 +21,7 @@ High-fidelity, responsive spec for the caregiver dashboard as built in `index.ht
 | Map | `#/map` | House plan (deck.gl) / Our places (OSM) | Setup checklist in the map frame | Shimmering map frame | Status notice + Try again |
 | Insights | `#/insights` | KPIs, summary, rankings, activity, questions | Charts say what's missing | Tile, bar, chart and list skeletons | Status notice + Try again |
 | Search | `#/search` | Ask what the wearer would | "No memories matched" + "Try “keys”" | 2 result skeletons + button spinner | Status notice + Try again (resubmits) |
-| Public map | `#/public` | Anonymous lost-item map (no login): 3D OpenStreetMap buildings (OpenFreeMap, no key), slim cylinders (24 m across, 30–120 m tall) per ~100 m spot; opens on the busiest spot, each "Busiest spots" row flies there | "Nothing public yet" + share/log-in CTA | Map shimmer + row skeletons | Status notice + Try again |
+| Public map | `#/public` | Anonymous lost-item map (no login): 3D OpenStreetMap buildings (OpenFreeMap, no key), a heat map (single-hue amber ramp, weighted by items lost/asked per ~100 m spot, drawn over the buildings, with a gradient legend and hover details); opens on the busiest spot, each "Busiest spots" row flies there | "Nothing public yet" + share/log-in CTA | Map shimmer + row skeletons | Status notice + Try again |
 | Household | `#/household` | Create/join, add wearable, invite, places, sharing | Create / Join forms | Two form-card skeletons | Inline field errors; form message |
 | Item detail | drawer | Drill-down for one item | "Never logged" + tip | Photo + line skeletons | Message + Try again |
 
