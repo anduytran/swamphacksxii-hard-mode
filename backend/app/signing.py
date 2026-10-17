@@ -9,6 +9,8 @@ import time
 
 
 def _sign(secret: str, record_id: str, exp: int) -> str:
+    if not secret:
+        raise RuntimeError("IMAGE_URL_SECRET is not set")
     return hmac.new(secret.encode(), f"{record_id}:{exp}".encode(), hashlib.sha256).hexdigest()
 
 

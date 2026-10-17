@@ -310,3 +310,16 @@ def test_gemini_pcm_is_wrapped_as_playable_wav():
     wav = pcm_to_wav(b"\x00\x01" * 2400)
     with wave.open(io.BytesIO(wav)) as w:
         assert (w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()) == (1, 2, 24000, 2400)
+
+
+def test_startup_survives_missing_settings_and_healthz_reports_them(monkeypatch):
+    import app.main as main
+
+    bare = Settings(_env_file=None)  # nothing configured, like a fresh Vercel project
+    monkeypatch.setattr(main, "get_settings", lambda: bare)
+    app = main.create_app()  # with lifespan
+    with TestClient(app) as c:  # lifespan runs: must not raise
+        body = c.get("/healthz").json()
+    assert body["ok"] is False
+    assert {"DATABASE_URL", "IMAGE_URL_SECRET", "GEMINI_API_KEY"} <= set(body["missing_settings"])
+    assert "OPENAI_API_KEY" not in body["missing_settings"]  # not used with Gemini defaults

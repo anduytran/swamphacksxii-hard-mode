@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -5,19 +6,44 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .ai import AIServices
-from .config import get_settings
+from .config import Settings, get_settings
 from .db import MemoryDB
 from .routers import admin, dashboard, images, memory
 
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
+log = logging.getLogger("lastscene")
+
+
+def missing_settings(s: Settings) -> list[str]:
+    """Required settings that are empty. Shown by /healthz, since a missing env var on a
+    host like Vercel otherwise just looks like a crash."""
+    required = {
+        "DATABASE_URL": s.database_url,
+        "IMAGE_URL_SECRET": s.image_url_secret,
+        "AUTH0_DOMAIN": s.auth0_domain,
+        "AUTH0_AUDIENCE": s.auth0_audience,
+        "AUTH0_SPA_CLIENT_ID": s.auth0_spa_client_id,
+    }
+    providers = {s.stt_provider, s.embedding_provider, s.llm_provider, s.tts_provider, s.vision_provider}
+    if "gemini" in providers:
+        required["GEMINI_API_KEY"] = s.gemini_api_key
+    if providers & {"openai"}:
+        required["OPENAI_API_KEY"] = s.openai_api_key
+    if "claude" in providers:
+        required["ANTHROPIC_API_KEY"] = s.anthropic_api_key
+    return [name for name, value in required.items() if not value]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if not get_settings().image_url_secret:
-        raise RuntimeError("IMAGE_URL_SECRET must be set")
-    # Optional warm-up: get_db() also connects on first use, for hosts that skip lifespan.
-    await app.state.db.ensure_ready()
+    # Never let startup fail: one bad setting would take down every route, /healthz
+    # included. Problems are logged here and reported by /healthz instead.
+    if missing := missing_settings(get_settings()):
+        log.error("Missing settings: %s", ", ".join(missing))
+    try:
+        await app.state.db.ensure_ready()  # warm-up; get_db() retries on first use
+    except Exception:
+        log.exception("Database not reachable at startup")
     yield
     await app.state.db.close()
 
@@ -34,7 +60,8 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
 
     @app.get("/healthz")
     async def healthz():
-        return {"ok": True}
+        missing = missing_settings(get_settings())
+        return {"ok": not missing, "missing_settings": missing}
 
     @app.get("/config.json")
     async def spa_config():
