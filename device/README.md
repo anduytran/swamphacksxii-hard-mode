@@ -130,8 +130,13 @@ your laptop on one private network that works from any Wi-Fi, with no router set
        HostName faker
        User faker
        IdentityFile ~/.ssh/faker
+       HostKeyAlias faker.local
    ```
    `ssh faker` on the same Wi-Fi, `ssh faker-remote` elsewhere. `rsync`/`scp` work the same way.
+   `HostKeyAlias` checks the Pi against the host key already saved for `faker.local` (it's the same Pi);
+   without it the first connection fails with "Host key verification failed". Compare the two once with
+   `ssh-keyscan -t ed25519 <100.x.y.z> | ssh-keygen -lf -` and `ssh-keygen -lF faker.local`.
+   Tested Oct 17, 2026: from a different Wi-Fi than the Pi's phone hotspot, `ssh faker-remote` logged straight in.
 
 - The Pi still needs internet: it only joins Wi-Fi networks it knows (Raspberry Pi Imager's, plus any added with
   `sudo nmcli device wifi connect <SSID> password <password>`).
