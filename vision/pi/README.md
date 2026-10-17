@@ -26,6 +26,38 @@ echo <version> > ~/lastscene-data/models/current
 
 `detect` checks each file's sha256 against `model.json`, so a partial copy refuses to load.
 
+### 2b. No trained model yet: export YOLO-World with a fixed vocabulary (on the laptop)
+
+`set_classes` runs YOLO-World's CLIP text encoder once on the laptop and stores the class embeddings in the
+model, so the exported ONNX is a plain detector and the Pi never needs CLIP. The folder has the same layout
+as a trained one, so `bench` and `detect` load it unchanged. Calibrate on frames from the Pi's own camera.
+
+```bash
+# laptop, in vision/, with ultralytics + onnx + onnxruntime + onnxslim installed
+python -m scripts.export_world_pi --classes keys wallet phone glasses remote --imgsz 320 \
+    --calib path/to/pi-frames --out lastscene-data/models
+rsync -a --exclude model-fp32.onnx lastscene-data/models/<version> faker:lastscene-data/models/
+ssh faker 'echo <version> > ~/lastscene-data/models/current'
+```
+
+Measured on Oct 17, 2026 (Pi Zero 2 W, 415 MB usable RAM, Debian 13, Python 3.13, onnxruntime 1.31.0),
+`yolov8s-worldv2` at 320 px, INT8 (13.5 MB), `--low-memory`, on a 1280x720 USB-camera frame:
+
+| threads | load | median | p95 | max fps | peak RSS |
+|---|---|---|---|---|---|
+| 4 | 3.4 s | 0.82 s | 0.83 s | 1.2 | 201 MB |
+| 2 | 3.1 s | 1.27 s | 1.35 s | 0.8 | 193 MB |
+
+INT8 kept 9 of 10 FP32 detections on the 44 calibration frames (not a held-out accuracy test). Untrained
+YOLO-World scores real keys low (README: about 0.05-0.35), so few sightings reach detect's default
+`--min-confidence 0.35`; a model trained from the Teach items photos is still the better path.
+
+The Pi in this setup uses a USB camera: use `--source 0`, not `--source picam`. A 90 s `detect --source 0 --fps 1 --threads 4
+--dry-run` ran cleanly: frames arrive at 640x480 (the GStreamer warning is harmless, OpenCV falls back to
+V4L2), RAM stayed under 150 MB used, and the board reached 70 °C with no throttling. Keep `--fps` at 1. Debian 13 (trixie) ships
+numpy 2 with its OpenCV, so skip install.sh's `numpy<2` pin there (`pip install onnxruntime pytest` in the
+venv is enough when the apt packages are already installed).
+
 ## 3. Measure (report these numbers back)
 
 ```bash

@@ -61,8 +61,6 @@ def validate(weights, data_yaml, imgsz, device) -> tuple[float, dict]:
 
 def run_train(data_yaml: Path, base: str, epochs: int, imgsz: int, out: Path, export_pi: bool = True,
               calib=(), device=None, log=print) -> int:
-    from ultralytics import YOLO
-
     dataset = data_yaml.parent
     for needed in (data_yaml, dataset / "version", dataset / "classes.json"):
         if not needed.exists():
@@ -78,6 +76,8 @@ def run_train(data_yaml: Path, base: str, epochs: int, imgsz: int, out: Path, ex
         if n < MIN_PHOTOS:
             log(f"'{name}' has {n} photo(s) (< {MIN_PHOTOS}): it stays in classes.json, but this model will likely "
                 f"miss it; add photos on the Teach items page")
+    from ultralytics import YOLO  # after the checks: they work without the laptop libraries (Pi tests)
+
     if device is None:
         import torch
 
