@@ -1573,6 +1573,11 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
 .sample-delete { position: absolute; top: 2px; right: 2px; width: 32px; height: 32px; background: var(--overlay); color: var(--on-overlay); border-radius: 8px; }
 .sample-delete:hover { background: var(--overlay); color: var(--on-overlay); border-color: transparent; }
 .sample-delete .i { width: 16px; height: 16px; }
+.distance-mix { display: grid; gap: 6px; }
+.distance-mix ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.distance-mix .chip { gap: 6px; }
+.distance-mix .hint { margin: 0; }
+.box-distance { margin: 0; }
 .teach-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .teach-actions .primary { min-height: 44px; }
 .confirm-row { display: inline-flex; flex-wrap: wrap; gap: 8px; }

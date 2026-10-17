@@ -10,6 +10,7 @@ import { useLoadStatus } from "../lib/app";
 import { useResource } from "../lib/resource";
 import type { Household, ModelStatus, TrainingItem, TrainingList, TrainingSample } from "../lib/types";
 import { timeAgo } from "../lib/format";
+import { DISTANCES, PER_RANGE, distanceMix, distanceOf, nextDistance, type Distance } from "../lib/distance";
 
 const GOOD_ENOUGH = 10; // photos per item before it's "ready"
 const MAX_SIDE = 1024; // photos are shrunk to this before upload (the pipeline trains at 640)
@@ -54,6 +55,10 @@ export default function TeachPage() {
       <p className="lede teach-lede">
         The wearable's camera knows everyday things like keys and glasses. Show it <em>your</em> keys: add an item, then take{" "}
         {GOOD_ENOUGH} or so photos of it and draw a box around it in each. Photos stay until you delete them.
+      </p>
+      <p className="lede teach-lede">
+        <strong>Mix up the distance.</strong> The wearable often sees things from across the room, where they look small. Take a few
+        photos close up, a few from arm's length, and a few from across the room. Each item shows which distances it still needs.
       </p>
 
       {households && !households.length ? (
@@ -145,6 +150,7 @@ function ItemCard({ item, base, api, maxPhotos, onChange }: { item: TrainingItem
       <div className="teach-meter" role="meter" aria-label={`${item.name} photos`} aria-valuemin={0} aria-valuemax={GOOD_ENOUGH} aria-valuenow={Math.min(count, GOOD_ENOUGH)}>
         <span style={{ width: `${Math.min(100, (count / GOOD_ENOUGH) * 100)}%` }} />
       </div>
+      {count > 0 && <DistanceMix item={item.name} mix={distanceMix(item.samples.map((s) => s.bbox))} />}
 
       {count > 0 ? (
         <ul className="sample-grid">
@@ -158,7 +164,7 @@ function ItemCard({ item, base, api, maxPhotos, onChange }: { item: TrainingItem
           ))}
         </ul>
       ) : (
-        <p className="hint">No photos yet. Different angles, distances, backgrounds and light all help.</p>
+        <p className="hint">No photos yet. Take some close up, some from arm's length and some from across the room. Different angles, backgrounds and light help too.</p>
       )}
 
       <div className="teach-actions">
@@ -350,6 +356,12 @@ function BoxEditor({ item, files, upload, onClose }: { item: string; files: File
           !error && <Sk cls="block h200" />
         )}
       </div>
+      {box && !tooSmall && (
+        <p className="hint box-distance" role="status">
+          Counts as <strong>{DISTANCES.find((d) => d.key === distanceOf(box))!.label.toLowerCase()}</strong>.
+          {distanceOf(box) === "close" && " Photos from farther away, where it looks smaller, teach the camera more."}
+        </p>
+      )}
       {error && <p className="form-msg error">{error}</p>}
       <footer className="box-actions">
         <button type="button" className="pill quiet" disabled={!photo} onClick={() => setBox([0, 0, 1, 1])}>
@@ -365,6 +377,33 @@ function BoxEditor({ item, files, upload, onClose }: { item: string; files: File
         </span>
       </footer>
     </Dialog>
+  );
+}
+
+/** Photos per distance (judged from each box's size), and what to take next. Guidance only: it never blocks. */
+function DistanceMix({ item, mix }: { item: string; mix: Record<Distance, number> }) {
+  const next = nextDistance(mix);
+  const ask = DISTANCES.find((d) => d.key === next);
+  return (
+    <div className="distance-mix">
+      <ul aria-label={`${item} photos by distance`}>
+        {DISTANCES.map((d) => {
+          const done = mix[d.key] >= PER_RANGE;
+          return (
+            <li key={d.key} className={done ? "chip good" : "chip warn"}>
+              {done ? <Icon name="shield" /> : <Icon name="camera" />}
+              {d.label}: {mix[d.key]}
+              {!done && ` of ${PER_RANGE}`}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="hint">
+        {ask
+          ? `Next: ${PER_RANGE - mix[ask.key]} more ${ask.label.toLowerCase()} (${ask.how}).`
+          : "Good spread of distances."}
+      </p>
+    </div>
   );
 }
 
