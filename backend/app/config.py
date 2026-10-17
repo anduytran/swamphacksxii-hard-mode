@@ -1,10 +1,12 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # backend/.env wherever the app is started from; real environment variables win (Vercel).
+    model_config = SettingsConfigDict(env_file=Path(__file__).resolve().parents[1] / ".env", extra="ignore")
 
     # Auth0
     auth0_domain: str = ""  # e.g. lastscene.us.auth0.com
@@ -23,7 +25,19 @@ class Settings(BaseSettings):
     image_url_secret: str = ""
     image_url_ttl_seconds: int = 900
 
-    # AI providers
+    # AI providers. Each stage can run on Gemini (default) or the original provider.
+    stt_provider: str = "gemini"  # gemini | openai
+    embedding_provider: str = "gemini"  # gemini | openai  (changing it invalidates stored vectors)
+    llm_provider: str = "gemini"  # gemini | claude      (answers, item extraction, summaries)
+    tts_provider: str = "gemini"  # gemini | openai
+    vision_provider: str = "gemini"  # gemini | none     (describe each photo)
+
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.8-flash"
+    gemini_tts_model: str = "gemini-3.8-flash-tts"
+    gemini_tts_voice: str = "Kore"
+    gemini_embedding_model: str = "gemini-embedding-2"
+
     openai_api_key: str = ""
     stt_model: str = "whisper-1"
     embedding_model: str = "text-embedding-3-small"
@@ -35,6 +49,12 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     llm_model: str = "claude-opus-5-5"
     llm_effort: str = "low"
+
+    # Run item extraction + photo description after the device's response (True) or
+    # before it (False). Use False on serverless hosts that may freeze after responding.
+    enrich_in_background: bool = True
+    # Vercel Cron sends "Authorization: Bearer <CRON_SECRET>" to the purge endpoint.
+    cron_secret: str = ""
 
     # Data lifecycle
     retention_hours: int = 72

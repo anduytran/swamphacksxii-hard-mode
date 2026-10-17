@@ -4,6 +4,7 @@ Photos are stored in the same row as their transcript, so the retention purge
 removes both in one statement and no separate object store is needed.
 """
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -23,6 +24,7 @@ class MemoryRecord:
     created_at: datetime
     transcript: str
     has_image: bool
+    scene: str | None = None  # what the camera saw (Gemini vision), filled in after upload
     distance: float | None = None
 
 
@@ -34,6 +36,7 @@ class ItemSighting:
     created_at: datetime
     transcript: str
     has_image: bool
+    scene: str | None = None
 
 
 @dataclass
@@ -45,7 +48,7 @@ class QueryRecord:
 
 
 # Every query that lists records selects this instead of the image bytes.
-_COLUMNS = "id, device_id, created_at, transcript, image IS NOT NULL AS has_image"
+_COLUMNS = "id, device_id, created_at, transcript, scene, image IS NOT NULL AS has_image"
 
 
 class MemoryDB:
@@ -53,9 +56,27 @@ class MemoryDB:
         self.dsn = settings.database_url
         self.dims = settings.embedding_dimensions
         self.pool: asyncpg.Pool | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
     async def connect(self) -> None:
-        self.pool = await asyncpg.create_pool(self.dsn, min_size=1, max_size=5)
+        self.pool = await asyncpg.create_pool(self.dsn, min_size=0, max_size=5)
+        self._loop = asyncio.get_running_loop()
+
+    async def ensure_ready(self) -> None:
+        """Connect and create the schema on first use.
+
+        Serverless hosts (Vercel) may skip the startup hook or run requests on a new
+        event loop; an asyncpg pool can't cross loops, so reconnect when that happens.
+        """
+        loop = asyncio.get_running_loop()
+        if self.pool is not None and self._loop is loop:
+            return
+        async with self._locks.setdefault(loop, asyncio.Lock()):
+            if self.pool is not None and self._loop is loop:
+                return
+            await self.connect()
+            await self.init_schema()
 
     async def close(self) -> None:
         if self.pool:
@@ -80,6 +101,7 @@ class MemoryDB:
             # Tables created by the earlier object-storage version lack these columns.
             await conn.execute("ALTER TABLE memory_logs ADD COLUMN IF NOT EXISTS image bytea")
             await conn.execute("ALTER TABLE memory_logs ADD COLUMN IF NOT EXISTS image_type text")
+            await conn.execute("ALTER TABLE memory_logs ADD COLUMN IF NOT EXISTS scene text")
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS memory_logs_created_at_idx ON memory_logs (created_at DESC)"
             )
@@ -178,6 +200,15 @@ class MemoryDB:
         )
         return (row["image"], row["image_type"] or "image/jpeg") if row else None
 
+    async def set_scene(self, memory_id: str, scene: str, embedding: list[float]) -> None:
+        """Store what the camera saw, and re-embed so search matches it too."""
+        await self.pool.execute(
+            "UPDATE memory_logs SET scene = $2, embedding = $3::vector WHERE id = $1::uuid",
+            memory_id,
+            scene,
+            _vec(embedding),
+        )
+
     async def add_items(self, memory_id: str, items: list[tuple[str, str]]) -> None:
         if items:
             await self.pool.executemany(
@@ -189,7 +220,7 @@ class MemoryDB:
         """Every item mention in the window, newest first."""
         rows = await self.pool.fetch(
             """
-            SELECT i.name, i.location, m.id AS memory_id, m.created_at, m.transcript,
+            SELECT i.name, i.location, m.id AS memory_id, m.created_at, m.transcript, m.scene,
                    m.image IS NOT NULL AS has_image
             FROM memory_items i
             JOIN memory_logs m ON m.id = i.memory_id
@@ -206,6 +237,7 @@ class MemoryDB:
                 created_at=r["created_at"],
                 transcript=r["transcript"],
                 has_image=r["has_image"],
+                scene=r["scene"],
             )
             for r in rows
         ]
@@ -252,5 +284,6 @@ def _record(row) -> MemoryRecord:
         created_at=row["created_at"],
         transcript=row["transcript"],
         has_image=row["has_image"],
+        scene=row["scene"],
         distance=row["distance"] if "distance" in row.keys() else None,
     )

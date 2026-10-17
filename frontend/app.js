@@ -161,6 +161,14 @@ function fillPhoto(photo, url, alt) {
   }
 }
 
+// What Gemini saw in the photo, shown under the wearer's own words.
+function fillSaw(node, scene) {
+  const saw = node.querySelector(".saw");
+  if (!scene) return;
+  saw.hidden = false;
+  saw.textContent = `Camera saw: ${scene}`;
+}
+
 function itemChips(item) {
   const chips = [chip(`Put down ${item.mentions}×`)];
   if (item.times_asked) chips.push(chip(`Asked about ${item.times_asked}×`, "warn"));
@@ -188,6 +196,7 @@ async function loadItems() {
   hero.querySelector(".item-name").textContent = capitalize(latest.name);
   hero.querySelector(".item-location").textContent = capitalize(latest.location) || "Location not said";
   hero.querySelector(".quote").textContent = `“${latest.transcript}”`;
+  fillSaw(hero, latest.scene);
   hero.querySelector(".chips").replaceChildren(...itemChips(latest));
   featured.replaceChildren(hero);
 
@@ -245,6 +254,7 @@ async function loadTimeline() {
       time.textContent = new Date(e.timestamp).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
       node.querySelector(".ago").textContent = timeAgo(e.timestamp);
       node.querySelector(".quote").textContent = `“${e.transcript}”`;
+      fillSaw(node, e.scene);
       node.querySelector(".chips").replaceChildren(...(e.items || []).map((i) => placeChip(i.name, i.location)));
       return node;
     })
@@ -263,11 +273,24 @@ async function loadInsights() {
   $("tile-unanswered").classList.toggle("alert", data.unanswered_count > 0);
 
   renderHighlights(data);
+  loadSummary();
   const rows = (list) => list.map((r) => ({ label: capitalize(r.name), value: r.count }));
   Charts.barList($("chart-asked"), rows(data.most_asked), { unit: "times asked", empty: "No questions about specific items yet." });
   Charts.barList($("chart-logged"), rows(data.most_logged), { unit: "times put down", empty: "No items logged yet." });
   renderActivity(data.activity);
   renderQuestions(data.recent_questions);
+}
+
+// The LLM summary is slower than the numbers, so it fills in on its own.
+async function loadSummary() {
+  const card = $("summary-card");
+  try {
+    const { summary } = await api("/api/v1/dashboard/summary");
+    card.hidden = !summary;
+    $("summary-text").textContent = summary || "";
+  } catch {
+    card.hidden = true;
+  }
 }
 
 // Builds a sentence with the item names in bold, without using innerHTML.

@@ -35,14 +35,40 @@ async def _read(upload: UploadFile, limit: int, label: str) -> bytes:
     return data
 
 
-# These run after the response is sent, so the wearable can go back to sleep (or play
-# its answer) without waiting. A failure only costs the dashboard some detail.
-async def _index_items(db: MemoryDB, ai: AIServices, memory_id: str, transcript: str) -> None:
+# Enrichment: by default these run after the response is sent, so the wearable can go
+# back to sleep (or play its answer) without waiting. A failure only costs the
+# dashboard some detail; the memory itself is already saved and searchable.
+async def _enrich_memory(
+    db: MemoryDB, ai: AIServices, memory_id: str, transcript: str, image: bytes, image_type: str
+) -> None:
     try:
         items = await ai.extract_items(transcript)
-        await db.add_items(memory_id, [(i.name, i.location) for i in items])
     except Exception:
         log.exception("Item extraction failed for memory %s", memory_id)
+        items = []
+    try:
+        scene = await ai.describe_scene(image, image_type, transcript)
+    except Exception:
+        log.exception("Photo description failed for memory %s", memory_id)
+        scene = None
+    if scene:
+        description, seen = scene
+        # The camera fills in places the wearer didn't say ("I'm putting my keys down").
+        seen_at = {i.name: i.location for i in seen if i.location}
+        for item in items:
+            if not item.location:
+                item.location = seen_at.get(item.name, "")
+        if not items:
+            items = seen
+        try:
+            embedding = await ai.embed(f"{transcript}\nScene: {description}")
+            await db.set_scene(memory_id, description, embedding)
+        except Exception:
+            log.exception("Saving scene failed for memory %s", memory_id)
+    try:
+        await db.add_items(memory_id, [(i.name, i.location) for i in items])
+    except Exception:
+        log.exception("Saving items failed for memory %s", memory_id)
 
 
 async def _record_query(
@@ -67,6 +93,7 @@ async def log_memory(
     device: Principal = Depends(require_device),
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
+    settings: Settings = Depends(get_settings),
 ):
     audio_bytes = await _read(audio, MAX_AUDIO_BYTES, "audio")
     image_bytes = await _read(image, MAX_IMAGE_BYTES, "image")
@@ -79,7 +106,11 @@ async def log_memory(
     image_type = image.content_type if image.content_type in ALLOWED_IMAGE_TYPES else "image/jpeg"
     embedding = await ai.embed(transcript)
     record = await db.insert(device.sub, transcript, embedding, image_bytes, image_type)
-    background.add_task(_index_items, db, ai, record.id, transcript)
+    enrich_args = (db, ai, record.id, transcript, image_bytes, image_type)
+    if settings.enrich_in_background:
+        background.add_task(_enrich_memory, *enrich_args)
+    else:
+        await _enrich_memory(*enrich_args)
     return {"id": record.id, "timestamp": record.created_at.isoformat(), "transcript": transcript}
 
 
@@ -96,20 +127,20 @@ async def query_memory(
     question = await ai.transcribe(audio.filename, audio_bytes, audio.content_type)
 
     if question:
-        embedding = await ai.embed(question)
+        embedding = await ai.embed(question, query=True)
         matches = await db.nearest(device.sub, embedding, settings.query_lookback_hours)
         answer = await ai.answer(question, matches)
-        background.add_task(_record_query, db, ai, device.sub, question, answer)
+        if settings.enrich_in_background:
+            background.add_task(_record_query, db, ai, device.sub, question, answer)
     else:
         answer = "Sorry, I didn't catch that. Could you ask again?"
 
     speech = await ai.speak(answer)
-    media_type = {"wav": "audio/wav", "mp3": "audio/mpeg", "pcm": "audio/L16"}.get(
-        settings.tts_format, "application/octet-stream"
-    )
+    if question and not settings.enrich_in_background:
+        await _record_query(db, ai, device.sub, question, answer)
     return Response(
         content=speech,
-        media_type=media_type,
+        media_type=ai.speech_media_type,
         # Handy for debugging from curl / serial logs; the device can ignore them.
         headers={"X-Question": quote(question), "X-Answer": quote(answer)},
     )

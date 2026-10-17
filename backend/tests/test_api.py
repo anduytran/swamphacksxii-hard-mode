@@ -56,7 +56,14 @@ class FakeDB:
     async def add_items(self, memory_id, items):
         rec = next(r for r in self.rows if r.id == memory_id)
         for name, location in items:
-            self.items.append(ItemSighting(name, location, rec.id, rec.created_at, rec.transcript, rec.has_image))
+            self.items.append(ItemSighting(name, location, rec.id, rec.created_at, rec.transcript, rec.has_image, rec.scene))
+
+    async def set_scene(self, memory_id, scene, embedding):
+        next(r for r in self.rows if r.id == memory_id).scene = scene
+
+    async def delete_older_than(self, hours):
+        self.purged_hours = hours
+        return 0
 
     async def item_sightings(self, hours):
         return sorted(self.items, key=lambda s: s.created_at, reverse=True)
@@ -75,8 +82,18 @@ class FakeAI:
     async def transcribe(self, filename, audio, content_type):
         return audio.decode()
 
-    async def embed(self, text):
+    speech_media_type = "audio/wav"
+    scene = None  # set to (description, [ItemMention]) to simulate Gemini vision
+
+    async def embed(self, text, *, query=False):
         return [0.1, 0.2]
+
+    async def describe_scene(self, image, content_type, transcript):
+        return self.scene
+
+    async def caregiver_summary(self, facts):
+        self.summary_facts = facts
+        return "Keys came up most this week."
 
     async def answer(self, question, memories):
         self.answered_with = (question, memories)
@@ -240,3 +257,56 @@ def test_background_extraction_failure_does_not_break_logging(client):
     assert ask(client, "Where are my keys?").status_code == 200
     assert client.app_state.db.items == []
     assert client.app_state.db.queries[0].item is None  # question still logged, just untagged
+
+
+def test_photo_description_fills_in_unsaid_location(client):
+    client.app_state.ai.scene = (
+        "Keys on a wooden table by the front door.",
+        [ItemMention("keys", "table by the front door")],
+    )
+    log(client, "I am putting down my keys")  # no place said
+    data = client.get("/api/v1/dashboard/items", headers=CAREGIVER).json()
+    (keys,) = data["items"]
+    assert keys["location"] == "table by the front door"
+    assert keys["scene"] == "Keys on a wooden table by the front door."
+    (entry,) = client.get("/api/v1/dashboard/history", headers=CAREGIVER).json()
+    assert entry["scene"] == "Keys on a wooden table by the front door."
+
+
+def test_enrichment_can_run_before_responding(client):
+    settings = client.app.dependency_overrides[get_settings]()
+    settings.enrich_in_background = False  # serverless mode
+    log(client, "I am putting my keys on the counter")
+    ask(client, "Where are my keys?")
+    assert [i.name for i in client.app_state.db.items] == ["keys"]
+    assert client.app_state.db.queries[0].item == "keys"
+
+
+def test_caregiver_summary(client):
+    assert client.get("/api/v1/dashboard/summary", headers=CAREGIVER).json() == {"summary": None}  # no data yet
+    log(client, "I am putting my keys on the counter")
+    ask(client, "Where are my glasses?")
+    assert client.get("/api/v1/dashboard/summary", headers=DEVICE).status_code == 403
+    body = client.get("/api/v1/dashboard/summary", headers=CAREGIVER).json()
+    assert body["summary"] == "Keys came up most this week."
+    assert "never logged: glasses" in client.app_state.ai.summary_facts
+
+
+def test_cron_purge_requires_secret(client):
+    settings = client.app.dependency_overrides[get_settings]()
+    assert client.get("/api/v1/admin/purge").status_code == 401  # disabled without a secret
+    settings.cron_secret = "s3cret"
+    assert client.get("/api/v1/admin/purge", headers={"Authorization": "Bearer nope"}).status_code == 401
+    resp = client.get("/api/v1/admin/purge", headers={"Authorization": "Bearer s3cret"})
+    assert resp.status_code == 200 and client.app_state.db.purged_hours == 72
+
+
+def test_gemini_pcm_is_wrapped_as_playable_wav():
+    import io
+    import wave
+
+    from app.gemini import pcm_to_wav
+
+    wav = pcm_to_wav(b"\x00\x01" * 2400)
+    with wave.open(io.BytesIO(wav)) as w:
+        assert (w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()) == (1, 2, 24000, 2400)

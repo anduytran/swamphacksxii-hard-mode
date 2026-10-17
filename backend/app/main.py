@@ -7,29 +7,30 @@ from fastapi.staticfiles import StaticFiles
 from .ai import AIServices
 from .config import get_settings
 from .db import MemoryDB
-from .routers import dashboard, images, memory
+from .routers import admin, dashboard, images, memory
 
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
-    if not settings.image_url_secret:
+    if not get_settings().image_url_secret:
         raise RuntimeError("IMAGE_URL_SECRET must be set")
-    app.state.db = MemoryDB(settings)
-    app.state.ai = AIServices(settings)
-    await app.state.db.connect()
-    await app.state.db.init_schema()
+    # Optional warm-up: get_db() also connects on first use, for hosts that skip lifespan.
+    await app.state.db.ensure_ready()
     yield
     await app.state.db.close()
 
 
 def create_app(use_lifespan: bool = True) -> FastAPI:
+    settings = get_settings()
     app = FastAPI(title="LastScene API", lifespan=lifespan if use_lifespan else None)
+    app.state.db = MemoryDB(settings)
+    app.state.ai = AIServices(settings)
     app.include_router(memory.router)
     app.include_router(dashboard.router)
     app.include_router(images.router)
+    app.include_router(admin.router)
 
     @app.get("/healthz")
     async def healthz():

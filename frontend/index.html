@@ -87,6 +87,12 @@
         <div class="tile"><span class="tile-value" id="stat-items">–</span><span class="tile-label">Items tracked</span></div>
       </div>
 
+      <section id="summary-card" class="card summary" aria-labelledby="summary-h" hidden>
+        <p class="eyebrow" id="summary-h">This week, in brief</p>
+        <p id="summary-text" class="summary-text"></p>
+        <p class="summary-by">Written by Gemini from the numbers below.</p>
+      </section>
+
       <section id="highlights" class="card notice" aria-labelledby="notice-h">
         <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>
         <div>
@@ -147,6 +153,7 @@
         <h2 class="item-name"></h2>
         <p class="item-location"></p>
         <p class="quote"></p>
+        <p class="saw" hidden></p>
         <div class="chips"></div>
       </div>
     </article>
@@ -180,6 +187,7 @@
         <div class="photo"><img alt="" loading="lazy"></div>
         <div class="scene-text">
           <p class="quote"></p>
+          <p class="saw" hidden></p>
           <div class="chips"></div>
         </div>
       </div>

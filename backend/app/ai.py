@@ -1,4 +1,9 @@
-"""Speech-to-text, embeddings and text-to-speech (OpenAI) plus answer generation (Claude)."""
+"""Every AI stage, each routed to a provider chosen in settings.
+
+Defaults are Gemini end to end (see gemini.py). The original providers stay available
+per stage: OpenAI for speech-to-text, embeddings and text-to-speech, Claude for the
+language tasks.
+"""
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -10,13 +15,15 @@ from pydantic import BaseModel
 
 from .config import Settings
 from .db import MemoryRecord
+from .gemini import GeminiAI
 
 ANSWER_SYSTEM_PROMPT = """\
 You are LastScene, a gentle voice assistant on a wearable that helps someone \
 with memory loss find everyday items. Your reply is spoken aloud through a small speaker.
 
 You are given the user's question and a few things they said out loud earlier while \
-putting items down, each with how long ago it was said. Answer using only those notes.
+putting items down, each with how long ago it was said and, when available, what the \
+wearable's camera saw at that moment. Answer using only those notes.
 - Reply in one or two short, warm, plain sentences. No lists, markdown or emoji.
 - Say where the item is and roughly when it was left there, e.g. "about two hours ago".
 - If none of the notes are about what they asked, say kindly that you don't have a \
@@ -38,6 +45,23 @@ Use an empty string for questions or when no place is said.
 Return an empty list if no physical item is mentioned."""
 
 
+SCENE_SYSTEM_PROMPT = """\
+This photo was taken by a chest-worn camera at the moment its wearer, who has memory \
+loss, said: "{transcript}". Help a family member find the item later.
+- description: one plain sentence (under 25 words) saying where things are, naming \
+visible landmarks ("Keys on a wooden table by the front door, next to a blue bowl.").
+- items: the physical items being put down, as short lowercase singular names \
+("keys", "reading glasses"), each with its location as a short phrase.
+If the photo is too dark or blurry to tell, say so in the description and return no items."""
+
+
+SUMMARY_SYSTEM_PROMPT = """\
+You write a short update for a family caregiver of someone with memory loss who wears \
+the LastScene memory aid. You get counts and lists from the last few days.
+Write 2-3 warm, plain sentences: what stood out, and one practical suggestion if the data \
+supports one. No lists, markdown, headings or invented facts."""
+
+
 class _ExtractedItem(BaseModel):
     name: str
     location: str
@@ -47,10 +71,23 @@ class ExtractedItems(BaseModel):
     items: list[_ExtractedItem]
 
 
+class SceneDescription(BaseModel):
+    description: str
+    items: list[_ExtractedItem]
+
+
 @dataclass
 class ItemMention:
     name: str
     location: str
+
+
+def _mentions(items: list[_ExtractedItem]) -> list[ItemMention]:
+    return [
+        ItemMention(name=i.name.strip().lower(), location=i.location.strip())
+        for i in items
+        if i.name.strip()
+    ]
 
 
 def humanize_ago(then: datetime, now: datetime | None = None) -> str:
@@ -74,6 +111,10 @@ class AIServices:
     # Clients are created on first use so the API (and the dashboard) can start
     # before the AI keys are configured; the voice endpoints fail until they are.
     @cached_property
+    def gemini(self) -> GeminiAI:
+        return GeminiAI(self.s)
+
+    @cached_property
     def openai(self) -> openai.AsyncOpenAI:
         return openai.AsyncOpenAI(api_key=self.s.openai_api_key or None)
 
@@ -81,72 +122,28 @@ class AIServices:
     def claude(self) -> anthropic.AsyncAnthropic:
         return anthropic.AsyncAnthropic(api_key=self.s.anthropic_api_key or None)
 
+    @property
+    def speech_media_type(self) -> str:
+        if self.s.tts_provider == "gemini":
+            return "audio/wav"
+        return {"wav": "audio/wav", "mp3": "audio/mpeg", "pcm": "audio/L16"}.get(
+            self.s.tts_format, "application/octet-stream"
+        )
+
+    # ---------------------------------------------------------------- speech in/out
+
     async def transcribe(self, filename: str, audio: bytes, content_type: str | None) -> str:
+        if self.s.stt_provider == "gemini":
+            return await self.gemini.transcribe(audio, content_type)
         result = await self.openai.audio.transcriptions.create(
             model=self.s.stt_model,
             file=(filename or "audio.wav", audio, content_type or "audio/wav"),
         )
         return result.text.strip()
 
-    async def embed(self, text: str) -> list[float]:
-        result = await self.openai.embeddings.create(
-            model=self.s.embedding_model,
-            input=text,
-            dimensions=self.s.embedding_dimensions,
-        )
-        return result.data[0].embedding
-
-    async def answer(self, question: str, memories: list[MemoryRecord]) -> str:
-        if memories:
-            notes = "\n".join(
-                f"- ({humanize_ago(m.created_at)}) \"{m.transcript}\"" for m in memories
-            )
-        else:
-            notes = "(no notes recorded recently)"
-        response = await self.claude.beta.messages.create(
-            model=self.s.llm_model,
-            max_tokens=1024,
-            system=ANSWER_SYSTEM_PROMPT,
-            output_config={"effort": self.s.llm_effort},
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Earlier notes:\n{notes}\n\nQuestion: {question}",
-                }
-            ],
-        )
-        if response.stop_reason == "refusal":
-            return "Sorry, I can't help with that one."
-        text = "".join(b.text for b in response.content if b.type == "text").strip()
-        return text or "Sorry, I couldn't come up with an answer just now."
-
-    async def extract_items(self, text: str) -> list[ItemMention]:
-        """Pull the items (and where they were put) out of a statement or question.
-
-        Feeds the dashboard's Items and Insights pages; runs after the response is
-        sent so it never slows the wearable down.
-        """
-        response = await self.claude.beta.messages.parse(
-            model=self.s.llm_model,
-            max_tokens=1024,
-            system=EXTRACT_SYSTEM_PROMPT,
-            output_config={"effort": self.s.llm_effort},
-            output_format=ExtractedItems,
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            messages=[{"role": "user", "content": text}],
-        )
-        if response.stop_reason == "refusal" or response.parsed_output is None:
-            return []
-        return [
-            ItemMention(name=i.name.strip().lower(), location=i.location.strip())
-            for i in response.parsed_output.items
-            if i.name.strip()
-        ]
-
     async def speak(self, text: str) -> bytes:
+        if self.s.tts_provider == "gemini":
+            return await self.gemini.speak(text)
         result = await self.openai.audio.speech.create(
             model=self.s.tts_model,
             voice=self.s.tts_voice,
@@ -154,3 +151,93 @@ class AIServices:
             response_format=self.s.tts_format,
         )
         return result.content
+
+    # ---------------------------------------------------------------- retrieval
+
+    async def embed(self, text: str, *, query: bool = False) -> list[float]:
+        """Embed a memory (query=False) or a question (query=True) for vector search."""
+        if self.s.embedding_provider == "gemini":
+            return await self.gemini.embed(text, query=query)
+        result = await self.openai.embeddings.create(
+            model=self.s.embedding_model,
+            input=text,
+            dimensions=self.s.embedding_dimensions,
+        )
+        return result.data[0].embedding
+
+    # ---------------------------------------------------------------- language
+
+    async def _generate(self, system: str, prompt: str) -> str | None:
+        if self.s.llm_provider == "gemini":
+            return await self.gemini.generate(system, prompt)
+        response = await self.claude.beta.messages.create(
+            model=self.s.llm_model,
+            max_tokens=1024,
+            system=system,
+            output_config={"effort": self.s.llm_effort},
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        if response.stop_reason == "refusal":
+            return None
+        return "".join(b.text for b in response.content if b.type == "text").strip()
+
+    async def _generate_json(self, system: str, text: str, schema: type[BaseModel]) -> BaseModel | None:
+        if self.s.llm_provider == "gemini":
+            return await self.gemini.generate_json(system, [text], schema)
+        response = await self.claude.beta.messages.parse(
+            model=self.s.llm_model,
+            max_tokens=1024,
+            system=system,
+            output_config={"effort": self.s.llm_effort},
+            output_format=schema,
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+            messages=[{"role": "user", "content": text}],
+        )
+        if response.stop_reason == "refusal":
+            return None
+        return response.parsed_output
+
+    async def answer(self, question: str, memories: list[MemoryRecord]) -> str:
+        if memories:
+            notes = "\n".join(
+                f"- ({humanize_ago(m.created_at)}) \"{m.transcript}\""
+                + (f" [camera saw: {m.scene}]" if m.scene else "")
+                for m in memories
+            )
+        else:
+            notes = "(no notes recorded recently)"
+        text = await self._generate(ANSWER_SYSTEM_PROMPT, f"Earlier notes:\n{notes}\n\nQuestion: {question}")
+        if text is None:
+            return "Sorry, I can't help with that one."
+        return text or "Sorry, I couldn't come up with an answer just now."
+
+    async def extract_items(self, text: str) -> list[ItemMention]:
+        """Pull the items (and where they were put) out of a statement or question.
+
+        Feeds the dashboard's Items and Insights pages.
+        """
+        parsed = await self._generate_json(EXTRACT_SYSTEM_PROMPT, text, ExtractedItems)
+        return _mentions(parsed.items) if parsed else []
+
+    async def describe_scene(
+        self, image: bytes, content_type: str, transcript: str
+    ) -> tuple[str, list[ItemMention]] | None:
+        """What the camera saw: a one-line description plus items and where they are."""
+        if self.s.vision_provider != "gemini":
+            return None
+        from google.genai import types
+
+        parsed = await self.gemini.generate_json(
+            SCENE_SYSTEM_PROMPT.format(transcript=transcript.replace('"', "'")),
+            [types.Part.from_bytes(data=image, mime_type=content_type), "Describe this scene."],
+            SceneDescription,
+        )
+        if parsed is None:
+            return None
+        return parsed.description.strip(), _mentions(parsed.items)
+
+    async def caregiver_summary(self, facts: str) -> str | None:
+        return await self._generate(SUMMARY_SYSTEM_PROMPT, facts)
