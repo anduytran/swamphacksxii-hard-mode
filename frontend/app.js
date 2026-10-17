@@ -33,22 +33,33 @@ async function init() {
     window.history.replaceState({}, document.title, window.location.pathname + (appState?.hash || ""));
   }
 
-  $("login").onclick = () =>
-    auth0Client.loginWithRedirect({ appState: { hash: window.location.hash } });
+  const login = () => auth0Client.loginWithRedirect({ appState: { hash: window.location.hash } });
+  $("login").onclick = login;
+  $("login-header").onclick = login;
   $("logout").onclick = () =>
     auth0Client.logout({ logoutParams: { returnTo: window.location.origin } });
   $("refresh").onclick = () => showPage(currentPage(), { force: true });
   $("item-filter").oninput = filterItems;
   $("search-form").onsubmit = runSearch;
+  for (const btn of document.querySelectorAll(".suggestion")) {
+    btn.onclick = () => {
+      $("search-q").value = btn.textContent;
+      $("search-form").requestSubmit();
+    };
+  }
 
   for (const btn of document.querySelectorAll(".segmented [data-mode]")) btn.onclick = () => setMapMode(btn.dataset.mode);
   window.addEventListener("hashchange", () => route());
 
   signedIn = await auth0Client.isAuthenticated();
+  document.body.classList.toggle("signed-in", signedIn);
+  $("guest-actions").hidden = signedIn;
   if (signedIn) {
     const user = await auth0Client.getUser();
     currentUser = user;
-    $("user-name").textContent = user?.name || user?.email || "";
+    const name = user?.name || user?.email || "";
+    $("user-name").textContent = name;
+    $("user-avatar").textContent = initials(name);
     $("user-bar").hidden = false;
     $("tabs").hidden = false;
     // Someone with no household yet starts at setup.
@@ -63,8 +74,13 @@ async function init() {
 
 let currentUser = null;
 
+let routedPage = null;
+
 async function route() {
   const page = currentPage();
+  // A different page starts at the top; Refresh and same-page hash changes keep the scroll.
+  if (routedPage && routedPage !== page) window.scrollTo(0, 0);
+  routedPage = page;
   if (signedIn || PUBLIC_PAGES.includes(page)) {
     $("logged-out").hidden = true;
     await showPage(page);
@@ -97,15 +113,21 @@ async function showPage(name, { force = false } = {}) {
     items: loadItems, map: loadMap, timeline: loadTimeline, insights: loadInsights,
     search: async () => {}, public: loadPublic, household: loadHousehold,
   };
-  const status = $("status");
-  status.textContent = "Loading…";
+  setStatus("Loading…", "loading");
   try {
     await loaders[name]();
     loaded[name] = Date.now();
-    if (status.textContent === "Loading…") status.textContent = "";
+    if ($("status").dataset.state === "loading") setStatus("");
   } catch (err) {
-    status.textContent = `Couldn't load this page: ${err.message}`;
+    setStatus(`Couldn't load this page: ${err.message}`, "error");
   }
+}
+
+// The status line under the header: "loading" shows a spinner, "error" a red notice.
+function setStatus(text, state = "") {
+  const status = $("status");
+  status.textContent = text;
+  status.dataset.state = text ? state : "";
 }
 
 async function api(path, { method = "GET", body } = {}) {
@@ -155,6 +177,12 @@ function clockTime(iso) {
 }
 
 const capitalize = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+
+// "Riley Chen" → "RC", "sam@example.com" → "S"
+function initials(name) {
+  const words = name.replace(/@.*/, "").split(/[\s._-]+/).filter(Boolean);
+  return words.slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "?";
+}
 
 function setWindowHours(hours) {
   for (const el of document.querySelectorAll(".window-hours")) el.textContent = hours;
@@ -273,11 +301,8 @@ async function loadItems() {
   hero.querySelector(".item-location").textContent = capitalize(latest.location) || "Location not said";
   hero.querySelector(".quote").textContent = latest.transcript ? `“${latest.transcript}”` : latest.scene || "";
   fillSaw(hero, latest.scene);
-  if (latest.detection) {
-    drawBoxes(hero.querySelector(".photo"), [latest.detection]);
-    hero.querySelector(".chips").append(...autoChips([latest.detection]));
-  }
-  hero.querySelector(".chips").replaceChildren(...itemChips(latest));
+  if (latest.detection) drawBoxes(hero.querySelector(".photo"), [latest.detection]);
+  hero.querySelector(".chips").replaceChildren(...itemChips(latest), ...(latest.detection ? autoChips([latest.detection]) : []));
   featured.replaceChildren(hero);
 
   const tpl = $("item-template");
@@ -351,13 +376,17 @@ async function loadTimeline() {
 
 const DECK_URL = "https://cdn.jsdelivr.net/npm/deck.gl@9.4.0/dist.min.js";
 const MAP_COLORS = {
-  roomLine: [52, 49, 45],
-  roomFill: [28, 27, 25],
+  roomLine: [62, 58, 52],
+  roomFill: [23, 22, 20], // --surface
   lost: [201, 133, 0], // --series-2
   asked: [244, 167, 59], // --amber
   calm: [57, 135, 229], // --series-1
   label: [168, 161, 150],
   text: [243, 239, 232],
+};
+const GEO_TOOLTIP_STYLE = {
+  background: "#f3efe8", color: "#0e0d0c", fontSize: "13px", fontFamily: "Geist, system-ui, sans-serif",
+  borderRadius: "8px", padding: "8px 10px", boxShadow: "0 10px 30px -10px rgba(0,0,0,.8)", lineHeight: "1.45",
 };
 const LOOP_SECONDS = 10;
 let mapState = null;
@@ -468,7 +497,7 @@ function drawMap() {
       getSize: 11,
       getTextAnchor: "start",
       getAlignmentBaseline: "top",
-      fontFamily: "IBM Plex Mono, monospace",
+      fontFamily: "Geist Mono, monospace",
       characterSet: "auto",
     }),
     playing
@@ -503,7 +532,7 @@ function drawMap() {
       getRadius: (i) => 6 + (i.times_asked / maxAsked) * 10,
       radiusUnits: "pixels",
       getFillColor: (i) => (i.times_asked ? MAP_COLORS.asked : MAP_COLORS.calm),
-      getLineColor: [18, 17, 16],
+      getLineColor: [14, 13, 12],
       stroked: true,
       lineWidthUnits: "pixels",
       getLineWidth: 2,
@@ -517,10 +546,10 @@ function drawMap() {
       getColor: MAP_COLORS.text,
       getSize: 13,
       getPixelOffset: [0, 20],
-      fontFamily: "Bricolage Grotesque, system-ui, sans-serif",
+      fontFamily: "Geist, system-ui, sans-serif",
       characterSet: "auto",
       outlineWidth: 3,
-      outlineColor: [18, 17, 16, 255],
+      outlineColor: [14, 13, 12, 255],
       fontSettings: { sdf: true },
     }),
   ];
@@ -529,7 +558,7 @@ function drawMap() {
 
 function mapTooltip({ object, layer }) {
   if (!object) return null;
-  const style = { background: "#f3efe8", color: "#121110", fontSize: "13px", borderRadius: "6px", padding: "6px 8px" };
+  const style = GEO_TOOLTIP_STYLE;
   if (layer.id === "items") {
     return {
       text: `${capitalize(object.name)} — ${object.room_name}\n“${object.location || "no place said"}”, ${timeAgo(object.last_seen)}\nPut down ${object.mentions}×, asked about ${object.times_asked}×`,
@@ -610,7 +639,6 @@ function fitView(points, container, extra = {}) {
   return { longitude: view.longitude, latitude: view.latitude, zoom: Math.min(view.zoom, 16.5), ...extra };
 }
 
-const GEO_TOOLTIP_STYLE = { background: "#f3efe8", color: "#121110", fontSize: "13px", borderRadius: "6px", padding: "6px 8px" };
 let placesDeck = null;
 
 async function loadPlacesMap() {
@@ -651,14 +679,14 @@ async function loadPlacesMap() {
       id: "place-labels",
       data: places,
       getPosition: (p) => [p.lng, p.lat],
-      getText: (p) => (p.is_home ? `⌂ ${p.label}` : p.label),
+      getText: (p) => p.label,
       getColor: MAP_COLORS.text,
       getSize: 14,
       getPixelOffset: [0, -22],
-      fontFamily: "Bricolage Grotesque, system-ui, sans-serif",
+      fontFamily: "Geist, system-ui, sans-serif",
       characterSet: "auto",
       outlineWidth: 3,
-      outlineColor: [18, 17, 16, 255],
+      outlineColor: [14, 13, 12, 255],
       fontSettings: { sdf: true },
     }),
   ];
@@ -899,10 +927,10 @@ async function runSearch(event) {
   const q = $("search-q").value.trim();
   const list = $("search-results");
   if (!q) return;
-  $("status").textContent = "Searching…";
+  setStatus("Searching…", "loading");
   try {
     const { results } = await api(`/api/v1/dashboard/search?q=${encodeURIComponent(q)}`);
-    $("status").textContent = "";
+    setStatus("");
     if (!results.length) return emptyState(list, "No memories matched. Nothing has been logged about that yet.");
     const tpl = $("result-template");
     list.replaceChildren(
@@ -941,7 +969,7 @@ async function runSearch(event) {
       })
     );
   } catch (err) {
-    $("status").textContent = `Search failed: ${err.message}`;
+    setStatus(`Search failed: ${err.message}`, "error");
   }
 }
 
