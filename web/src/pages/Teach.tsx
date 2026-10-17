@@ -10,11 +10,11 @@ import { useLoadStatus } from "../lib/app";
 import { useResource } from "../lib/resource";
 import type { Household, ModelStatus, TrainingItem, TrainingList, TrainingSample } from "../lib/types";
 import { timeAgo } from "../lib/format";
+import { RANGES, rangeOf, spread, type Box } from "../lib/distance";
 
 const GOOD_ENOUGH = 10; // photos per item before it's "ready"
 const MAX_SIDE = 1024; // photos are shrunk to this before upload (the pipeline trains at 640)
-
-type Box = [number, number, number, number]; // x, y, w, h in 0..1
+const PER_RANGE = 2; // photos per distance before that range counts as covered
 
 export default function TeachPage() {
   const api = useApi();
@@ -53,7 +53,8 @@ export default function TeachPage() {
       </div>
       <p className="lede teach-lede">
         The wearable's camera knows everyday things like keys and glasses. Show it <em>your</em> keys: add an item, then take{" "}
-        {GOOD_ENOUGH} or so photos of it and draw a box around it in each. Photos stay until you delete them.
+        {GOOD_ENOUGH} or so photos of it and draw a box around it in each. Mix close-ups with photos from a step back and
+        from across the room, where the wearable usually sees things. Photos stay until you delete them.
       </p>
 
       {households && !households.length ? (
@@ -145,6 +146,7 @@ function ItemCard({ item, base, api, maxPhotos, onChange }: { item: TrainingItem
       <div className="teach-meter" role="meter" aria-label={`${item.name} photos`} aria-valuemin={0} aria-valuemax={GOOD_ENOUGH} aria-valuenow={Math.min(count, GOOD_ENOUGH)}>
         <span style={{ width: `${Math.min(100, (count / GOOD_ENOUGH) * 100)}%` }} />
       </div>
+      <DistanceSpread samples={item.samples} />
 
       {count > 0 ? (
         <ul className="sample-grid">
@@ -158,7 +160,7 @@ function ItemCard({ item, base, api, maxPhotos, onChange }: { item: TrainingItem
           ))}
         </ul>
       ) : (
-        <p className="hint">No photos yet. Different angles, distances, backgrounds and light all help.</p>
+        <p className="hint">No photos yet. Different distances, angles, backgrounds and light all help.</p>
       )}
 
       <div className="teach-actions">
@@ -315,6 +317,15 @@ function BoxEditor({ item, files, upload, onClose }: { item: string; files: File
             Photo {index + 1} of {files.length}
             {saved > 0 && ` · ${saved} saved`}. Drag from one corner to the other, tight around the {item}.
           </p>
+          <p className="hint box-range" aria-live="polite">
+            {box && !tooSmall ? (
+              <>
+                Counts as <b>{RANGES.find((r) => r.key === rangeOf(box))!.label.toLowerCase()}</b>.
+              </>
+            ) : (
+              " "
+            )}
+          </p>
         </div>
         <button type="button" className="icon-btn" data-close aria-label="Close">
           <Icon name="close" />
@@ -365,6 +376,41 @@ function BoxEditor({ item, files, upload, onClose }: { item: string; files: File
         </span>
       </footer>
     </Dialog>
+  );
+}
+
+/** How the item's photos spread over distance, and which distance to add next. */
+function DistanceSpread({ samples }: { samples: TrainingSample[] }) {
+  const { counts, missing } = spread(samples.map((x) => x.bbox), PER_RANGE);
+  return (
+    <div className="distance">
+      <ul className="distance-ranges" aria-label="Photos by distance">
+        {RANGES.map((r) => {
+          const done = counts[r.key] >= PER_RANGE;
+          return (
+            <li key={r.key} className={done ? "done" : ""}>
+              <span className="distance-count" aria-hidden="true">
+                {done ? <Icon name="check" /> : counts[r.key]}
+              </span>
+              <span>
+                {r.label}
+                <span className="sr-only">
+                  : {counts[r.key]} photo{counts[r.key] === 1 ? "" : "s"}
+                  {done ? ", covered" : ""}
+                </span>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      {samples.length > 0 && (
+        <p className="hint distance-next">
+          {missing
+            ? `Next: ${PER_RANGE - counts[missing.key] === 1 ? "one more" : PER_RANGE - counts[missing.key]} ${missing.label.toLowerCase()}, ${missing.tip}.`
+            : "Good spread of distances."}
+        </p>
+      )}
+    </div>
   );
 }
 

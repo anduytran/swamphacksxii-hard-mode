@@ -1565,6 +1565,15 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
 .chip .i { width: 14px; height: 14px; }
 .teach-meter { height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
 .teach-meter span { display: block; height: 100%; background: var(--secondary); border-radius: 3px; transition: width 0.3s var(--ease); }
+.distance { display: grid; gap: 6px; }
+.distance-ranges { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.875rem; color: var(--muted); }
+.distance-ranges li { display: inline-flex; align-items: center; gap: 6px; }
+.distance-ranges li.done { color: var(--text); }
+.distance-count { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 5px; border-radius: 11px; border: 1px solid var(--line); background: var(--surface); font: 500 0.75rem var(--mono); color: var(--muted); }
+.distance-ranges li.done .distance-count { background: var(--good-bg); border-color: color-mix(in srgb, var(--good) 30%, transparent); color: var(--good-ink); }
+.distance-count .i { width: 13px; height: 13px; }
+.distance-next { margin: 0; }
+.box-range { min-height: 1.4em; }
 .sample-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
 .sample-grid li { position: relative; }
 .sample { position: relative; margin: 0; border-radius: 8px; overflow: hidden; background: var(--surface-3); max-height: 120px; }
