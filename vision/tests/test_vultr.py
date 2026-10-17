@@ -27,12 +27,13 @@ class R:
 class FakeVultr:
     """Vultr API v2 as far as the runner uses it. `stops_after` polls, the server powers itself off."""
 
-    def __init__(self, credit=100.0, pending=0.0, hourly=0.06, existing=(), stops_after=2, fail_create=False, gpu_regions=()):
+    def __init__(self, credit=100.0, pending=0.0, hourly=0.06, existing=(), stops_after=2, fail_create=False, gpu_regions=(),
+                 boots_after=1):
         self.gpu_regions = list(gpu_regions)
         self.credit, self.pending, self.hourly = credit, pending, hourly
         self.instances = {i["id"]: i for i in existing}
         self.created, self.deleted, self.polls = [], [], 0
-        self.stops_after, self.fail_create = stops_after, fail_create
+        self.stops_after, self.fail_create, self.boots_after = stops_after, fail_create, boots_after
 
     def request(self, method, url, headers=None, timeout=None, params=None, json=None):
         assert url.startswith("https://api.vultr.com/v2/") and headers["Authorization"] == "Bearer KEY"
@@ -54,7 +55,9 @@ class FakeVultr:
         if path == "/instances" and method == "POST":
             if self.fail_create:
                 return R(500, {"error": "boom"})
-            inst = {"id": f"i{len(self.created)}", "tags": json["tags"], "status": "pending", "power_status": "running"}
+            # as the real API: "running" when created, then "stopped" and locked while Vultr installs it
+            inst = {"id": f"i{len(self.created)}", "tags": json["tags"], "status": "pending", "power_status": "running",
+                    "server_status": "none"}
             self.created.append(json)
             self.instances[inst["id"]] = inst
             return R(202, {"instance": inst})
@@ -69,7 +72,11 @@ class FakeVultr:
             self.polls += 1
             inst = self.instances[iid]
             if self.polls >= self.stops_after:
-                inst.update(status="active", power_status="stopped")
+                inst.update(status="active", power_status="stopped", server_status="ok")
+            elif self.polls >= self.boots_after:
+                inst.update(status="active", power_status="running", server_status="ok")
+            elif self.polls > 1:  # the first poll still shows the "running" it was created with
+                inst.update(status="active", power_status="stopped", server_status="locked")
             return R(200, {"instance": inst})
         raise AssertionError(f"unexpected {method} {path}")
 
@@ -209,3 +216,13 @@ def test_gpu_unavailable_explains_and_creates_nothing():
 def test_gpu_script_falls_back_to_cpu_without_a_driver():
     script = trainer_script(ENV, gpu=True, ref="master", epochs=50, max_minutes=45)
     assert "nvidia-smi >/dev/null 2>&1 && echo 0 || echo cpu" in script
+
+
+def test_a_server_still_installing_is_not_mistaken_for_one_that_stopped():
+    # Vultr reports a new server as active + stopped while installing it: an early version of the runner
+    # destroyed it right there (seen on a real benchmark run, Oct 17).
+    fake = FakeVultr(boots_after=3, stops_after=6)
+    r, logs = runner(fake, Pipeline()), []
+    r.log = logs.append
+    assert r.run(ENV) == EXIT_NETWORK
+    assert fake.polls >= 6 and "the server stopped" in logs and fake.deleted == ["i0"]

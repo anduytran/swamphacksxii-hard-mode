@@ -145,6 +145,16 @@ class Vultr:
         self.call("DELETE", f"/instances/{instance_id}", ok=(204, 200, 404))
 
 
+def _state(instance: dict) -> str:
+    return "/".join(str(instance.get(k)) for k in ("status", "power_status", "server_status"))
+
+
+def _up(instance: dict | None) -> bool:
+    """Booted and running. While Vultr sets a server up it flips between "running" and "stopped" with
+    server_status "none", "locked" or "installingbooting"; only "ok" means it's ours (seen Oct 17)."""
+    return bool(instance) and instance.get("power_status") == "running" and instance.get("server_status") == "ok"
+
+
 def hourly_price(plan: dict) -> float:
     """Vultr bills by the hour up to the monthly price; 672 hours (28 days) is the conservative divisor."""
     return float(plan.get("hourly_cost") or plan["monthly_cost"] / 672)
@@ -216,12 +226,17 @@ class Runner:
         try:
             instance = self.vultr.create(region, plan["id"], self.vultr.ubuntu(), script)
             self.log(f"created {instance['id']}; training dataset {version}")
+            booted, seen = False, None
             while not stop["now"]:
                 if self.published(version):
                     self.log("model published")
                     break
                 state = self.vultr.instance(instance["id"])
-                if state is None or (state.get("status") == "active" and state.get("power_status") == "stopped"):
+                if state is not None and (now := _state(state)) != seen:
+                    self.log(f"server {now}")
+                    seen = now
+                booted = booted or _up(state)
+                if state is None or (booted and state.get("power_status") == "stopped"):
                     self.log("the server stopped")
                     break
                 if self.clock() - started > max_minutes * 60:
