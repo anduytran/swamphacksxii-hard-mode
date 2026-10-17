@@ -8,9 +8,11 @@ import { Icon } from "../components/Icons";
 import { ApiError, useApi, type Api } from "../lib/api";
 import { useLoadStatus } from "../lib/app";
 import { useResource } from "../lib/resource";
-import type { Household, ModelStatus, TrainingItem, TrainingList, TrainingSample } from "../lib/types";
+import type { BoxSuggestion, Household, ModelStatus, ReviewCandidate, ReviewQueue, TrainingItem, TrainingList, TrainingSample } from "../lib/types";
 import { timeAgo } from "../lib/format";
 import { RANGES, rangeOf, spread, type Box } from "../lib/distance";
+import { usableBox } from "../lib/box";
+import { publishReviewCount } from "../lib/reviewCount";
 import { openPhoto, PHOTO_ACCEPT } from "../lib/photo";
 
 const GOOD_ENOUGH = 10; // photos per item before it's "ready"
@@ -26,10 +28,15 @@ export default function TeachPage() {
   const base = household ? `/api/v1/households/${household.id}/training` : null;
   const list = useResource(base && `training:${household!.id}`, () => api<TrainingList>(`${base}/items`));
   const model = useResource(base && `trainmodel:${household!.id}`, () => api<ModelStatus>(`${base}/model`));
+  const review = useResource(base && `review:${household!.id}`, () => api<ReviewQueue>(`${base}/review`));
   const changed = () => {
     list.reload();
     model.reload();
+    review.reload();
   };
+  useEffect(() => {
+    if (household && review.data) publishReviewCount(household.id, review.data.count);
+  }, [household, review.data]);
   useLoadStatus(homes.loading || list.loading, homes.error ?? list.error, () => (homes.reload(), list.reload()));
 
   return (
@@ -78,6 +85,7 @@ export default function TeachPage() {
         </div>
       ) : (
         <>
+          {review.data && review.data.count > 0 && <NeedsALook queue={review.data} base={base} api={api} onChange={changed} />}
           {model.data && <ModelLine status={model.data} />}
           <div className="teach-grid">
             <FormCard
@@ -97,7 +105,15 @@ export default function TeachPage() {
               }}
             />
             {list.data.items.map((item) => (
-              <ItemCard key={item.id} item={item} base={base} api={api} maxPhotos={list.data!.limits.samples_per_item} onChange={changed} />
+              <ItemCard
+                key={item.id}
+                item={item}
+                base={base}
+                api={api}
+                maxPhotos={list.data!.limits.samples_per_item}
+                needsLook={review.data?.per_item[item.id] ?? 0}
+                onChange={changed}
+              />
             ))}
           </div>
           {!list.data.items.length && <p className="hint">No items yet. Start with the one that goes missing most.</p>}
@@ -115,7 +131,21 @@ export default function TeachPage() {
   );
 }
 
-function ItemCard({ item, base, api, maxPhotos, onChange }: { item: TrainingItem; base: string; api: Api; maxPhotos: number; onChange(): void }) {
+function ItemCard({
+  item,
+  base,
+  api,
+  maxPhotos,
+  needsLook,
+  onChange,
+}: {
+  item: TrainingItem;
+  base: string;
+  api: Api;
+  maxPhotos: number;
+  needsLook: number;
+  onChange(): void;
+}) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [queue, setQueue] = useState<File[]>([]);
   const [confirming, setConfirming] = useState(false);
@@ -148,6 +178,12 @@ function ItemCard({ item, base, api, maxPhotos, onChange }: { item: TrainingItem
         <span style={{ width: `${Math.min(100, (count / GOOD_ENOUGH) * 100)}%` }} />
       </div>
       <DistanceSpread samples={item.samples} />
+      {needsLook > 0 && (
+        <button type="button" className="needs-look-line" onClick={() => document.getElementById("needs-a-look")?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+          <Icon name="sparkle" />
+          {needsLook} photo{needsLook === 1 ? "" : "s"} need{needsLook === 1 ? "s" : ""} a look
+        </button>
+      )}
 
       {count > 0 ? (
         <ul className="sample-grid">
@@ -203,6 +239,7 @@ function ItemCard({ item, base, api, maxPhotos, onChange }: { item: TrainingItem
         <BoxEditor
           item={item.name}
           files={queue}
+          suggest={(photo) => suggestBox(api, `${base}/items/${item.id}/suggest-box`, { image: photo.blob })}
           upload={async (photo, box) => {
             const form = new FormData();
             form.append("image", photo.blob, "photo.jpg");
@@ -254,33 +291,91 @@ async function prepare(file: File): Promise<Prepared> {
 
 const clamp = (v: number) => Math.min(1, Math.max(0, v));
 
-/** One photo at a time: drag a box around the item, then save (or skip) and go to the next. */
-function BoxEditor({ item, files, upload, onClose }: { item: string; files: File[]; upload(photo: Prepared, box: Box): Promise<void>; onClose(): void }) {
+interface Suggested {
+  bbox: Box;
+  note: string;
+}
+
+/** Gemini's box for a photo (an upload, or a memory photo by id), or null: no suggestion is never an error,
+ * the caregiver just draws the box (vision off, the hourly limit, quota errors all land here). */
+async function suggestBox(api: Api, path: string, from: { image: Blob } | { memory_id: string }): Promise<Suggested | null> {
+  const form = new FormData();
+  if ("image" in from) form.append("image", from.image, "photo.jpg");
+  else form.append("memory_id", from.memory_id);
+  try {
+    const s = await api<BoxSuggestion>(path, { method: "POST", body: form });
+    return usableBox(s.bbox) ? { bbox: s.bbox, note: s.note } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** One photo at a time: drag a box around the item, then save (or skip) and go to the next. With `suggest`,
+ * a suggested box is pre-drawn while nobody has started drawing, so Save is one tap; dragging still redraws. */
+function BoxEditor({
+  item,
+  files,
+  upload,
+  suggest,
+  onClose,
+}: {
+  item: string;
+  files: File[];
+  upload(photo: Prepared, box: Box): Promise<void>;
+  suggest?(photo: Prepared): Promise<Suggested | null>;
+  onClose(): void;
+}) {
   const [index, setIndex] = useState(0);
   const [photo, setPhoto] = useState<Prepared | null>(null);
   const [box, setBox] = useState<Box | null>(null);
+  const [suggested, setSuggested] = useState<Suggested | null>(null);
+  const [looking, setLooking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(0);
   const start = useRef<[number, number] | null>(null);
   const frame = useRef<HTMLDivElement>(null);
+  const touched = useRef(false); // the caregiver drew on this photo: a late suggestion mustn't replace it
+  const suggestRef = useRef(suggest);
+  suggestRef.current = suggest;
 
   useEffect(() => {
     let url = "";
+    let gone = false;
     setPhoto(null);
     setBox(null);
+    setSuggested(null);
+    setLooking(false);
     setError("");
+    touched.current = false;
     prepare(files[index]).then(
       (p) => {
         url = p.url;
+        if (gone) return URL.revokeObjectURL(url);
         setPhoto(p);
+        if (!suggestRef.current) return;
+        setLooking(true);
+        suggestRef.current(p).then((s) => {
+          if (gone) return;
+          setLooking(false);
+          if (s && !touched.current) {
+            setSuggested(s);
+            setBox(s.bbox);
+          }
+        });
       },
       () => setError("Couldn't open that photo. JPEG, PNG, WebP and iPhone HEIC photos work; skip this one or try another."),
     );
     return () => {
+      gone = true;
       if (url) URL.revokeObjectURL(url);
     };
   }, [files, index]);
+  const own = (b: Box | null) => {
+    touched.current = true;
+    setSuggested(null);
+    setBox(b);
+  };
 
   const at = (e: ReactPointerEvent): [number, number] => {
     const r = frame.current!.getBoundingClientRect();
@@ -317,8 +412,14 @@ function BoxEditor({ item, files, upload, onClose }: { item: string; files: File
           <h2 id="box-title">Draw a box around the {item}</h2>
           <p className="hint">
             Photo {index + 1} of {files.length}
-            {saved > 0 && ` · ${saved} saved`}. Drag from one corner to the other, tight around the {item}.
+            {saved > 0 && ` · ${saved} saved`}.{" "}
+            {suggested
+              ? `Suggested box: save if it's tight around the ${item}, or drag to draw your own.`
+              : looking
+                ? `Looking for the ${item}… or drag from one corner to the other.`
+                : `Drag from one corner to the other, tight around the ${item}.`}
           </p>
+          {suggested?.note && <p className="hint box-note">Photo note: {suggested.note}</p>}
           <p className="hint box-range" aria-live="polite">
             {box && !tooSmall ? (
               <>
@@ -343,7 +444,7 @@ function BoxEditor({ item, files, upload, onClose }: { item: string; files: File
             onPointerDown={(e) => {
               e.currentTarget.setPointerCapture(e.pointerId);
               start.current = at(e);
-              setBox(null);
+              own(null);
             }}
             onPointerMove={drag}
             onPointerUp={(e) => {
@@ -354,7 +455,7 @@ function BoxEditor({ item, files, upload, onClose }: { item: string; files: File
             <img src={photo.url} alt={`Photo ${index + 1} of the ${item}`} draggable={false} />
             {box && (
               <span
-                className="sample-box drawing"
+                className={suggested ? "sample-box drawing suggested" : "sample-box drawing"}
                 style={{ left: `${box[0] * 100}%`, top: `${box[1] * 100}%`, width: `${box[2] * 100}%`, height: `${box[3] * 100}%` }}
               />
             )}
@@ -370,7 +471,7 @@ function BoxEditor({ item, files, upload, onClose }: { item: string; files: File
       </div>
       {error && <p className="form-msg error">{error}</p>}
       <footer className="box-actions">
-        <button type="button" className="pill quiet" disabled={!photo} onClick={() => setBox([0, 0, 1, 1])}>
+        <button type="button" className="pill quiet" disabled={!photo} onClick={() => own([0, 0, 1, 1])}>
           Item fills the photo
         </button>
         <span className="box-actions-end">
@@ -435,5 +536,152 @@ function ModelLine({ status }: { status: ModelStatus }) {
       <Icon name={status.up_to_date ? "shield" : "sparkle"} />
       {text}
     </p>
+  );
+}
+
+const cardKey = (c: ReviewCandidate) => `${c.item_id}:${c.memory_id}`;
+
+/** "Needs a look": one photo at a time that the camera was unsure about, or that names an item with no box.
+ * Yes and Fix make it a training photo (same limits as Add photos); Not is remembered; Skip is for now only. */
+function NeedsALook({ queue, base, api, onChange }: { queue: ReviewQueue; base: string; api: Api; onChange(): void }) {
+  const [skipped, setSkipped] = useState<string[]>([]);
+  const card = queue.candidates.find((c) => !skipped.includes(cardKey(c)));
+  return (
+    <section id="needs-a-look" className="card review" aria-labelledby="review-title">
+      <header className="teach-head">
+        <div>
+          <h2 id="review-title">Needs a look</h2>
+          <p className="hint">The camera wasn't sure about these. Each answer teaches it.</p>
+        </div>
+        <span className="chip attention">
+          {queue.count} photo{queue.count === 1 ? "" : "s"}
+        </span>
+      </header>
+      {card ? (
+        <ReviewCard key={cardKey(card)} card={card} base={base} api={api} onSkip={() => setSkipped((s) => [...s, cardKey(card)])} onChange={onChange} />
+      ) : (
+        <p className="hint">
+          Skipped for now.{" "}
+          <button type="button" className="pill quiet" onClick={() => setSkipped([])}>
+            Show them again
+          </button>
+        </p>
+      )}
+    </section>
+  );
+}
+
+function ReviewCard({ card, base, api, onSkip, onChange }: { card: ReviewCandidate; base: string; api: Api; onSkip(): void; onChange(): void }) {
+  const [box, setBox] = useState<Box | null>(usableBox(card.bbox) ? card.bbox : null);
+  const [note, setNote] = useState(card.note);
+  const [looking, setLooking] = useState(false);
+  // The photo's real pixel size, read when it loads: the box is drawn over it and sent with Yes / Fix.
+  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
+  const [fixing, setFixing] = useState<File[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const item = card.item_name;
+
+  useEffect(() => {
+    // A memory photo has no detector box: ask Gemini once (the server caches its answer for this card).
+    if (card.kind !== "memory" || card.bbox || card.suggested) return;
+    let gone = false;
+    setLooking(true);
+    suggestBox(api, `${base}/items/${card.item_id}/suggest-box`, { memory_id: card.memory_id }).then((s) => {
+      if (gone) return;
+      setLooking(false);
+      if (s) {
+        setBox(s.bbox);
+        setNote(s.note);
+      }
+    });
+    return () => {
+      gone = true;
+    };
+  }, [api, base, card]);
+
+  const decide = async (decision: "yes" | "fix" | "not", bbox: Box | null = null) => {
+    const body = { item_id: card.item_id, memory_id: card.memory_id, decision, bbox, width: size?.width, height: size?.height };
+    await api(`${base}/review`, { method: "POST", body });
+  };
+  const run = async (decision: "yes" | "not") => {
+    setBusy(true);
+    setError("");
+    try {
+      await decide(decision, decision === "yes" ? box : null);
+      onChange();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : (err as Error).message);
+      setBusy(false);
+    }
+  };
+  const fix = async () => {
+    setError("");
+    try {
+      const res = await fetch(card.image_url);
+      if (!res.ok) throw new Error("Couldn't open that photo; refresh and try again.");
+      const blob = await res.blob();
+      setFixing([new File([blob], "photo.jpg", { type: blob.type || "image/jpeg" })]);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const when = timeAgo(card.captured_at);
+  return (
+    <div className="review-card">
+      <figure className="sample review-photo" style={size ? { aspectRatio: `${size.width} / ${size.height}` } : undefined}>
+        <img
+          src={card.image_url}
+          alt={`Photo that may show the ${item}`}
+          onLoad={(e) => setSize({ width: e.currentTarget.naturalWidth, height: e.currentTarget.naturalHeight })}
+        />
+        {box && (
+          <span
+            className="sample-box suggested"
+            style={{ left: `${box[0] * 100}%`, top: `${box[1] * 100}%`, width: `${box[2] * 100}%`, height: `${box[3] * 100}%` }}
+          />
+        )}
+      </figure>
+      <div className="review-ask">
+        <h3>Is this the {item}?</h3>
+        <p className="hint">
+          {card.kind === "detection"
+            ? `The camera thought so ${when}${card.confidence != null ? `, ${Math.round(card.confidence * 100)}% sure` : ""}.`
+            : `From a memory ${when} that mentions the ${item}.`}{" "}
+          {box ? "Check the box." : looking ? "Looking for it…" : "No box yet: draw one if it's there."}
+        </p>
+        {note && <p className="hint box-note">Photo note: {note}</p>}
+        <div className="review-actions">
+          {box && (
+            <button type="button" className="primary" disabled={busy || !size} onClick={() => run("yes")}>
+              Yes
+            </button>
+          )}
+          <button type="button" className={box ? "pill" : "primary"} disabled={busy} onClick={fix}>
+            {box ? "Fix the box" : "Draw the box"}
+          </button>
+          <button type="button" className="pill" disabled={busy} onClick={() => run("not")}>
+            Not the {item}
+          </button>
+          <button type="button" className="pill quiet" disabled={busy} onClick={onSkip}>
+            Skip
+          </button>
+        </div>
+        {error && <p className="form-msg error">{error}</p>}
+      </div>
+      {fixing && (
+        <BoxEditor
+          item={item}
+          files={fixing}
+          suggest={async () => (box ? { bbox: box, note } : null)}
+          upload={async (_photo, drawn) => {
+            await decide("fix", drawn);
+            onChange();
+          }}
+          onClose={() => setFixing(null)}
+        />
+      )}
+    </div>
   );
 }

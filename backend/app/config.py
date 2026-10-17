@@ -76,6 +76,12 @@ class Settings(BaseSettings):
     # integration contract proposes 720 (30 days) once the team agrees.
     last_seen_retention_hours: int = 72
 
+    # Teach page "Needs a look": observations with detector confidence in [min, max) are
+    # asked about, and Gemini box suggestions are capped per household per hour.
+    review_confidence_min: float = 0.35
+    review_confidence_max: float = 0.6
+    suggest_box_per_hour: int = 30
+
     # Answer "where are my keys?" from a template when one memory clearly has the item and
     # its place, skipping the language model (the wearer then only waits for speech).
     template_answers: bool = True

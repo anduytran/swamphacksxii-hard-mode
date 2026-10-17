@@ -1602,6 +1602,27 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
 .sample-box.drawing { border-width: 3px; background: color-mix(in srgb, var(--gold) 14%, transparent); }
 .box-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; }
 .box-actions-end { display: inline-flex; gap: 10px; }
+.sample-box.suggested { border-style: dashed; }
+.box-note { color: var(--pending-ink); }
+
+/* Teach "Needs a look": one photo at a time the camera was unsure about */
+.review { display: grid; gap: 14px; margin-bottom: 20px; }
+.review-card { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.review .teach-head h2 { text-transform: none; }
+.review-photo { max-height: 60dvh; max-width: 520px; justify-self: start; }
+.review-photo img { object-fit: contain; }
+.review-ask { display: grid; gap: 8px; align-content: start; }
+.review-ask h3 { margin: 0; font: 600 1.25rem/1.3 var(--display); color: var(--heading); }
+.review-ask .hint { margin: 0; }
+.review-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.review-actions .primary { min-height: 44px; min-width: 88px; }
+@media (max-width: 720px) { .review-card { grid-template-columns: minmax(0, 1fr); } }
+.needs-look-line { justify-self: start; display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 4px 10px; border: 1px solid var(--attention-line); border-radius: 999px; background: var(--attention-bg); color: var(--attention-ink); font: 500 0.875rem var(--sans); cursor: pointer; }
+.needs-look-line .i { width: 14px; height: 14px; }
+.nav-badge { display: inline-grid; place-items: center; min-width: 20px; height: 20px; margin-left: auto; padding: 0 6px; border-radius: 10px; background: var(--attention-bg); border: 1px solid var(--attention-line); color: var(--attention-ink); font: 600 0.75rem/1 var(--mono); }
+.sheet-links strong .nav-badge { margin-left: 8px; vertical-align: 1px; }
+.more-tab { position: relative; }
+.nav-dot { position: absolute; top: 6px; right: calc(50% - 16px); width: 8px; height: 8px; border-radius: 50%; background: var(--attention-ink); }
 
 /* ---------- Display settings dialog ---------- */
 .settings-dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--ground); color: var(--text); }

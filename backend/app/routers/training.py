@@ -7,6 +7,9 @@ Dashboard (household members, caregiver token):
     DELETE /api/v1/households/{household_id}/training/items/{item_id}
     POST   /api/v1/households/{household_id}/training/items/{item_id}/samples  multipart image + bbox + width + height
     DELETE /api/v1/households/{household_id}/training/samples/{sample_id}
+    POST   /api/v1/households/{household_id}/training/items/{item_id}/suggest-box  image or memory_id -> Gemini's box
+    GET    /api/v1/households/{household_id}/training/review    "Needs a look": photos the detector is unsure of
+    POST   /api/v1/households/{household_id}/training/review    {item_id, memory_id, decision, bbox?, width?, height?}
 
 Vision pipeline (device token; the device's household):
     GET    /api/v1/training/vocabulary   names + other words, for YOLO-World's set_classes
@@ -26,15 +29,19 @@ Dashboard: GET /api/v1/households/{household_id}/training/model   is the model u
 
 import hashlib
 import json
+import logging
 import math
+from datetime import datetime, timedelta, timezone
+from typing import Literal
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel, Field, field_validator
 
 from .. import signing
 from ..auth import Principal, require_caregiver, require_device
+from ..box_suggest import suggest_box
 from ..config import Settings, get_settings
 from ..db import MemoryDB
 from ..db_training import (
@@ -47,12 +54,14 @@ from ..db_training import (
     TrainedModel,
     TrainingItem,
 )
-from ..deps import get_db
+from ..deps import get_ai, get_db
+from ..review import Candidate, candidates
 from .households import _require_member
 from .memory import ALLOWED_IMAGE_TYPES, MAX_IMAGE_BYTES, _read
 from .observations import _absolute
 
 router = APIRouter(prefix="/api/v1", tags=["training"])
+log = logging.getLogger("lastscene.training")
 
 MAX_ALIASES = 8
 
@@ -230,17 +239,31 @@ async def add_sample(
     await _require_member(db, hid, user)
     await _require_wearable(db, hid)
     box = _parse_bbox(bbox)
-    count = await db.training_item_sample_count(hid, str(item_id))
+    await _require_room(db, hid, str(item_id))
+    if image.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Photos must be JPEG, PNG or WebP")
+    data = await _read(image, MAX_IMAGE_BYTES, "image")
+    sample = await _store_sample(db, hid, str(item_id), data, image.content_type, width, height, box)
+    return _sample_json(request, settings, sample)
+
+
+async def _require_room(db: MemoryDB, household_id: str, item_id: str) -> None:
+    count = await db.training_item_sample_count(household_id, item_id)
     if count is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found")
     if count >= MAX_SAMPLES_PER_ITEM:
         raise HTTPException(status.HTTP_409_CONFLICT, f"An item can have up to {MAX_SAMPLES_PER_ITEM} photos")
-    if image.content_type not in ALLOWED_IMAGE_TYPES:
-        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Photos must be JPEG, PNG or WebP")
-    data = await _read(image, MAX_IMAGE_BYTES, "image")
-    if await db.training_bytes(hid) + len(data) > MAX_TRAINING_BYTES:
+
+
+async def _store_sample(db: MemoryDB, household_id: str, item_id: str, data: bytes, content_type: str,
+                        width: int, height: int, box: list[float]):
+    """Every way a photo becomes a training sample (Add photos, a review answer) ends here."""
+    if await db.training_bytes(household_id) + len(data) > MAX_TRAINING_BYTES:
         raise HTTPException(status.HTTP_409_CONFLICT, "This household's photos are full (100 MB); delete some first")
-    sample = await db.add_training_sample(str(item_id), data, image.content_type, width, height, box)
+    return await db.add_training_sample(item_id, data, content_type, width, height, box)
+
+
+def _sample_json(request: Request, settings: Settings, sample) -> dict:
     return {
         "id": sample.id,
         "bbox": sample.bbox,
@@ -259,6 +282,160 @@ async def delete_sample(
     if not await db.delete_training_sample(str(household_id), str(sample_id)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Photo not found")
     return {"deleted": True}
+
+
+# ---------------------------------------------------------------- suggested boxes and review
+
+
+async def _item(db: MemoryDB, household_id: str, item_id: str) -> TrainingItem:
+    item = next((i for i in await db.training_items(household_id) if i.id == item_id), None)
+    if item is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found")
+    return item
+
+
+async def _memory_photo(db: MemoryDB, household_id: str, memory_id: str) -> tuple[bytes, str]:
+    """A memory photo taken by one of the household's wearables (anyone else's is "not found")."""
+    found = await db.household_memory_image(memory_id, await db.household_device_ids(household_id))
+    if found is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Photo not found")
+    return found
+
+
+async def _suggest(db: MemoryDB, ai, settings: Settings, household_id: str, item: TrainingItem, image: bytes, content_type: str) -> dict:
+    """Gemini's box, or why there isn't one. Never raises: the caregiver can always draw by hand.
+    status: ok (bbox set) | none (item not found in the photo) | off (VISION_PROVIDER isn't gemini)
+            | busy (this household's hourly limit) | failed (Gemini errored, e.g. quota)"""
+    if settings.vision_provider != "gemini":
+        return {"bbox": None, "note": "", "status": "off"}
+    since = datetime.now(timezone.utc) - timedelta(hours=1)
+    if await db.suggest_calls_since(household_id, since) >= settings.suggest_box_per_hour:
+        return {"bbox": None, "note": "", "status": "busy"}
+    await db.log_suggest_call(household_id)
+    try:
+        bbox, note = await suggest_box(ai, image, content_type, item.name, item.aliases)
+    except Exception as exc:  # quota (429), network, a malformed answer: fall back to drawing
+        log.warning("box suggestion failed: %s", type(exc).__name__)
+        return {"bbox": None, "note": "", "status": "failed"}
+    return {"bbox": bbox, "note": note, "status": "ok" if bbox else "none"}
+
+
+@router.post("/households/{household_id}/training/items/{item_id}/suggest-box")
+async def suggest_item_box(
+    household_id: UUID,
+    item_id: UUID,
+    image: UploadFile | None = File(None, description="A JPEG (or PNG/WebP) about to be added"),
+    memory_id: UUID | None = Form(None, description="Or a memory photo from the household's wearable"),
+    user: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+    ai=Depends(get_ai),
+    settings: Settings = Depends(get_settings),
+):
+    """Where Gemini thinks the item is: {bbox: [x, y, w, h] | null, note, status}, for the box editor to pre-draw."""
+    hid = str(household_id)
+    await _require_member(db, hid, user)
+    item = await _item(db, hid, str(item_id))
+    if memory_id is not None:
+        data, content_type = await _memory_photo(db, hid, str(memory_id))
+    elif image is not None:
+        if image.content_type not in ALLOWED_IMAGE_TYPES:
+            raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Photos must be JPEG, PNG or WebP")
+        data, content_type = await _read(image, MAX_IMAGE_BYTES, "image"), image.content_type
+    else:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Send an image or a memory_id")
+    result = await _suggest(db, ai, settings, hid, item, data, content_type)
+    if memory_id is not None and result["status"] in ("ok", "none"):  # the review card won't ask again
+        await db.cache_suggestion(item.id, str(memory_id), result["bbox"], result["note"])
+    return result
+
+
+def _candidate_json(settings: Settings, c: Candidate) -> dict:
+    return {
+        "item_id": c.item.id,
+        "item_name": c.item.name,
+        "memory_id": c.memory_id,
+        "kind": c.kind,
+        "image_url": signing.image_url(settings.image_url_secret, c.memory_id, settings.image_url_ttl_seconds),
+        "captured_at": c.captured_at.isoformat(),
+        "bbox": c.bbox,
+        "confidence": c.confidence,
+        "width": c.width,
+        "height": c.height,
+        "suggested": c.suggested,
+        "note": c.note,
+    }
+
+
+@router.get("/households/{household_id}/training/review")
+async def review_queue(
+    household_id: UUID,
+    limit: int = Query(10, ge=0, le=50),
+    user: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """"Needs a look": photos the detector is unsure of, newest first. `count` and `per_item` cover
+    all of them; `candidates` only the first `limit`. Items that already have the most photos are left out."""
+    hid = str(household_id)
+    await _require_member(db, hid, user)
+    items = [i for i in await db.training_items(hid) if len(i.samples) < MAX_SAMPLES_PER_ITEM]
+    devices = await db.household_device_ids(hid)
+    found: list[Candidate] = []
+    if items and devices:
+        hours = settings.retention_hours
+        found = candidates(
+            items,
+            await db.review_detections(devices, settings.review_confidence_min, settings.review_confidence_max, hours),
+            await db.review_memory_photos(devices, hours),
+            await db.reviews(hid),
+        )
+    per_item: dict[str, int] = {}
+    for c in found:
+        per_item[c.item.id] = per_item.get(c.item.id, 0) + 1
+    return {"count": len(found), "per_item": per_item, "candidates": [_candidate_json(settings, c) for c in found[:limit]]}
+
+
+class ReviewAnswer(BaseModel):
+    item_id: UUID
+    memory_id: UUID
+    decision: Literal["yes", "fix", "not"]
+    bbox: list[float] | None = Field(None, description="[x, y, w, h], 0..1: the box confirmed (yes) or drawn (fix)")
+    width: int | None = Field(None, ge=32, le=8192)
+    height: int | None = Field(None, ge=32, le=8192)
+
+
+@router.post("/households/{household_id}/training/review")
+async def answer_review(
+    household_id: UUID,
+    body: ReviewAnswer,
+    request: Request,
+    user: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Yes / Fix: the photo and its box become a training sample (same limits as Add photos).
+    Not: remembered, so the photo isn't asked about again for that item."""
+    hid, item_id, memory_id = str(household_id), str(body.item_id), str(body.memory_id)
+    await _require_member(db, hid, user)
+    data, content_type = await _memory_photo(db, hid, memory_id)
+    if (done := (await db.reviews(hid)).get((item_id, memory_id))) and done.decision:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This photo was already answered")
+    if body.decision == "not":
+        if await db.training_item_sample_count(hid, item_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found")
+        await db.decide_review(item_id, memory_id, "not", None, None)
+        return {"decision": "not", "sample": None}
+    if body.bbox is None or body.width is None or body.height is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Yes and Fix need the box and the photo's width and height")
+    box = _parse_bbox(json.dumps(body.bbox))
+    await _require_wearable(db, hid)
+    await _require_room(db, hid, item_id)
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "This photo's format can't be used for teaching")
+    sample = await _store_sample(db, hid, item_id, data, content_type, body.width, body.height, box)
+    decision = "yes" if body.decision == "yes" else "fixed"
+    await db.decide_review(item_id, memory_id, decision, box, sample.id)
+    return {"decision": decision, "sample": _sample_json(request, settings, sample)}
 
 
 # ---------------------------------------------------------------- vision pipeline
