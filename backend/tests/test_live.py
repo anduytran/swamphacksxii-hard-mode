@@ -149,3 +149,10 @@ def test_recall_fails_soft_when_search_does(client):  # noqa: F811
 
     client.app_state.ai.embed = broken
     assert client.post("/api/v1/memory/recall", headers=DEVICE, json={"question": "keys?"}).status_code == 503
+
+
+def test_recall_is_rate_limited_per_device(client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr("app.routers.live.RECALLS_PER_HOUR", 2)
+    codes = [client.post("/api/v1/memory/recall", headers=DEVICE, json={"question": "where are my keys?"}).status_code
+             for _ in range(3)]
+    assert codes[:2] == [200, 200] and codes[2] == 429

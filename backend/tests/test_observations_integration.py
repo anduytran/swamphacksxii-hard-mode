@@ -8,6 +8,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
+from urllib.parse import unquote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -131,8 +132,9 @@ def test_observation_lifecycle(c):
     assert [i["label"] for i in c.get("/api/v1/items/last-seen").json()["items"]] == ["keys"]
 
     # Voice answers can use automatic memories.
-    c.post("/api/v1/memory/query", files={"audio": ("q.wav", b"where are my keys", "audio/wav")})
-    assert any("keys" in " ".join(ch.content for ch in m.chunks) for m in c.app.state.ai.answered)
+    resp = c.post("/api/v1/memory/query", files={"audio": ("q.wav", b"where are my keys", "audio/wav")})
+    # Answered from the camera's sighting (by the template when it's clear-cut, else the model).
+    assert resp.status_code == 200 and "keys" in unquote(resp.headers["x-answer"]).lower()
 
 
 def test_household_shares_last_seen_and_dashboard_shows_boxes(c):

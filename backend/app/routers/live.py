@@ -52,6 +52,9 @@ async def live_token(
     }
 
 
+RECALLS_PER_HOUR = 120  # a long live chat looks things up a few times a minute at most
+
+
 class RecallRequest(BaseModel):
     question: str = Field(min_length=1, max_length=500)
 
@@ -59,6 +62,7 @@ class RecallRequest(BaseModel):
 @router.post("/memory/recall")
 async def recall(
     body: RecallRequest,
+    request: Request,
     device: Principal = Depends(require_device),
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
@@ -66,10 +70,16 @@ async def recall(
 ):
     """The memories retrieved for a question, as short text facts for Gemini Live to answer
     from. Search only (one embedding), no language model."""
+    # Each call is a paid embedding: cap it per device (per instance, like the token limit).
+    if wait := request.app.state.live_limit.retry_after(f"recall:{device.sub}", RECALLS_PER_HOUR):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS, "Too many memory lookups; try again soon",
+            headers={"Retry-After": str(max(1, round(wait)))},
+        )
     try:
         memories = await retrieve(db, ai, body.question.strip(), [device.sub], settings.query_lookback_hours)
     except Exception as exc:  # e.g. the embedding call hit Gemini's quota
-        log.warning("Recall failed for %r: %s", body.question, exc)
+        log.warning("Recall failed: %s", type(exc).__name__)  # never the question: it's personal
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Memory search unavailable right now") from exc
     facts = [_note(m).removeprefix("- ") for m in memories]
     return {"question": body.question, "facts": facts, "text": "\n".join(facts) or NOTHING_FOUND}

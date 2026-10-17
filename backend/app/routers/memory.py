@@ -112,12 +112,12 @@ async def _record_query(
     try:
         items = await ai.extract_items(question)
     except Exception:
-        log.exception("Item extraction failed for question %r", question)
+        log.exception("Item extraction failed for a question")  # not the question: it's personal
         items = []
     try:
         query_id = await db.log_query(device_id, question, answer, items[0].name if items else None)
     except Exception:
-        log.exception("Failed to log question %r", question)
+        log.exception("Failed to log a question")
         return
     loc, public = await _locate(geo, db, device_id, "query_logs", query_id, where)
     if public and items:  # someone realised something was missing while at a public place
