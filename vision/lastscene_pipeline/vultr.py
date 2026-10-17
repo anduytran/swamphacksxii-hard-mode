@@ -38,6 +38,8 @@ from lastscene_pipeline.common import Api, PipelineError, load_env_file, run_mai
 
 VULTR = "https://api.vultr.com/v2"
 TAG = "lastscene-trainer"
+# Vultr regions by distance from Gainesville, FL: atl Atlanta, mia Miami, dfw Dallas, ord Chicago, ewr New Jersey.
+NEAR_FLORIDA = ("atl", "mia", "dfw", "ord", "ewr", "lax", "sjc", "sea")
 REPO = "https://github.com/anduytran/swamphacksxii-hard-mode.git"
 PIPELINE_VARS = ("API_URL", "AUTH0_DOMAIN", "AUTH0_AUDIENCE", "DEVICE_CLIENT_ID", "DEVICE_CLIENT_SECRET", "PAIRING_CODE")
 
@@ -94,13 +96,26 @@ class Vultr:
     def trainers(self) -> list[dict]:
         return [i for i in self.call("GET", "/instances", params={"tag": TAG, "per_page": 100})["instances"] if TAG in (i.get("tags") or [])]
 
-    def cheapest_plan(self, gpu: bool, region: str) -> dict:
+    def cheapest_plan(self, gpu: bool, region: str) -> tuple[dict, str]:
+        """The cheapest fitting plan and the region to rent it in. For --gpu the region is whichever
+        offers one, nearest Florida first (GPUs aren't in every region, or on every account)."""
         plans = self.call("GET", "/plans", params={"type": "vcg" if gpu else "all", "per_page": 500})["plans"]
-        fit = [p for p in plans if region in (p.get("locations") or []) and (
-            p.get("type") == "vcg" if gpu else (p.get("vcpu_count", 0) >= 4 and p.get("ram", 0) >= 8192 and p.get("type") != "vcg"))]
-        if not fit:
-            raise PipelineError(EXIT_CONFIG, f"no {'GPU' if gpu else '4 vCPU / 8 GB'} plan available in {region}")
-        return min(fit, key=hourly_price)
+        fit = [p for p in plans if p.get("type") == "vcg"] if gpu else [
+            p for p in plans if p.get("vcpu_count", 0) >= 4 and p.get("ram", 0) >= 8192 and p.get("type") != "vcg"]
+        if not gpu:
+            here = [p for p in fit if region in (p.get("locations") or [])]
+            if not here:
+                raise PipelineError(EXIT_CONFIG, f"no 4 vCPU / 8 GB plan available in {region}")
+            return min(here, key=hourly_price), region
+        order = [region, *[r for r in NEAR_FLORIDA if r != region]]
+        for r in order + sorted({loc for p in fit for loc in p.get("locations") or []} - set(order)):
+            here = [p for p in fit if r in (p.get("locations") or [])]
+            if here:
+                return min(here, key=hourly_price), r
+        cheapest = min(fit, key=hourly_price) if fit else None
+        raise PipelineError(EXIT_CONFIG, "no region offers a GPU to this account" + (
+            f" (the cheapest, {cheapest['id']}, is ${cheapest['monthly_cost']:,.2f}/month: above a $1,000/month account limit, "
+            "Vultr hides it until support raises the limit)" if cheapest else "") + "; train on CPU (drop --gpu)")
 
     def ubuntu(self) -> int:
         oses = self.call("GET", "/os", params={"per_page": 500})["os"]
@@ -139,7 +154,7 @@ def trainer_script(env, gpu: bool, ref: str, epochs: int, max_minutes: int) -> s
     """cloud-init: install, sync, train, publish, then power off whatever happens (the runner destroys it)."""
     creds = "\n".join(f"{k}={env[k]}" for k in PIPELINE_VARS if env.get(k))
     torch = "pip install torch torchvision" if gpu else "pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu"
-    device = "0" if gpu else "cpu"
+    device = "$(nvidia-smi >/dev/null 2>&1 && echo 0 || echo cpu)" if gpu else "cpu"  # no driver -> CPU, not a failed run
     return f"""#!/bin/bash
 set -euo pipefail
 exec > /var/log/lastscene-trainer.log 2>&1
@@ -188,10 +203,10 @@ class Runner:
             return EXIT_NOTHING
         if self.vultr.trainers():
             raise PipelineError(EXIT_CONFIG, "refusing: a trainer server already exists; run `cleanup` first")
-        plan = self.vultr.cheapest_plan(gpu, region)
+        plan, region = self.vultr.cheapest_plan(gpu, region)
         credit = self.vultr.credit_left()
         worst = self.guard.check_cost(hourly_price(plan), max_minutes, credit)
-        self.log(f"plan {plan['id']} at ${hourly_price(plan):.3f}/h: worst case ${worst:.2f}, credit ${credit:.2f}")
+        self.log(f"plan {plan['id']} in {region} at ${hourly_price(plan):.3f}/h: worst case ${worst:.2f}, credit ${credit:.2f}")
 
         script = trainer_script(env, gpu, ref, epochs, max_minutes)
         instance = None
@@ -257,7 +272,7 @@ def main():
     p.add_argument("--env-file", help="the pipeline's device credentials (KEY=VALUE, never commit)")
     p.add_argument("--vultr-env", default=str(Path.home() / ".lastscene" / "vultr.env"))
     p.add_argument("--gpu", action="store_true", help="a GPU plan instead of a 4 vCPU / 8 GB CPU one")
-    p.add_argument("--region", default="atl", help="Vultr region id (atl = Atlanta)")
+    p.add_argument("--region", default="atl", help="Vultr region id (atl = Atlanta); with --gpu, the nearest region offering one")
     p.add_argument("--ref", default="master", help="git branch the server trains from")
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--max-minutes", type=int, default=45)

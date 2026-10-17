@@ -27,7 +27,8 @@ class R:
 class FakeVultr:
     """Vultr API v2 as far as the runner uses it. `stops_after` polls, the server powers itself off."""
 
-    def __init__(self, credit=100.0, pending=0.0, hourly=0.06, existing=(), stops_after=2, fail_create=False):
+    def __init__(self, credit=100.0, pending=0.0, hourly=0.06, existing=(), stops_after=2, fail_create=False, gpu_regions=()):
+        self.gpu_regions = list(gpu_regions)
         self.credit, self.pending, self.hourly = credit, pending, hourly
         self.instances = {i["id"]: i for i in existing}
         self.created, self.deleted, self.polls = [], [], 0
@@ -45,6 +46,8 @@ class FakeVultr:
                 {"id": "vc2-1c-1gb", "type": "vc2", "vcpu_count": 1, "ram": 1024, "monthly_cost": 5, "locations": ["atl"]},
                 {"id": "vhp-4c-8gb", "type": "vhp", "vcpu_count": 4, "ram": 8192, "hourly_cost": self.hourly, "monthly_cost": 48, "locations": ["atl"]},
                 {"id": "vhp-8c-16gb", "type": "vhp", "vcpu_count": 8, "ram": 16384, "hourly_cost": self.hourly * 2, "monthly_cost": 96, "locations": ["atl"]},
+                {"id": "vcg-l40s-16c", "type": "vcg", "vcpu_count": 16, "ram": 184320, "hourly_cost": 1.671, "monthly_cost": 1122.91,
+                 "locations": self.gpu_regions},
             ]})
         if path == "/os":
             return R(200, {"os": [{"id": 2284, "name": "Ubuntu 24.04 LTS x64"}]})
@@ -185,3 +188,24 @@ def test_server_script_powers_off_whatever_happens_and_never_holds_the_vultr_key
     assert "DEVICE_CLIENT_SECRET=s3cret" in script  # the device secret is shredded at the end
     assert "--device cpu" in script and "whl/cpu" in script
     base64.b64encode(script.encode())  # what Vultr receives
+
+
+def test_gpu_picks_the_nearest_region_that_has_one():
+    fake = FakeVultr(gpu_regions=["ewr", "mia"])
+    plan, region = Vultr("KEY", session=fake).cheapest_plan(True, "atl")
+    assert plan["id"] == "vcg-l40s-16c" and region == "mia"  # Miami before New Jersey
+    assert runner(fake, Pipeline(publishes=True)).run(ENV, gpu=True) == EXIT_OK
+    assert fake.created[0]["region"] == "mia" and fake.deleted == ["i0"]
+
+
+def test_gpu_unavailable_explains_and_creates_nothing():
+    fake = FakeVultr(gpu_regions=[])
+    with pytest.raises(PipelineError) as e:
+        runner(fake, Pipeline()).run(ENV, gpu=True)
+    assert "no region offers a GPU" in str(e.value) and "$1,122.91/month" in str(e.value)
+    assert fake.created == []
+
+
+def test_gpu_script_falls_back_to_cpu_without_a_driver():
+    script = trainer_script(ENV, gpu=True, ref="master", epochs=50, max_minutes=45)
+    assert "nvidia-smi >/dev/null 2>&1 && echo 0 || echo cpu" in script
