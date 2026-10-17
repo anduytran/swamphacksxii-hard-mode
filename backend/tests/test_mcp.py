@@ -3,6 +3,7 @@ process, against the ASGI app) and by plain JSON-RPC posts. Fake data only."""
 
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -65,7 +66,7 @@ class MCPFakeDB(FakeDB):
 
     # MCP keys and the rate counter
     async def create_mcp_key(self, household_id, sub, label):
-        key_id, key = f"k{len(self.keys)}", f"lsk_test{len(self.keys)}xyz"
+        key_id, key = str(uuid.uuid4()), f"lsk_test{len(self.keys)}xyz"
         self.keys[key_id] = {"household_id": household_id, "sub": sub, "label": label, "hash": mcp_key_hash(key),
                              "hint": key[:8], "created_at": datetime.now(timezone.utc), "last_used_at": None, "revoked": False}
         return key_id, key

@@ -346,6 +346,15 @@ class _MCPResponse(Response):
 
 # POST only: stateless JSON mode has no sessions to DELETE, and a GET would hold an SSE
 # stream (and a serverless function) open for nothing.
+@router.api_route("/mcp", methods=["GET", "DELETE"], include_in_schema=False)
+async def mcp_other_methods():
+    """No server-to-client stream and no sessions (stateless): the spec's answer is 405. Declared
+    here so the built dashboard's static files (mounted at /) don't answer GET /mcp with 404."""
+    from fastapi.responses import Response
+
+    return Response(status_code=405, headers={"Allow": "POST"})
+
+
 @router.post("/mcp", include_in_schema=False)
 async def mcp_endpoint(
     request: Request,
