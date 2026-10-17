@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # Wi-Fi positioning: the wearable sends nearby access points; the server asks Google's
     # Geolocation API where that is. Empty = positions only from the device (or none).
     google_geolocation_api_key: str = ""
+    # Spend guard: at most this many Google calls per calendar month (UTC), counted in the
+    # database before each call; past it, positions come only from the device. Keep it under
+    # Google's free monthly allowance. 0 turns Wi-Fi positioning off.
+    geolocation_monthly_limit: int = 5000
+    # Answers are cached in the database by access-point set, so a familiar spot costs nothing.
+    geolocation_cache_days: int = 30
 
     # Vision pipeline observations (POST /api/v1/observations)
     min_detection_confidence: float = 0.35  # detections below this are dropped

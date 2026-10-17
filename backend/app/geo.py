@@ -69,26 +69,54 @@ def distance_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return 2 * r * math.asin(math.sqrt(a))
 
 
+def usage_month(now: datetime | None = None) -> str:
+    return (now or datetime.now(timezone.utc)).strftime("%Y-%m")
+
+
 class Geolocator:
-    """Wi-Fi scan -> coordinates via the Google Geolocation API (cached per process)."""
+    """Wi-Fi scan -> coordinates via the Google Geolocation API, behind a spend guard.
+
+    Every call is first counted against GEOLOCATION_MONTHLY_LIMIT in the database; once the
+    month's budget is used (or the database can't be reached), no call is made and the memory
+    falls back to the device's own position. Answers are cached in the database, so a spot
+    the wearer visits often is looked up once.
+    """
 
     URL = "https://www.googleapis.com/geolocation/v1/geolocate"
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, db=None):
         self.key = settings.google_geolocation_api_key
+        self.limit = settings.geolocation_monthly_limit
+        self.cache_days = settings.geolocation_cache_days
+        self.db = db  # without one there is no budget to check, so no call is ever made
         self._cache: dict[str, Location] = {}
+        self._warned_month: str | None = None
 
     @property
     def enabled(self) -> bool:
-        return bool(self.key)
+        return bool(self.key) and self.limit > 0
 
     async def locate(self, aps: list[AccessPoint]) -> Location | None:
-        if not self.enabled or len(aps) < MIN_ACCESS_POINTS:
+        if not self.enabled or self.db is None or len(aps) < MIN_ACCESS_POINTS:
             return None
         # The three strongest access points identify a spot well enough to reuse an answer.
         cache_key = hashlib.sha256("|".join(sorted(a.bssid for a in aps[:3])).encode()).hexdigest()
         if cached := self._cache.get(cache_key):
             return cached
+        month = usage_month()
+        try:
+            if hit := await self.db.cached_position(cache_key, self.cache_days):
+                loc = Location(*hit, "wifi")
+                self._cache[cache_key] = loc
+                return loc
+            if not await self.db.reserve_geolocation_call(month, self.limit):
+                if self._warned_month != month:
+                    log.warning("Geolocation budget for %s used up (%d calls); Wi-Fi positioning paused", month, self.limit)
+                    self._warned_month = month
+                return None
+        except Exception:
+            log.exception("Geolocation spend guard unavailable; skipping the call")
+            return None  # fail closed: no budget check, no call
         body = {
             "considerIp": False,  # the server's IP says nothing about the wearer
             "wifiAccessPoints": [
@@ -108,6 +136,10 @@ class Geolocator:
         data = resp.json()
         loc = Location(data["location"]["lat"], data["location"]["lng"], data.get("accuracy"), "wifi")
         self._cache[cache_key] = loc
+        try:
+            await self.db.cache_position(cache_key, loc.lat, loc.lng, loc.accuracy_m)
+        except Exception:
+            log.exception("Could not cache a geolocation answer")
         return loc
 
 

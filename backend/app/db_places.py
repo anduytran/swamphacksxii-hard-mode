@@ -154,6 +154,67 @@ class PlacesMixin:
             """
         )
 
+        # Google Geolocation spend guard: answers cached by access-point set, calls counted per month.
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS geolocation_cache (
+                key         text PRIMARY KEY,  -- sha256 of the strongest BSSIDs, never the BSSIDs
+                lat         double precision NOT NULL,
+                lng         double precision NOT NULL,
+                accuracy_m  real,
+                cached_at   timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS geolocation_usage (
+                month  text PRIMARY KEY,  -- YYYY-MM, UTC
+                calls  integer NOT NULL DEFAULT 0
+            )
+            """
+        )
+
+    # ---------------------------------------------------------------- geolocation spend guard
+
+    async def cached_position(self, key: str, max_age_days: int) -> tuple[float, float, float | None] | None:
+        row = await self.pool.fetchrow(
+            "SELECT lat, lng, accuracy_m FROM geolocation_cache WHERE key = $1 AND cached_at > now() - make_interval(days => $2)",
+            key,
+            max_age_days,
+        )
+        return (row["lat"], row["lng"], row["accuracy_m"]) if row else None
+
+    async def cache_position(self, key: str, lat: float, lng: float, accuracy_m: float | None) -> None:
+        await self.pool.execute(
+            "INSERT INTO geolocation_cache (key, lat, lng, accuracy_m) VALUES ($1, $2, $3, $4) "
+            "ON CONFLICT (key) DO UPDATE SET lat = EXCLUDED.lat, lng = EXCLUDED.lng, accuracy_m = EXCLUDED.accuracy_m, cached_at = now()",
+            key, lat, lng, accuracy_m,
+        )
+
+    async def reserve_geolocation_call(self, month: str, limit: int) -> bool:
+        """Count one call against the month's budget; False (nothing counted) once it is spent.
+        Atomic, so concurrent requests on different serverless instances can't overshoot."""
+        if limit <= 0:
+            return False
+        calls = await self.pool.fetchval(
+            "INSERT INTO geolocation_usage (month, calls) VALUES ($1, 1) "
+            "ON CONFLICT (month) DO UPDATE SET calls = geolocation_usage.calls + 1 "
+            "WHERE geolocation_usage.calls < $2 RETURNING calls",
+            month,
+            limit,
+        )
+        return calls is not None
+
+    async def geolocation_calls(self, month: str) -> int:
+        return await self.pool.fetchval("SELECT calls FROM geolocation_usage WHERE month = $1", month) or 0
+
+    async def purge_geolocation_cache(self, max_age_days: int) -> int:
+        result = await self.pool.execute(
+            "DELETE FROM geolocation_cache WHERE cached_at <= now() - make_interval(days => $1)", max_age_days
+        )
+        return int(result.split()[-1])
+
     # ---------------------------------------------------------------- households
 
     async def households_for(self, user_sub: str) -> list[Household]:

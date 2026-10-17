@@ -29,4 +29,10 @@ async def purge(
     """
     deleted = await db.delete_older_than(settings.retention_hours)
     last_seen = await db.purge_last_seen(settings.last_seen_retention_hours)
-    return {"deleted": deleted, "retention_hours": settings.retention_hours, "last_seen_deleted": last_seen}
+    geo_cache = await db.purge_geolocation_cache(settings.geolocation_cache_days)
+    return {
+        "deleted": deleted,
+        "retention_hours": settings.retention_hours,
+        "last_seen_deleted": last_seen,
+        "geolocation_cache_deleted": geo_cache,
+    }

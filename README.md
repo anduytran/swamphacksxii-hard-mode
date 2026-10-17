@@ -108,7 +108,7 @@ Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, 
 | `GET /api/v1/public/lost-map` | none | anonymous ~100 m cells (k ≥ 3 households) |
 | `GET /api/v1/images/{id}?exp=…&sig=…` | signed link from the endpoints above (15 min) | the photo (`ls-…` ids are last-seen frames) |
 | `GET /api/v1/admin/purge` | `Authorization: Bearer $CRON_SECRET` | `{deleted, retention_hours, last_seen_deleted}` (Vercel Cron, daily 03:15 UTC) |
-| `GET /healthz` | none | `{ok, missing_settings, wifi_positioning}` (whether the Geolocation key is set, never its value) |
+| `GET /healthz` | none | `{ok, missing_settings, wifi_positioning, geolocation_budget}`: whether the Geolocation key is set (never its value) and this month's calls against the cap |
 | `GET /config.json` | none | public Auth0 values for the dashboard |
 
 Queries only search the calling device's own memories from the last 72h (top 3 by cosine distance).
@@ -217,6 +217,8 @@ LastScene is usually set up by a family member **for** the person who wears it.
 3. **Invite someone** gives a one-use code (72 h) that family members enter under **Join a household**.
 
 **Positions.** The Pi Zero 2 W has no GPS. With `LOCATION_SOURCE=wifi` it sends the access points it can hear with each memory and question; the server resolves them with Google's Geolocation API (`GOOGLE_GEOLOCATION_API_KEY`) and stores only the resulting coordinates, never the scan. `LOCATION_SOURCE=fixed` sends `HOME_LAT`/`HOME_LNG` instead (also used as a fallback).
+
+**Staying inside Google's free tier.** Every Geolocation call is counted in the database *before* it is made, against `GEOLOCATION_MONTHLY_LIMIT` (default 5,000 per calendar month, UTC). The counter is atomic, so parallel serverless requests can't overshoot it. Once the month is used up, or if the database can't be checked, no call is made and memories fall back to the device's own position. Answers are cached in the database by access-point set for `GEOLOCATION_CACHE_DAYS` (30), so places the wearer visits often cost nothing after the first lookup. `/healthz` shows `geolocation_budget: {month, limit, used}`. For a second, Google-side limit, cap the Geolocation API's requests per day under *APIs & Services → Geolocation API → Quotas* in Google Cloud.
 
 **Places** are built automatically: each position joins the household's nearest place (within its radius or the fix's accuracy) or starts a new one. The most-visited place is labelled Home until someone names places. Indoors, rooms still come from the spoken words and the photo (the **House** floor plan); GPS-level places drive **Map → Our places**.
 
