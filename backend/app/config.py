@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     # Answers are cached in the database by access-point set, so a familiar spot costs nothing.
     geolocation_cache_days: int = 30
 
+    # Name public places ("Starbucks, Reitz Union") with Gemini's Grounding with Google Maps.
+    # Off by default: past 5,000 free requests a month it is billed. Only public places are
+    # sent, in the background after a memory is located, at most MAPS_DAILY_LIMIT calls a day
+    # across the app (50 x 31 stays under the free 5,000), and each answer is cached.
+    maps_grounding: bool = False
+    maps_daily_limit: int = 50
+    maps_cache_days: int = 180
+
     # Vision pipeline observations (POST /api/v1/observations)
     min_detection_confidence: float = 0.35  # detections below this are dropped
     maybe_confidence: float = 0.5  # below this, answers and the dashboard say "maybe"

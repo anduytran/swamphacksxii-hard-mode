@@ -123,6 +123,64 @@ class GeminiAI:
         return pcm_to_wav(pcm)
 
 
+    async def name_place(self, lat: float, lng: float) -> dict | None:
+        """Grounding with Google Maps (Interactions API): the place at lat/lng, as
+        {"name": "Starbucks, Reitz Union", "sources": [{"title", "url"}]}, or None.
+
+        English prompts only (a limit of the tool). store=False: nothing kept server-side."""
+        interaction = await self.client.aio.interactions.create(
+            model=self.s.gemini_model,
+            input=PLACE_NAME_PROMPT,
+            tools=[{"type": "google_maps", "latitude": lat, "longitude": lng}],
+            store=False,
+        )
+        return parse_place_name(interaction)
+
+
+PLACE_NAME_PROMPT = (
+    "What public place is at the user's location? Reply with only its name and, if it is "
+    'inside a larger building or campus, that too, like "Starbucks, Reitz Union". '
+    "If you can't tell, reply with nothing."
+)
+
+
+def _get(obj, key):
+    return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+
+def _is_link(url) -> bool:
+    # The dashboard links these; never pass on a javascript: or other non-web URL.
+    return isinstance(url, str) and url.startswith("https://")
+
+
+def parse_place_name(interaction) -> dict | None:
+    """The answer text and its Google Maps sources (place citations, else the tool's places).
+
+    Google's terms require showing these sources with the name, so no sources, no name."""
+    text, cited, places = "", [], []
+    for step in _get(interaction, "steps") or []:
+        kind = _get(step, "type")
+        if kind == "model_output":
+            for content in _get(step, "content") or []:
+                if _get(content, "type") != "text":
+                    continue
+                text += _get(content, "text") or ""
+                for a in _get(content, "annotations") or []:
+                    if _get(a, "type") == "place_citation" and _is_link(_get(a, "url")):
+                        cited.append({"title": _get(a, "name") or "Google Maps", "url": _get(a, "url")})
+        elif kind == "google_maps_result":
+            for result in _get(step, "result") or []:
+                for p in _get(result, "places") or []:
+                    if _is_link(_get(p, "url")):
+                        places.append({"title": _get(p, "name") or "Google Maps", "url": _get(p, "url")})
+    sources = cited or places
+    name = " ".join((text or _get(interaction, "output_text") or "").split()).strip(' ."')
+    if not name or not sources or len(name) > 120:
+        return None
+    unique = list({s["url"]: s for s in sources}.values())[:3]
+    return {"name": name, "sources": unique}
+
+
 def pcm_to_wav(pcm: bytes, rate: int = TTS_SAMPLE_RATE) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:

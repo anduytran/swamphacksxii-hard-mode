@@ -6,12 +6,13 @@ import DeckGL from "@deck.gl/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DataTable } from "../components/Charts";
 import { EmptyState } from "../components/bits";
+import { MapsNote, MapsPlace } from "../components/MapsPlace";
 import { useApi } from "../lib/api";
 import { useLoadStatus } from "../lib/app";
 import { capitalize, timeAgo } from "../lib/format";
 import { basemap, fitView, GEO_TOOLTIP_STYLE, MAP_COLORS } from "../lib/mapLayers";
 import { useResource } from "../lib/resource";
-import type { HouseMap, MapItem, PlacesResponse, Room } from "../lib/types";
+import type { HouseMap, MapItem, PlaceName, PlacesResponse, Room } from "../lib/types";
 import { useSize } from "../lib/useSize";
 
 type Mode = "house" | "places";
@@ -93,6 +94,7 @@ export default function MapPage() {
               <i className="dot dot-memory" />A memory
             </span>
           </div>
+          <NamedPlaces data={places.data} />
           <p className="hint places-hint">
             Places are found automatically from the wearable's Wi-Fi position. Name them and choose which are public on the{" "}
             <a href="#/household">Household</a> page.
@@ -309,6 +311,27 @@ function houseTooltip({ object, layer }: { object?: unknown; layer?: { id: strin
 }
 
 // ---------- The household's places on a real map ----------
+
+/** Public places Google Maps named, listed under the map: map tooltips are plain text, so
+ * they can't carry the linked sources Google requires next to each name. */
+export function NamedPlaces({ data }: { data?: PlacesResponse }) {
+  const named = new Map<string, PlaceName>();
+  for (const m of data?.memories ?? []) if (m.place_name) named.set(m.place_name.name, m.place_name);
+  if (!named.size) return null;
+  return (
+    <div className="named-places">
+      <h3>Public places visited</h3>
+      <ul>
+        {[...named.values()].map((p) => (
+          <li key={p.name}>
+            <MapsPlace place={p} />
+          </li>
+        ))}
+      </ul>
+      <MapsNote />
+    </div>
+  );
+}
 
 type PlacePoint = PlacesResponse["households"][number]["places"][number] & { household: string };
 type MemoryPoint = PlacesResponse["memories"][number];

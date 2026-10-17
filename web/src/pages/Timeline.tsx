@@ -1,5 +1,6 @@
 // Timeline: every memory in the last 24 hours, newest first.
 import { AutoChips, EmptyState, PlaceChip, repeat, Saw, SkeletonScene } from "../components/bits";
+import { MapsNote, MapsPlace } from "../components/MapsPlace";
 import { Photo } from "../components/Photo";
 import { useApi } from "../lib/api";
 import { useLoadStatus } from "../lib/app";
@@ -36,11 +37,12 @@ export default function TimelinePage() {
           entries.map((e) => <Scene key={e.id} entry={e} />)
         )}
       </ol>
+      {entries?.some((e) => e.place_name) && <MapsNote />}
     </section>
   );
 }
 
-function Scene({ entry: e }: { entry: HistoryEntry }) {
+export function Scene({ entry: e }: { entry: HistoryEntry }) {
   const auto = e.source === "auto";
   return (
     <li className="scene">
@@ -58,6 +60,11 @@ function Scene({ entry: e }: { entry: HistoryEntry }) {
         />
         <div className="scene-text">
           <p className="quote">{e.transcript ? `“${e.transcript}”` : capitalize(e.summary)}</p>
+          {e.place_name && (
+            <p className="maps-line">
+              At <MapsPlace place={e.place_name} />
+            </p>
+          )}
           <Saw scene={e.scene} />
           <div className="chips">
             {(e.items ?? []).map((i) => (

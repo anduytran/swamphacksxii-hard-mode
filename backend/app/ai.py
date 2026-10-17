@@ -364,3 +364,13 @@ class AIServices:
 
     async def caregiver_summary(self, facts: str) -> str | None:
         return await self._generate(SUMMARY_SYSTEM_PROMPT, facts)
+
+    async def name_place(self, lat: float, lng: float) -> dict | None:
+        """The public place at lat/lng from Grounding with Google Maps (Gemini only):
+        {"name", "sources": [{"title", "url"}]} or None. Call it through
+        maps_names.name_memory_place, which adds the opt-in, the daily cap and the cache.
+
+        Dashboard only. Spoken answers keep the household's own place wording: Google
+        requires the name to be shown with its linked sources and "Google Maps", which a
+        speaker can't do."""
+        return await self.gemini.name_place(lat, lng)

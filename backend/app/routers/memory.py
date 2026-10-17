@@ -23,6 +23,7 @@ from ..db import MemoryDB
 from ..deps import get_ai, get_db, get_geo
 from ..geo import Geolocator, locate_and_record, record_public, resolve_location
 from ..intent import classify, strip_wake_phrase
+from ..maps_names import name_memory_place
 from ..pipeline import ingest_image, ingest_speech, retrieve
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
@@ -93,12 +94,14 @@ async def _locate(geo: Geolocator, db: MemoryDB, device_id: str, table: str, row
 
 async def _enrich_memory(
     db: MemoryDB, ai: AIServices, geo: Geolocator, device_id: str, memory_id: str,
-    transcript: str, image: bytes, image_type: str, where: Whereabouts,
+    transcript: str, image: bytes, image_type: str, where: Whereabouts, settings: Settings | None = None,
 ) -> None:
     items = await ingest_image(db, ai, memory_id, transcript, image, image_type)
     loc, public = await _locate(geo, db, device_id, "memory_logs", memory_id, where)
     if public:  # an item left at a public place, in a household that shares
         await record_public(db, device_id, loc, "left", [i.name for i in items])
+    if loc is not None:  # names it only if the place is public and MAPS_GROUNDING is on
+        await name_memory_place(db, ai, settings or get_settings(), memory_id)
 
 
 async def _record_query(
@@ -132,7 +135,7 @@ async def _save_memory(
     image_type = image_content_type if image_content_type in ALLOWED_IMAGE_TYPES else "image/jpeg"
     record = await db.insert(device_id, transcript, image_bytes, image_type)
     await ingest_speech(db, ai, record.id, transcript)
-    enrich_args = (db, ai, geo, device_id, record.id, transcript, image_bytes, image_type, where)
+    enrich_args = (db, ai, geo, device_id, record.id, transcript, image_bytes, image_type, where, settings)
     if settings.enrich_in_background:
         background.add_task(_enrich_memory, *enrich_args)
     else:

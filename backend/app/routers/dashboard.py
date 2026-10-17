@@ -43,6 +43,7 @@ async def history(
     for s in await db.item_sightings(hours, devices):
         items_by_memory.setdefault(s.memory_id, []).append({"name": s.name, "location": s.location})
     detections = await _detections(db, [r.id for r in records if r.source == "auto"], settings)
+    place_names = await _place_names(db, [r.id for r in records])
     return [
         {
             "id": r.id,
@@ -56,9 +57,22 @@ async def history(
             "detections": detections.get(r.id, []),
             "image_url": _image_url(settings, r.id) if r.has_image else None,
             "items": items_by_memory.get(r.id, []),
+            # Public place name from Google Maps: {"name", "sources": [{"title", "url"}]}.
+            # The dashboard must show the sources and "Google Maps" right after the name.
+            "place_name": place_names.get(r.id),
         }
         for r in records
     ]
+
+
+async def _place_names(db: MemoryDB, memory_ids: list[str]) -> dict[str, dict]:
+    if not memory_ids or not hasattr(db, "place_names_for"):
+        return {}
+    try:
+        return await db.place_names_for(memory_ids)
+    except Exception:
+        log.exception("Could not read place names")
+        return {}
 
 
 AUTO_PREFIX = "Seen automatically: "
@@ -396,11 +410,13 @@ async def our_places(
             }
         )
     memories = await db.located_memories(await db.device_ids_for(caregiver.sub), settings.retention_hours)
+    place_names = await _place_names(db, [m["id"] for m in memories])
     return {
         "households": households,
         "memories": [
             {"lat": m["lat"], "lng": m["lng"], "accuracy_m": m["accuracy_m"], "place_id": m["place_id"],
-             "items": m["items"], "transcript": m["transcript"], "timestamp": m["created_at"].isoformat()}
+             "items": m["items"], "transcript": m["transcript"], "timestamp": m["created_at"].isoformat(),
+             "place_name": place_names.get(m["id"])}
             for m in memories
         ],
     }
