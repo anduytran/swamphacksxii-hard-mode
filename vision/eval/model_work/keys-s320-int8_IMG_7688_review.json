@@ -1,0 +1,291 @@
+{
+  "frames": [
+    {
+      "frame_ms": 0.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 500.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 1000.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 1501.6666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 2001.666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 2501.666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 3001.666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 3501.666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 4003.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 4503.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 5003.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 5503.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 6003.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 6505.000000000001,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 7005.000000000001,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 7505.000000000001,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 8005.000000000001,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 8506.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 9006.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 9506.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 10006.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 10506.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 11008.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 11508.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 12008.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 12491.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 12991.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 13493.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 13993.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 14493.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 14993.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 15493.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 15995.000000000002,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 16495.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 16995.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 17495.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 17995.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 18496.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 18996.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 19496.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 19996.66666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 20496.66666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 20998.333333333336,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 21498.333333333336,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 21998.333333333336,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 22498.333333333336,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 22998.333333333336,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 23500.0,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 24000.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 24500.0,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 25000.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 25501.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 26001.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 26501.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 27001.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 27501.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 28003.333333333332,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 28503.333333333332,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 29003.333333333332,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 29503.333333333332,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 30003.333333333332,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 30505.000000000004,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 31005.000000000004,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 31505.000000000004,
+      "proposals": 0
+    }
+  ],
+  "candidates": [
+    {
+      "id": 0,
+      "frame_ms": 23500.0,
+      "box": [
+        317,
+        63,
+        599,
+        161
+      ],
+      "confidence": 0.07234030961990356,
+      "review": "non_key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 1,
+      "frame_ms": 24500.0,
+      "box": [
+        317,
+        78,
+        589,
+        171
+      ],
+      "confidence": 0.05065301060676575,
+      "review": "non_key",
+      "reviewer": "Codex visual contact-sheet review"
+    }
+  ],
+  "memory_count": 1,
+  "median_seconds": 0.03595215000677854,
+  "p95_seconds": 0.042643639994639666
+}

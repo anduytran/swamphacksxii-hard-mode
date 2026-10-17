@@ -1,0 +1,16 @@
+# vision pipeline: keep personal footage, models, credentials and runtime state out of git
+.venv/
+data/
+scratch/
+*.pt
+weights/
+__pycache__/
+.pytest_cache/
+.env
+upload_queue/
+memories_out/
+*.onnx
+*.onnx.data
+*.npy
+*.npz
+enrollment/

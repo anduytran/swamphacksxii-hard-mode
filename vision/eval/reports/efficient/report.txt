@@ -1,0 +1,87 @@
+# LastSeen evaluation: manifest 'phone_round2', preset 'efficient' {'half': True, 'inference_fps': 2.0, 'min_conf': 0.05, 'distractors': (), 'model': 'yolov8m-worldv2.pt', 'imgsz': 480}
+Ground truth = time windows labeled by eye (manifest). Clips: 01 placement [01_normal_placement.MOV]; 02 clutter placement [03_no_keys.MOV - contains keys]; 02b clutter, 2nd take [second take cluttered.MOV]; 03 NO KEYS [IMG_7688.MOV]; 04 return and find [04_return_and_find.MOV]
+Labels awaiting confirmation: 01: put-down moment ~4.9 s (hand on keys at 4.8 s, gone at 5.0 s); 04: are the keys visible (tiny) on the chair between 0 and 4.3 s?; 03 (IMG_7688): no keys anywhere in the 31.6 s?
+
+## 1. Per-frame detection (10 fps samples)
+
+clip             category      frames  hit@0.05      hit@0.03      max conf  first hit @0.05 / @0.03
+01_placement     absent            86     0 (  0%)     0 (  0%)   0.016    - / -
+01_placement     hand              48     9 ( 18%)    14 ( 29%)   0.135    1.2s / 0.9s
+01_placement     placed            22     0 (  0%)     6 ( 27%)   0.049    - / 5.3s
+01_placement     return            13     0 (  0%)     1 (  7%)   0.042    - / 17.0s
+02_clutter       absent            18     0 (  0%)     0 (  0%)   0.000    - / -
+02_clutter       clutter           26     0 (  0%)     2 (  7%)   0.038    - / 1.5s
+02b_clutter      absent            14     0 (  0%)     0 (  0%)   0.000    - / -
+02b_clutter      clutter           66     3 (  4%)    11 ( 16%)   0.095    4.0s / 0.2s
+03_no_keys       absent           316    56 ( 17%)   172 ( 54%)   0.108    6.6s / 0.3s
+04_return        absent            21     0 (  0%)     0 (  0%)   0.013    - / -
+04_return        near              38     1 (  2%)     7 ( 18%)   0.054    6.6s / 4.8s
+04_return        pickup             9     1 ( 11%)     3 ( 33%)   0.056    8.8s / 8.6s
+04_return        unscored_far      43     0 (  0%)     0 (  0%)   0.000    - / -
+
+## 2. Memory creation at 2 inferences/s over 5 sampling phases
+
+useful = a memory exists before walk-away AND its final evidence frame is in a 'useful' category (keys at the place, not in a hand). For no-keys clips, every memory is a false memory.
+
+clip               th scene  memories/phase    first memory s/phase             result           evidence in
+01_placement     0.05    on  [0, 1, 1, 0, 0]   - 3.6 4.2 - -                    useful 0/5       handx2
+01_placement     0.05   off  [0, 1, 1, 0, 0]   - 3.6 4.2 - -                    useful 0/5       handx2
+01_placement     0.03    on  [1, 2, 1, 1, 0]   6.0 2.6 4.2 4.3 -                useful 1/5       handx4,placedx1
+01_placement     0.03   off  [1, 2, 1, 1, 0]   6.0 2.6 4.2 4.3 -                useful 1/5       handx4,placedx1
+02_clutter       0.05    on  [0, 0, 0, 0, 0]   - - - - -                        useful 0/5       -
+02_clutter       0.05   off  [0, 0, 0, 0, 0]   - - - - -                        useful 0/5       -
+02_clutter       0.03    on  [0, 0, 0, 0, 0]   - - - - -                        useful 0/5       -
+02_clutter       0.03   off  [0, 0, 0, 0, 0]   - - - - -                        useful 0/5       -
+02b_clutter      0.05    on  [1, 0, 0, 0, 0]   5.5 - - - -                      useful 1/5       clutterx1
+02b_clutter      0.05   off  [1, 0, 0, 0, 0]   5.5 - - - -                      useful 1/5       clutterx1
+02b_clutter      0.03    on  [1, 0, 0, 0, 0]   5.0 - - - -                      useful 1/5       clutterx1
+02b_clutter      0.03   off  [1, 0, 0, 0, 0]   5.0 - - - -                      useful 1/5       clutterx1
+03_no_keys       0.05    on  [1, 1, 1, 1, 1]   20.5 20.1 20.7 19.8 19.9         false mem 5/5    absentx5
+03_no_keys       0.05   off  [1, 1, 1, 1, 1]   20.5 20.1 20.7 19.8 19.9         false mem 5/5    absentx5
+03_no_keys       0.03    on  [1, 1, 1, 1, 1]   2.5 2.1 2.7 3.3 2.9              false mem 5/5    absentx5
+03_no_keys       0.03   off  [2, 2, 2, 1, 2]   2.5 2.1 2.7 3.3 2.9              false mem 5/5    absentx9
+04_return        0.05    on  [0, 0, 0, 0, 0]   - - - - -                        formed 0/5       -
+04_return        0.05   off  [0, 0, 0, 0, 0]   - - - - -                        formed 0/5       -
+04_return        0.03    on  [0, 1, 2, 0, 0]   - 8.6 8.2 - -                    formed 2/5       ?x1,pickupx2
+04_return        0.03   off  [0, 1, 2, 0, 0]   - 8.6 8.2 - -                    formed 2/5       ?x1,pickupx2
+
+## 3. Inference rate vs first memory time (th=0.05, scene on)
+
+  01_placement      2/s  +0:none  +100:3.6  +200:4.2  +300:none  +400:none
+  01_placement      5/s  +0:4.2  +100:3.9
+  01_placement     10/s  +0:3.7
+  02_clutter        2/s  +0:none  +100:none  +200:none  +300:none  +400:none
+  02_clutter        5/s  +0:none  +100:none
+  02_clutter       10/s  +0:none
+  02b_clutter       2/s  +0:5.5  +100:none  +200:none  +300:none  +400:none
+  02b_clutter       5/s  +0:none  +100:none
+  02b_clutter      10/s  +0:none
+  04_return         2/s  +0:none  +100:none  +200:none  +300:none  +400:none
+  04_return         5/s  +0:8.8  +100:none
+  04_return        10/s  +0:8.8
+
+## 4. Retrieval -> navigation -> found it (LastSeen API, scene on, 2/s): memory from 01_placement, navigation on 04_return
+
+  using th=0.05 phase +100ms
+  RETRIEVAL: evidence frame 4.1s (labeled 'hand'), bbox [200, 387, 418, 534], conf 0.069, memories stored 1, caveats ['Low detection confidence for this sighting.']
+  NAVIGATION per labeled window:
+    absent         21 frames | scene recognized 1 | {'remembered_place_not_recognized': 20, 'remembered_spot_in_view': 1}
+    near           38 frames | scene recognized 3 | {'remembered_place_not_recognized': 34, 'object_detected': 1, 'remembered_spot_in_view': 3}
+    pickup          9 frames | scene recognized 0 | {'remembered_place_not_recognized': 8, 'object_detected': 1}
+    unscored_far   43 frames | scene recognized 0 | {'remembered_place_not_recognized': 43}
+    frames claiming the keys are visible without a live detection: 0 (must be 0)
+  FOUND IT (label-wide): 1 memories removed, 2 files, all gone=True, log per id {'mem_bunch-of-keys_c39dab08': ['deleted']}, latest_memory after -> None
+
+## 5. Detections while the keys were labeled not visible (conf >= 0.03): 172
+   03_no_keys 20.5s conf 0.108 box [0, 515, 269, 909]
+   03_no_keys 20.3s conf 0.096 box [0, 581, 269, 910]
+   03_no_keys 20.6s conf 0.092 box [0, 515, 268, 906]
+   03_no_keys 21.5s conf 0.079 box [0, 520, 264, 906]
+   03_no_keys 20.9s conf 0.073 box [0, 510, 272, 898]
+   03_no_keys 19.9s conf 0.072 box [0, 516, 254, 926]
+   03_no_keys 20.7s conf 0.071 box [0, 515, 269, 905]
+   03_no_keys 21.0s conf 0.071 box [0, 515, 268, 895]
+   03_no_keys 21.1s conf 0.071 box [0, 511, 266, 894]
+   03_no_keys 19.8s conf 0.070 box [0, 602, 240, 934]
+   03_no_keys 22.6s conf 0.070 box [0, 525, 266, 919]
+   03_no_keys 22.2s conf 0.069 box [0, 535, 265, 931]

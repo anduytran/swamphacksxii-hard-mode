@@ -1,0 +1,131 @@
+{
+  "frames": [
+    {
+      "frame_ms": 0.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 500.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 1000.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 1501.6666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 2001.666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 2501.666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 3001.666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 3501.666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 4003.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 4503.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 5003.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 5503.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 6003.333333333334,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 6505.000000000001,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 7005.000000000001,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 7505.000000000001,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 8005.000000000001,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 8506.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 9006.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 9506.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 10006.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 10506.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 11008.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 11508.333333333334,
+      "proposals": 0
+    }
+  ],
+  "candidates": [
+    {
+      "id": 0,
+      "frame_ms": 6003.333333333334,
+      "box": [
+        798,
+        671,
+        1068,
+        881
+      ],
+      "confidence": 0.10191166400909424,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 1,
+      "frame_ms": 6505.000000000001,
+      "box": [
+        702,
+        644,
+        1005,
+        892
+      ],
+      "confidence": 0.05855408310890198,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    }
+  ],
+  "memory_count": 1,
+  "median_seconds": 0.12314925000828225,
+  "p95_seconds": 0.1446556000060809
+}

@@ -1,0 +1,8 @@
+# CUDA build of PyTorch (RTX 4060). Install it first:
+#   pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
+# Without an NVIDIA GPU, plain `pip install torch torchvision` gives the CPU build.
+ultralytics==8.4.178
+opencv-python==5.0.0.93
+numpy==2.5.2
+requests==2.34.2      # LastScene uploader (already pulled in by ultralytics; pinned for the bridge)
+pytest==9.1.1

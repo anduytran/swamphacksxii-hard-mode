@@ -165,6 +165,11 @@ LastScene is usually set up by a family member **for** the person who wears it.
 
 ## Vision pipeline (automatic observations)
 
+The vision source is in [`vision/`](vision/) (see `AGENTS.md`). For the demo, the wearable streams frames
+to a laptop that runs `vision/lastscene_bridge`; the [integration plan](docs/bridge-integration.md) covers
+the API contract, pairing and live acceptance checks. `vision/scripts/live_smoke.py` checks a deployment
+end to end once a device's credentials are set.
+
 A separate pipeline (YOLO-World detection + ORB scene matching, on a host machine) creates memories automatically. It posts one **observation** per event (an item placed, moved, picked up, or seen again) to `POST /api/v1/observations`: the uncropped frame plus JSON with labels, confidences, normalised `[x, y, w, h]` boxes, scene id/label, track ids and `captured_at`. The full format, rules and open questions are in the integration contract doc; `app/observations.py` validates it.
 
 - Stored as a memory with `source = 'auto'`, detections in `memory_detections`. Searchable from its structured labels (item and scene chunks, embedded like any memory; no Gemini caption), so voice answers and Search include it.
@@ -173,6 +178,11 @@ A separate pipeline (YOLO-World detection + ORB scene matching, on a host machin
 - Retention: observations follow the 72 h purge. `LAST_SEEN_RETENTION_HOURS` (default 72) controls the last-seen frames; set 720 if the team adopts the 30-day proposal.
 - The dashboard draws the boxes over photos (dashed + "?" when maybe) with a "Seen automatically" badge.
 - Try it: `backend/scripts/post_observation.py` (post, last-seen, found, delete) with a device's Auth0 credentials.
+
+Live directions and visibility checks run next to the camera (`lastscene_bridge.run --show`: w/f/q).
+Backend last-seen is historical evidence. The found endpoint marks `found_at` and retains
+server evidence; the bridge's local deletion is separate. Keep cluttered surfaces,
+distant keys, room recognition and untested ESP32 capture out of the demo.
 
 ## Where the ML lives
 

@@ -1,0 +1,298 @@
+{
+  "frames": [
+    {
+      "frame_ms": 0.0,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 500.0,
+      "proposals": 2
+    },
+    {
+      "frame_ms": 1000.0,
+      "proposals": 2
+    },
+    {
+      "frame_ms": 1501.6666666666667,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 2001.666666666667,
+      "proposals": 2
+    },
+    {
+      "frame_ms": 2501.666666666667,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 3001.666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 3501.666666666667,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 4003.333333333334,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 4503.333333333334,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 5003.333333333334,
+      "proposals": 2
+    },
+    {
+      "frame_ms": 5503.333333333334,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 6003.333333333334,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 6505.000000000001,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 7005.000000000001,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 7505.000000000001,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 8005.000000000001,
+      "proposals": 0
+    }
+  ],
+  "candidates": [
+    {
+      "id": 0,
+      "frame_ms": 0.0,
+      "box": [
+        636,
+        554,
+        882,
+        746
+      ],
+      "confidence": 0.13053318858146667,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 1,
+      "frame_ms": 500.0,
+      "box": [
+        588,
+        557,
+        786,
+        734
+      ],
+      "confidence": 0.05708441138267517,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 2,
+      "frame_ms": 500.0,
+      "box": [
+        590,
+        532,
+        857,
+        736
+      ],
+      "confidence": 0.057035982608795166,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 3,
+      "frame_ms": 1000.0,
+      "box": [
+        632,
+        526,
+        882,
+        710
+      ],
+      "confidence": 0.07383808493614197,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 4,
+      "frame_ms": 1000.0,
+      "box": [
+        631,
+        571,
+        820,
+        711
+      ],
+      "confidence": 0.06912446022033691,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 5,
+      "frame_ms": 1501.6666666666667,
+      "box": [
+        700,
+        544,
+        939,
+        726
+      ],
+      "confidence": 0.0822155773639679,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 6,
+      "frame_ms": 2001.666666666667,
+      "box": [
+        704,
+        583,
+        953,
+        777
+      ],
+      "confidence": 0.10221680998802185,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 7,
+      "frame_ms": 2001.666666666667,
+      "box": [
+        701,
+        636,
+        888,
+        773
+      ],
+      "confidence": 0.05294117331504822,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 8,
+      "frame_ms": 2501.666666666667,
+      "box": [
+        682,
+        612,
+        932,
+        796
+      ],
+      "confidence": 0.15529751777648926,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 9,
+      "frame_ms": 3501.666666666667,
+      "box": [
+        667,
+        570,
+        887,
+        786
+      ],
+      "confidence": 0.09524092078208923,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 10,
+      "frame_ms": 4003.333333333334,
+      "box": [
+        685,
+        579,
+        928,
+        775
+      ],
+      "confidence": 0.08543717861175537,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 11,
+      "frame_ms": 4503.333333333334,
+      "box": [
+        697,
+        565,
+        924,
+        774
+      ],
+      "confidence": 0.07930028438568115,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 12,
+      "frame_ms": 5003.333333333334,
+      "box": [
+        713,
+        575,
+        942,
+        772
+      ],
+      "confidence": 0.11183780431747437,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 13,
+      "frame_ms": 5003.333333333334,
+      "box": [
+        940,
+        254,
+        1075,
+        319
+      ],
+      "confidence": 0.07347473502159119,
+      "review": "non_key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 14,
+      "frame_ms": 5503.333333333334,
+      "box": [
+        703,
+        581,
+        944,
+        777
+      ],
+      "confidence": 0.09956124424934387,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 15,
+      "frame_ms": 6003.333333333334,
+      "box": [
+        694,
+        594,
+        943,
+        782
+      ],
+      "confidence": 0.08895298838615417,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 16,
+      "frame_ms": 6505.000000000001,
+      "box": [
+        624,
+        594,
+        862,
+        814
+      ],
+      "confidence": 0.09326574206352234,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    }
+  ],
+  "memory_count": 2,
+  "median_seconds": 0.09910880000097677,
+  "p95_seconds": 0.11107771999959368
+}

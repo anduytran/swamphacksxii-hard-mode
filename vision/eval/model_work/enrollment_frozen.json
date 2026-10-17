@@ -1,0 +1,324 @@
+{
+  "threshold": 0.7850051522254944,
+  "margin": 0.05,
+  "item_id": "7378f1a7-644f-436e-801b-b9813d27c0ca",
+  "encoder_version": {
+    "sha256": "40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af",
+    "preprocessing": "openai-clip-vit-b32-rgb-bicubic-center224-v1"
+  },
+  "review_sha256": "59cb9d4b0d2f9aa394637b325f1134c981b0a0fac4d305a3813315fec9e17b16",
+  "reference_sha256": "5b4b835c864bd52d73b7ed7453dbe0f2f551b877e43ced181521ff657a2cf32c",
+  "development": [
+    {
+      "id": 0,
+      "role": "development",
+      "clip": "desk_a.mov",
+      "frame_ms": 508.3333333333334,
+      "box": [
+        115,
+        233,
+        258,
+        379
+      ],
+      "confidence": 0.145,
+      "review": "key",
+      "reviewer": "Codex visual review",
+      "confirmed": false,
+      "crop": "0000.jpg",
+      "score": 0.8180681467056274
+    },
+    {
+      "id": 1,
+      "role": "development",
+      "clip": "desk_a.mov",
+      "frame_ms": 1000.0,
+      "box": [
+        125,
+        268,
+        257,
+        407
+      ],
+      "confidence": 0.157,
+      "review": "key",
+      "reviewer": "Codex visual review",
+      "confirmed": false,
+      "crop": "0001.jpg",
+      "score": 0.8040288686752319
+    },
+    {
+      "id": 2,
+      "role": "development",
+      "clip": "desk_a.mov",
+      "frame_ms": 1508.3333333333335,
+      "box": [
+        175,
+        312,
+        308,
+        439
+      ],
+      "confidence": 0.154,
+      "review": "key",
+      "reviewer": "Codex visual review",
+      "confirmed": false,
+      "crop": "0002.jpg",
+      "score": 0.8063909411430359
+    },
+    {
+      "id": 3,
+      "role": "development",
+      "clip": "desk_a.mov",
+      "frame_ms": 1508.3333333333335,
+      "box": [
+        200,
+        312,
+        307,
+        419
+      ],
+      "confidence": 0.093,
+      "review": "key",
+      "reviewer": "Codex visual review",
+      "confirmed": false,
+      "crop": "0003.jpg",
+      "score": 0.8007504940032959
+    },
+    {
+      "id": 4,
+      "role": "development",
+      "clip": "01_normal_placement.MOV",
+      "frame_ms": 0.0,
+      "box": [
+        371,
+        865,
+        736,
+        1079
+      ],
+      "confidence": 0.092,
+      "review": "key",
+      "reviewer": "Codex visual review",
+      "confirmed": false,
+      "crop": "0004.jpg",
+      "score": 0.8155473470687866
+    },
+    {
+      "id": 5,
+      "role": "development",
+      "clip": "01_normal_placement.MOV",
+      "frame_ms": 3501.666666666667,
+      "box": [
+        454,
+        936,
+        903,
+        1080
+      ],
+      "confidence": 0.07,
+      "review": "key",
+      "reviewer": "Codex visual review",
+      "confirmed": false,
+      "crop": "0005.jpg",
+      "score": 0.8340189456939697
+    },
+    {
+      "id": 6,
+      "role": "development",
+      "clip": "01_normal_placement.MOV",
+      "frame_ms": 5503.333333333334,
+      "box": [
+        641,
+        663,
+        909,
+        894
+      ],
+      "confidence": 0.1,
+      "review": "key",
+      "reviewer": "Codex visual review",
+      "confirmed": false,
+      "crop": "0006.jpg",
+      "score": 0.7323035001754761
+    },
+    {
+      "id": 7,
+      "role": "development",
+      "clip": "01_normal_placement.MOV",
+      "frame_ms": 6003.333333333334,
+      "box": [
+        729,
+        688,
+        899,
+        857
+      ],
+      "confidence": 0.054,
+      "review": "key",
+      "reviewer": "Codex visual review",
+      "confirmed": false,
+      "crop": "0007.jpg",
+      "score": 0.7630904316902161
+    },
+    {
+      "id": 8,
+      "role": "development",
+      "clip": "01_normal_placement.MOV",
+      "frame_ms": 6505.000000000001,
+      "box": [
+        695,
+        755,
+        907,
+        919
+      ],
+      "confidence": 0.148,
+      "review": "key",
+      "reviewer": "Codex visual review",
+      "confirmed": false,
+      "crop": "0008.jpg",
+      "score": 0.7371403574943542
+    },
+    {
+      "id": 9,
+      "role": "development",
+      "clip": "01_normal_placement.MOV",
+      "frame_ms": 7005.000000000001,
+      "box": [
+        894,
+        774,
+        1149,
+        954
+      ],
+      "confidence": 0.261,
+      "review": "key",
+      "reviewer": "Codex visual review",
+      "confirmed": false,
+      "crop": "0009.jpg",
+      "score": 0.7804960608482361
+    },
+    {
+      "id": 10,
+      "role": "development",
+      "clip": "01_normal_placement.MOV",
+      "frame_ms": 16995.0,
+      "box": [
+        606,
+        792,
+        795,
+        939
+      ],
+      "confidence": 0.082,
+      "review": "key",
+      "reviewer": "Codex visual review",
+      "confirmed": false,
+      "crop": "0010.jpg",
+      "score": 0.7758663892745972
+    },
+    {
+      "id": 11,
+      "role": "development",
+      "clip": "01_normal_placement.MOV",
+      "frame_ms": 17495.0,
+      "box": [
+        753,
+        675,
+        933,
+        815
+      ],
+      "confidence": 0.176,
+      "review": "key",
+      "reviewer": "Codex visual review",
+      "confirmed": false,
+      "crop": "0011.jpg",
+      "score": 0.8033797144889832
+    },
+    {
+      "id": 12,
+      "role": "development",
+      "clip": "03_no_keys.MOV",
+      "frame_ms": 500.0,
+      "box": [
+        792,
+        414,
+        1030,
+        602
+      ],
+      "confidence": 0.051,
+      "review": "key",
+      "reviewer": "Codex visual review",
+      "confirmed": false,
+      "crop": "0012.jpg",
+      "score": 0.8080103397369385
+    },
+    {
+      "id": 16,
+      "role": "development",
+      "clip": "desk_a.mov",
+      "frame_ms": 1000.0,
+      "box": [
+        0,
+        0,
+        180,
+        160
+      ],
+      "confidence": null,
+      "review": "non_key",
+      "reviewer": "Codex visual review of manual_review.jpg",
+      "confirmed": false,
+      "crop": "0016.jpg",
+      "manual_background": true,
+      "score": 0.7263067960739136
+    },
+    {
+      "id": 17,
+      "role": "development",
+      "clip": "desk_a.mov",
+      "frame_ms": 1000.0,
+      "box": [
+        180,
+        0,
+        360,
+        192
+      ],
+      "confidence": null,
+      "review": "non_key",
+      "reviewer": "Codex visual review of manual_review.jpg",
+      "confirmed": false,
+      "crop": "0017.jpg",
+      "manual_background": true,
+      "score": 0.7588342428207397
+    },
+    {
+      "id": 18,
+      "role": "development",
+      "clip": "desk_a.mov",
+      "frame_ms": 1000.0,
+      "box": [
+        0,
+        480,
+        180,
+        640
+      ],
+      "confidence": null,
+      "review": "non_key",
+      "reviewer": "Codex visual review of manual_review.jpg",
+      "confirmed": false,
+      "crop": "0018.jpg",
+      "manual_background": true,
+      "score": 0.7850050926208496
+    },
+    {
+      "id": 19,
+      "role": "development",
+      "clip": "desk_a.mov",
+      "frame_ms": 1000.0,
+      "box": [
+        198,
+        480,
+        360,
+        640
+      ],
+      "confidence": null,
+      "review": "non_key",
+      "reviewer": "Codex visual review of manual_review.jpg",
+      "confirmed": false,
+      "crop": "0019.jpg",
+      "manual_background": true,
+      "score": 0.7687936425209045
+    }
+  ],
+  "claim": "exploratory single-item matching across recording sessions"
+}
