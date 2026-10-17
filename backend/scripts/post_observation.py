@@ -11,7 +11,7 @@
     python scripts/post_observation.py delete <observation_id> # undo a wrong detection
 
 Env: AUTH0_DOMAIN, AUTH0_AUDIENCE, DEVICE_CLIENT_ID, DEVICE_CLIENT_SECRET, PAIRING_CODE,
-API_URL (default https://lastscene.photo). Cache the token as below in a real uploader:
+API_URL (default https://www.lastscene.photo). Cache the token as below in a real uploader:
 Auth0's free plan caps machine-to-machine tokens per month.
 """
 
@@ -86,7 +86,7 @@ def main() -> None:
     dl.add_argument("observation_id")
     args = p.parse_args()
 
-    api = os.environ.get("API_URL", "https://lastscene.photo").rstrip("/")
+    api = os.environ.get("API_URL", "https://www.lastscene.photo").rstrip("/")
     if args.cmd == "post":
         if args.json:
             observation = json.loads(Path(args.json).read_text())

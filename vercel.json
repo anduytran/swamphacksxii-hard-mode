@@ -1,8 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "if [ -d web ]; then cd web; else cd ../web; fi && npm ci && npm run build",
   "functions": {
     "api/index.py": {
-      "includeFiles": "{backend/app/**,frontend/**}",
+      "includeFiles": "{backend/app/**,web/dist/**}",
       "maxDuration": 60
     }
   },

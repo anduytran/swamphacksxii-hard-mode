@@ -4,47 +4,129 @@ LastScene: multimodal ai embedded on hardware to track down items
 ## Layout
 
 ```
-api/index.py      Vercel entry point (serves backend/ + frontend/)
+api/index.py      Vercel entry point for the API (the dashboard is static, built from web/)
 backend/          FastAPI service
-  app/main.py         app + static dashboard + /config.json
+  app/main.py         app + /config.json (+ serves web/dist locally)
   app/auth.py         Auth0 JWT validation (M2M device vs. caregiver user)
   app/db.py           TigerData / Postgres + pgvector: transcripts, embeddings and photos
   app/signing.py      short-lived signed photo links for the dashboard
   app/ai.py           every AI stage, routed per stage to Gemini (default), OpenAI or Claude
   app/gemini.py       Gemini: speech-to-text, embeddings, answers, extraction, vision, TTS
-  app/routers/        /api/v1/memory/{log,query}, /api/v1/dashboard/history, /api/v1/images/{id}
+  app/routers/        memory, observations (vision pipeline), dashboard, households, public, images, admin (see API)
   app/retention.py    72h purge job (run from cron)
   scripts/device_sim.py  pretend-wearable client for end-to-end testing
-frontend/         plain HTML/JS caregiver dashboard: Items, Timeline, Insights pages (auth0-spa-js)
-  charts.js           reusable chart kit (bar list, grouped columns, data table)
+web/              caregiver dashboard: React + TypeScript + Vite (UI spec: web/DESIGN.md)
+  src/App.tsx         shell + hash routing (#/items …); map pages load as their own chunks
+  src/pages/          Items, Timeline, Map, Insights, Search, Public map, Household, Landing
+  src/components/     shell, charts (bar list, columns, sortable table), item drawer, forms
+  src/lib/            Auth0 (auth.tsx), API client and types, data cache, deck.gl layers, public grid
+  src/styles.css      design tokens + all styles
 device/           Raspberry Pi Zero 2 W wearable client, wiring guide, systemd unit
 deploy/           systemd unit + crontab for the Vultr instance
 ```
 
 ## API
 
-| Endpoint | Auth | Body | Returns |
+Base URL `https://www.lastscene.photo` (the bare domain redirects there). Interactive docs at `/docs`, schema at `/openapi.json`.
+
+Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, scope `write:memories`), optionally with an `X-Pairing-Code` header so a caregiver can claim the device. **caregiver** = the dashboard user's Auth0 token. **owner** / **member** = caregiver who owns / belongs to that household. Everything a device or caregiver sees is scoped to its household.
+
+### Wearable (device)
+
+| Endpoint | Body | Returns |
+|---|---|---|
+| `POST /api/v1/memory/log` | multipart `audio`, `image` (JPEG/PNG); optional location `wifi` (JSON `[{bssid, signal}]`) or `lat`, `lng`, `accuracy_m` | `{id, timestamp, transcript}` |
+| `POST /api/v1/memory/query` | multipart `audio` (+ same optional location fields) | spoken answer (`audio/wav`); `X-Question` / `X-Answer` headers hold the URL-encoded text |
+
+### Vision pipeline (device)
+
+| Endpoint | Body | Returns |
+|---|---|---|
+| `POST /api/v1/observations` | multipart `image` (uncropped frame) + `observation` (JSON string, below) + optional `audio` | 201 `{memory_id, items, duplicate: false}` |
+| `DELETE /api/v1/observations/{observation_id}` | – | `{deleted, items}`; each item's last-seen rolls back to its previous sighting |
+| `GET /api/v1/items/last-seen` | – | `{items: [LastSeen, …]}` for the household |
+| `GET /api/v1/items/{label}/last-seen` | – | one `LastSeen` (label is case-insensitive), 404 if never seen |
+| `POST /api/v1/items/{label}/found` | optional `{found_at, observation_id}` | `{label, found_at}` |
+
+`observation` JSON:
+
+```json
+{
+  "observation_id": "6f1c…-uuid",
+  "captured_at": "2026-10-17T14:03:12.481Z",
+  "source": "auto",
+  "pipeline": {"name": "lastscene-vision", "version": "0.3.0", "detector": "yolo-world", "matcher": "orb"},
+  "image_size": {"width": 1280, "height": 720},
+  "scene": {"id": "kitchen-01", "label": "kitchen counter", "match_score": 0.82},
+  "objects": [
+    {"label": "keys", "confidence": 0.71, "bbox": [0.42, 0.55, 0.08, 0.06], "track_id": "keys-3", "event": "placed"}
+  ]
+}
+```
+
+- `captured_at` must carry a timezone; `bbox` is normalised `[x, y, w, h]` (top-left origin) and must lie inside the frame; `event` is one of `placed`, `seen`, `moved`, `picked_up`.
+- Status codes: 201 stored · 200 same `observation_id` again from the same device (`duplicate: true`, safe to retry) · 409 that id belongs to another device · 422 invalid JSON/fields, no object ≥ `MIN_DETECTION_CONFIDENCE`, or `captured_at` > 5 min ahead · 429 more than one observation per `OBSERVATION_MIN_INTERVAL_SECONDS` (has `Retry-After`).
+
+`LastSeen`:
+
+```json
+{
+  "label": "keys", "memory_id": "…", "observation_id": "…", "source": "auto",
+  "captured_at": "2026-10-17T14:03:12.481000+00:00",
+  "scene": {"id": "kitchen-01", "label": "kitchen counter"},
+  "bbox": [0.42, 0.55, 0.08, 0.06], "confidence": 0.71, "maybe": false,
+  "image_size": {"width": 1280, "height": 720},
+  "image_url": "https://www.lastscene.photo/api/v1/images/ls-…?exp=…&sig=…",
+  "found_at": null
+}
+```
+
+### Dashboard (caregiver)
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v1/dashboard/history` | `[{id, device_id, timestamp, source, transcript, scene, summary, detections, image_url, items}]`, newest first |
+| `GET /api/v1/dashboard/items` | `{window_hours, items}`: per item its last location, photo + `detection` box, earlier spots, mentions, times asked |
+| `GET /api/v1/dashboard/insights?hours=` | counts, most-asked / most-logged items, unanswered questions, recent Q&A, activity; `hours` narrows the window (default and maximum 72) |
+| `GET /api/v1/dashboard/summary` | `{summary}`: 2–3 sentences from Gemini (cached 10 min) |
+| `GET /api/v1/dashboard/search?q=` | `{query, results}`: hybrid vector + keyword retrieval with per-chunk match explanations |
+| `GET /api/v1/dashboard/map` | house floor plan: rooms, item spots, movement trips |
+| `GET /api/v1/dashboard/places` | the household's places (private included) and located memories |
+
+### Households (caregiver)
+
+| Endpoint | Who | Body | Returns |
 |---|---|---|---|
-| `POST /api/v1/memory/log` | device M2M token with `write:memories` | multipart `audio`, `image` (JPEG) | `{id, timestamp, transcript}` |
-| `POST /api/v1/memory/query` | device M2M token with `write:memories` | multipart `audio` | spoken answer (`audio/wav` by default); `X-Question` / `X-Answer` headers hold the URL-encoded text |
-| `GET /api/v1/dashboard/history` | caregiver user token | – | `[{id, device_id, timestamp, transcript, image_url}]`, last 24h, newest first |
-| `GET /api/v1/dashboard/items` | caregiver user token | – | one entry per item: last location, photo, earlier spots, times asked (72h) |
-| `GET /api/v1/dashboard/insights` | caregiver user token | – | counts, most-asked / most-logged items, questions about items never logged, activity, recent Q&A (72h) |
-| `GET /api/v1/dashboard/summary` | caregiver user token | – | `{summary}`: 2–3 sentences written by Gemini from the insights (cached 10 min) |
-| `GET /api/v1/admin/purge` | `Authorization: Bearer $CRON_SECRET` | – | runs the 72h purge (Vercel Cron, daily 03:15 UTC) |
-| `GET /api/v1/dashboard/map` | caregiver | – | House floor plan: rooms, item spots, movement trips |
-| `GET /api/v1/dashboard/places` | caregiver | – | The household's places (private included) and located memories |
-| `GET /api/v1/dashboard/search?q=` | caregiver | – | Hybrid retrieval with match explanations (one embedding call) |
-| `GET /api/v1/households/me` · `POST /api/v1/households` | caregiver | `{name}` | Households you belong to, with members, devices and places · create one |
-| `POST /api/v1/households/{id}/devices` | owner | `{client_id, pairing_code, label}` | Claim a wearable; places its earlier memories |
-| `POST /api/v1/households/{id}/invites` · `POST /api/v1/invites/accept` | owner · caregiver | – · `{code}` | One-use family invite |
-| `PATCH /api/v1/households/{id}` · `.../places/{place}` | owner · member | `{share_public}` · `{name, kind}` | Public-map opt-in · name a place, mark it public/private |
-| `GET /api/v1/public/lost-map` | none | – | Anonymous public cells (k ≥ 3 households) |
-| `POST /api/v1/observations` | device token | multipart `image` + `observation` JSON (+ optional `audio`) | Automatic memory from the vision pipeline: 201 `{memory_id, items}`; same `observation_id` again → 200 |
-| `DELETE /api/v1/observations/{id}` | device token | – | Undo a wrong detection; last-seen rolls back |
-| `GET /api/v1/items/last-seen` · `/items/{label}/last-seen` | device token | – | Last-seen frame (signed link), box, scene, time per item in the household |
-| `POST /api/v1/items/{label}/found` | device token | `{found_at?}` | Mark an item found |
-| `GET /api/v1/images/{id}?exp=…&sig=…` | signed link from the dashboard endpoints (15 min) | – | the photo |
+| `GET /api/v1/households/me` | caregiver | – | `{households}` with members, devices, places |
+| `POST /api/v1/households` | caregiver | `{name, display_name?}` | `{id}` |
+| `POST /api/v1/households/{id}/devices` | owner | `{client_id, pairing_code, label?}` | `{device_id, memories_placed}` |
+| `POST /api/v1/households/{id}/invites` | owner | – | `{code, expires_in_hours}` (one use) |
+| `POST /api/v1/invites/accept` | caregiver | `{code}` | `{household_id}` |
+| `PATCH /api/v1/households/{id}` | owner | `{share_public}` | public-map opt-in |
+| `PATCH /api/v1/households/{id}/places/{place_id}` | member | `{name?, kind?}` (`kind`: `private` or `public`) | `{places}` |
+
+### Teach items (dashboard → vision pipeline)
+
+| Endpoint | Who | Body | Returns |
+|---|---|---|---|
+| `GET /api/v1/households/{id}/training/items` | member | – | `{items, limits}`: each item's name, other words, photos (signed links) and boxes |
+| `POST /api/v1/households/{id}/training/items` | member | `{name, aliases?}` | the item (409 if the name is taken; up to 50 items) |
+| `PATCH /api/v1/households/{id}/training/items/{item_id}` | member | `{name?, aliases?}` | `{updated}` |
+| `DELETE /api/v1/households/{id}/training/items/{item_id}` | member | – | `{deleted}` (its photos too) |
+| `POST /api/v1/households/{id}/training/items/{item_id}/samples` | member | multipart `image` + `bbox` (`[x, y, w, h]`, 0..1) + `width` + `height` | the photo (up to 30 per item, 2 MB, JPEG/PNG/WebP) |
+| `DELETE /api/v1/households/{id}/training/samples/{sample_id}` | member | – | `{deleted}` |
+| `GET /api/v1/training/vocabulary` | device | – | `{version, classes, items}`: names for YOLO-World's `set_classes`; class id = position |
+| `GET /api/v1/training/dataset` | device | – | `{version, names, samples}`: each photo's signed link, box in pixels and YOLO label line |
+
+### Public, photos and ops
+
+| Endpoint | Auth | Returns |
+|---|---|---|
+| `GET /api/v1/public/lost-map` | none | anonymous ~100 m cells (k ≥ 3 households) |
+| `GET /api/v1/images/{id}?exp=…&sig=…` | signed link from the endpoints above (15 min) | the photo (`ls-…` ids are last-seen frames) |
+| `GET /api/v1/admin/purge` | `Authorization: Bearer $CRON_SECRET` | `{deleted, retention_hours, last_seen_deleted}` (Vercel Cron, daily 03:15 UTC) |
+| `GET /healthz` | none | `{ok, missing_settings, wifi_positioning, geolocation_budget}`: whether the Geolocation key is set (never its value) and this month's calls against the cap |
+| `GET /config.json` | none | public Auth0 values for the dashboard |
 
 Queries only search the calling device's own memories from the last 72h (top 3 by cosine distance).
 
@@ -78,7 +160,19 @@ cp backend/.env.example backend/.env
 cd backend && .venv/bin/uvicorn app.main:app --reload
 ```
 
-The dashboard is at http://localhost:8000. Tests (no external services needed):
+Build the dashboard once (Node 20+), and again after frontend changes; FastAPI serves `web/dist`:
+
+```bash
+cd web && npm install && npm run build
+```
+
+The dashboard is at http://localhost:8000. For live reload, run `cd web && npm run dev` (http://localhost:5173, proxying the API to :8000); signing in there needs `http://localhost:5173` added to the Auth0 Dashboard app's callback, logout and web-origin URLs. Frontend type check and tests:
+
+```bash
+cd web && npm run typecheck && npm test
+```
+
+Backend tests (no external services needed):
 
 ```bash
 cd backend && .venv/bin/pytest -q
@@ -94,6 +188,8 @@ cd backend && .venv/bin/python scripts/simulate_hardware.py
 cd backend && .venv/bin/python scripts/simulate_hardware.py --clean
 ```
 
+The simulator no longer touches the real public map. `--public-demo` still seeds 3 synthetic opted-in households onto it, but for demos use the public map's **Simulated** toggle instead, which generates data in the browser and saves nothing.
+
 The scenario covers saving items, a location filled in from the photo, a question about an item that was never logged, and a memory spooled while offline and uploaded later. Viewing the Insights page will still request the real Gemini summary.
 
 Try it end to end as the wearable:
@@ -104,7 +200,7 @@ cd backend && DEVICE_CLIENT_ID=... DEVICE_CLIENT_SECRET=... AUTH0_DOMAIN=... AUT
 
 ### Deploy on Vercel at lastscene.photo
 
-The whole app (API + dashboard) runs as one Python function: `api/index.py` imports the FastAPI app, `vercel.json` routes every path to it and schedules the daily purge. `.vercelignore` keeps `.env`, the venv and the device code out of uploads.
+The Vercel project uses the FastAPI preset with Root Directory `backend` (and "include files outside the root directory" on). Each deploy installs `requirements.txt`, then `vercel.json`'s build command builds the dashboard (`web/`, `npm ci && npm run build`); the FastAPI app serves the API and the built `web/dist`. `vercel.json` also holds the daily purge schedule. `.vercelignore` keeps `.env`, the venv, `node_modules` and the device code out of uploads.
 
 1. Install the CLI and log in (opens a browser):
    ```bash
@@ -113,7 +209,7 @@ The whole app (API + dashboard) runs as one Python function: `api/index.py` impo
    ```bash
    vercel login
    ```
-2. From the repo root, create the project (accept the defaults; no build command):
+2. From the repo root, create the project (accept the defaults; `vercel.json` sets the build):
    ```bash
    vercel link
    ```
@@ -153,6 +249,8 @@ LastScene is usually set up by a family member **for** the person who wears it.
 
 **Positions.** The Pi Zero 2 W has no GPS. With `LOCATION_SOURCE=wifi` it sends the access points it can hear with each memory and question; the server resolves them with Google's Geolocation API (`GOOGLE_GEOLOCATION_API_KEY`) and stores only the resulting coordinates, never the scan. `LOCATION_SOURCE=fixed` sends `HOME_LAT`/`HOME_LNG` instead (also used as a fallback).
 
+**Staying inside Google's free tier.** Every Geolocation call is counted in the database *before* it is made, against `GEOLOCATION_MONTHLY_LIMIT` (default 5,000 per calendar month, UTC). The counter is atomic, so parallel serverless requests can't overshoot it. Once the month is used up, or if the database can't be checked, no call is made and memories fall back to the device's own position. Answers are cached in the database by access-point set for `GEOLOCATION_CACHE_DAYS` (30), so places the wearer visits often cost nothing after the first lookup. `/healthz` shows `geolocation_budget: {month, limit, used}`. For a second, Google-side limit, cap the Geolocation API's requests per day under *APIs & Services → Geolocation API → Quotas* in Google Cloud.
+
 **Places** are built automatically: each position joins the household's nearest place (within its radius or the fix's accuracy) or starts a new one. The most-visited place is labelled Home until someone names places. Indoors, rooms still come from the spoken words and the photo (the **House** floor plan); GPS-level places drive **Map → Our places**.
 
 **Privacy model.**
@@ -178,6 +276,7 @@ A separate pipeline (YOLO-World detection + ORB scene matching, on a host machin
 - Retention: observations follow the 72 h purge. `LAST_SEEN_RETENTION_HOURS` (default 72) controls the last-seen frames; set 720 if the team adopts the 30-day proposal.
 - The dashboard draws the boxes over photos (dashed + "?" when maybe) with a "Seen automatically" badge.
 - Try it: `backend/scripts/post_observation.py` (post, last-seen, found, delete) with a device's Auth0 credentials.
+- **Teach items.** On the dashboard's **Teach items** page, people add their own items and photos of them, with a box drawn around the item in each. The pipeline reads the names from `GET /api/v1/training/vocabulary` (re-fetch when `version` changes) and the photos from `GET /api/v1/training/dataset`; `backend/scripts/fetch_training_set.py dataset` writes them as a YOLO folder (`data.yaml`, `images/`, `labels/`, `prompts.json` for visual prompts) to fine-tune on. These photos are kept until someone deletes them, not purged after 72 h.
 
 Live directions and visibility checks run next to the camera (`lastscene_bridge.run --show`: w/f/q).
 Backend last-seen is historical evidence. The found endpoint marks `found_at` and retains
@@ -205,16 +304,15 @@ The wearable runs no models by default. Next steps with an obvious home: on-devi
 
 ## Adding a visualization
 
-Data flows `TigerData → routers/dashboard.py (insights) → frontend/app.js (loadInsights) → frontend/charts.js`.
+Data flows `TigerData → routers/dashboard.py (insights) → web/src/pages/Insights.tsx → web/src/components/Charts.tsx`.
 
-1. **Compute it on the server.** Add a field to the dict returned by `insights()` in `backend/app/routers/dashboard.py`. Prefer raw timestamps (as `activity` does) when the chart groups by local time, so the browser can bucket in the viewer's timezone. Add a test in `backend/tests/test_api.py`.
-2. **Give it a place on the page.** In `frontend/index.html`, copy a `<section class="card">` with an `<h2>` and an empty `<div id="chart-…">` at the marked spot on the Insights page (add a `.legend` if it has two series).
-3. **Draw it.** In `loadInsights()` call the chart kit:
-   - `Charts.barList(el, [{label, value}], {unit, empty})` for rankings and top-N
-   - `Charts.columns(el, {categories, series: [{name, values}]}, {label, table})` for time buckets or comparisons (1–2 series)
-   - `Charts.bucketByHour(events, {buckets})` to count timestamped events into local-time buckets
-   - `Charts.dataTable(table, headers, rows)` for the text view every chart should have
-4. **Colors.** Use only `--series-1` / `--series-2` for data; status colors are reserved for good/warning badges. A third series needs a validated color first (see the comment at the top of `charts.js`).
+1. **Compute it on the server.** Add a field to the dict returned by `_insights()` in `backend/app/routers/dashboard.py`. Prefer raw timestamps (as `activity` does) when the chart groups by local time, so the browser can bucket in the viewer's timezone. Add a test in `backend/tests/test_api.py`, and the field to `Insights` in `web/src/lib/types.ts`.
+2. **Draw it.** In `InsightsPage` (`web/src/pages/Insights.tsx`), add a `<section className="card">` with an `<h2>` at the marked spot, and a chart from the kit:
+   - `<BarList rows={[{label, value, key}]} unit empty onSelect? />` for rankings and top-N (`onSelect` makes rows open the item drawer)
+   - `<Columns categories series={[{name, values}]} label />` for time buckets or comparisons (1–2 series; add a `.legend`)
+   - `bucketByHour(events, buckets)` (`lib/format.ts`) to count timestamped events into local-time buckets
+   - `<DataTable headers rows />` inside `<details>` for the text view every chart should have
+3. **Colors.** Use only `--series-1` / `--series-2` for data; status colors are reserved for good/warning badges. A third series needs a validated color first (see the comment at the top of `Charts.tsx`).
 
 ## Privacy
 The daily purge (Vercel Cron → `/api/v1/admin/purge`, or `python -m app.retention` from cron on a VPS) deletes every `memory_logs` row older than `RETENTION_HOURS` (72), photo included. Photos are only reachable through signed links that expire after 15 minutes.

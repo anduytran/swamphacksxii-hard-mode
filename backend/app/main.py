@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -8,10 +9,11 @@ from fastapi.staticfiles import StaticFiles
 from .ai import AIServices
 from .config import Settings, get_settings
 from .db import MemoryDB
-from .geo import Geolocator
-from .routers import admin, dashboard, households, images, memory, observations, public
+from .geo import Geolocator, usage_month
+from .routers import admin, dashboard, households, images, memory, observations, public, training
 
-FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
+# The built dashboard (cd web && npm run build; Vercel builds it during each deploy).
+FRONTEND_DIR = Path(__file__).resolve().parents[2] / "web" / "dist"
 log = logging.getLogger("lastscene")
 
 
@@ -54,7 +56,7 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
     app = FastAPI(title="LastScene API", lifespan=lifespan if use_lifespan else None)
     app.state.db = MemoryDB(settings)
     app.state.ai = AIServices(settings)
-    app.state.geo = Geolocator(settings)
+    app.state.geo = Geolocator(settings, app.state.db)
     app.include_router(memory.router)
     app.include_router(dashboard.router)
     app.include_router(images.router)
@@ -62,11 +64,31 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
     app.include_router(households.router)
     app.include_router(public.router)
     app.include_router(observations.router)
+    app.include_router(training.router)
+
+    async def geolocation_budget(settings) -> dict | None:
+        """Google calls used this month against the cap (counts only, never the key)."""
+        if not settings.google_geolocation_api_key:
+            return None
+        budget = {"month": usage_month(), "limit": settings.geolocation_monthly_limit, "used": None}
+        try:
+            await asyncio.wait_for(app.state.db.ensure_ready(), 5)
+            budget["used"] = await asyncio.wait_for(app.state.db.geolocation_calls(budget["month"]), 5)
+        except Exception:
+            pass  # health stays answerable when the database isn't
+        return budget
 
     @app.get("/healthz")
     async def healthz():
-        missing = missing_settings(get_settings())
-        return {"ok": not missing, "missing_settings": missing}
+        settings = get_settings()
+        missing = missing_settings(settings)
+        # Optional features: whether each is configured, never the value itself.
+        return {
+            "ok": not missing,
+            "missing_settings": missing,
+            "wifi_positioning": bool(settings.google_geolocation_api_key),
+            "geolocation_budget": await geolocation_budget(settings),
+        }
 
     @app.get("/config.json")
     async def spa_config():

@@ -14,3 +14,7 @@ backend/scripts
 # Laptop vision pipeline: model weights and personal footage live in vision/ locally
 vision
 docs
+# Built and installed on Vercel, not uploaded
+web/node_modules
+web/dist
+web/dist-qa

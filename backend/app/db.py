@@ -15,6 +15,7 @@ import asyncpg
 from .config import Settings
 from .db_observations import ObservationsMixin
 from .db_places import PlacesMixin
+from .db_training import TrainingMixin
 from .rag import ChunkHit
 
 
@@ -56,7 +57,7 @@ class QueryRecord:
 _COLUMNS = "id, device_id, created_at, transcript, scene, source, image IS NOT NULL AS has_image"
 
 
-class MemoryDB(PlacesMixin, ObservationsMixin):
+class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin):
     def __init__(self, settings: Settings):
         self.dsn = settings.database_url
         self.dims = settings.embedding_dimensions
@@ -171,6 +172,7 @@ class MemoryDB(PlacesMixin, ObservationsMixin):
             )
             await self.init_places_schema(conn)
             await self.init_observations_schema(conn)
+            await self.init_training_schema(conn)
 
     async def insert(
         self, device_id: str, transcript: str, image: bytes | None, image_type: str | None

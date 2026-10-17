@@ -112,6 +112,9 @@ class FakeDB:
         self.last_seen_purged_hours = hours
         return 0
 
+    async def purge_geolocation_cache(self, days):
+        return 0
+
     async def item_sightings(self, hours, device_ids=None):
         mine = {r.id for r in self._scoped(self.rows, device_ids)}
         return sorted([s for s in self.items if s.memory_id in mine], key=lambda s: s.created_at, reverse=True)
@@ -168,7 +171,7 @@ class FakeAI:
 
 @pytest.fixture
 def client(monkeypatch):
-    settings = Settings(auth0_domain=DOMAIN, auth0_audience=AUDIENCE, image_url_secret="test-secret", _env_file=None)
+    settings = Settings(auth0_domain=DOMAIN, auth0_audience=AUDIENCE, image_url_secret="test-secret", floor_plan="home", _env_file=None)
     signing = SimpleNamespace(key=KEY.public_key())
     monkeypatch.setattr(
         auth, "_jwks_client", lambda domain: SimpleNamespace(get_signing_key_from_jwt=lambda t: signing)
@@ -302,6 +305,14 @@ def test_insights_flags_questions_about_items_never_logged(client):
     assert sorted(a["kind"] for a in data["activity"]) == ["memory", "question", "question", "question"]
 
 
+def test_insights_window_can_be_narrowed_but_not_past_retention(client):
+    get = lambda q="": client.get(f"/api/v1/dashboard/insights{q}", headers=CAREGIVER)
+    assert get().json()["window_hours"] == 72
+    assert get("?hours=24").json()["window_hours"] == 24
+    assert get("?hours=500").json()["window_hours"] == 72  # nothing older exists
+    assert get("?hours=0").status_code == 422
+
+
 def test_background_extraction_failure_does_not_break_logging(client):
     async def boom(text):
         raise RuntimeError("Claude is down")
@@ -378,6 +389,18 @@ def test_startup_survives_missing_settings_and_healthz_reports_them(monkeypatch)
     assert body["ok"] is False
     assert {"DATABASE_URL", "IMAGE_URL_SECRET", "GEMINI_API_KEY"} <= set(body["missing_settings"])
     assert "OPENAI_API_KEY" not in body["missing_settings"]  # not used with Gemini defaults
+    assert body["wifi_positioning"] is False
+
+
+def test_healthz_reports_wifi_positioning_without_the_key(monkeypatch):
+    import app.main as main
+
+    keyed = Settings(_env_file=None, google_geolocation_api_key="test-geo-key")
+    monkeypatch.setattr(main, "get_settings", lambda: keyed)
+    with TestClient(main.create_app(use_lifespan=False)) as c:
+        resp = c.get("/healthz")
+    assert resp.json()["wifi_positioning"] is True
+    assert "test-geo-key" not in resp.text
 
 
 def test_memory_is_stored_as_text_chunks(client):
