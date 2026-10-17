@@ -11,6 +11,7 @@ describe("distance", () => {
     expect(rangeOf([0, 0, 0.3, 0.05])).toBe("close");
     expect(rangeOf(step)).toBe("step");
     expect(rangeOf(far)).toBe("far");
+    expect(rangeOf([0, 0, 0.125, 0.1])).toBe("far"); // an eighth of the frame: missed on the Pi
   });
 
   it("asks for the thinnest range next, the farthest on a tie", () => {

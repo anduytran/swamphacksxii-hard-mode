@@ -10,9 +10,11 @@ export const RANGES: { key: Range; label: string; tip: string }[] = [
   { key: "far", label: "Across the room", tip: "small in the photo, the way the wearable usually sees it" },
 ];
 
+// Under 0.15 counts as far. Measured on the Pi (Oct 17): a pin taught with 10 close-ups was found every time at
+// about a quarter of the frame, but missed or scored under the server's 0.35 at about an eighth.
 export function rangeOf([, , w, h]: Box): Range {
   const side = Math.max(w, h);
-  return side >= 0.3 ? "close" : side >= 0.1 ? "step" : "far";
+  return side >= 0.3 ? "close" : side >= 0.15 ? "step" : "far";
 }
 
 /** Photos per range, and the range to ask for next: the thinnest one, on a tie the farthest
