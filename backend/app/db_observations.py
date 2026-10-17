@@ -178,7 +178,14 @@ class ObservationsMixin:
             labels = [r["label"] for r in await conn.fetch(
                 "SELECT DISTINCT label FROM memory_detections WHERE memory_id = $1", memory_id
             )]
-            await conn.execute("DELETE FROM item_last_seen WHERE memory_id = $1", memory_id)
+            # The caller's rebuild_last_seen replaces the row in the device's current scope, keeping
+            # found_at; a row left in an older scope (sent before the device joined a household) goes now.
+            await conn.execute(
+                "DELETE FROM item_last_seen WHERE memory_id = $1 AND scope <> COALESCE("
+                "(SELECT household_id::text FROM household_devices WHERE device_id = $2), $2)",
+                memory_id,
+                device_id,
+            )
             await conn.execute("DELETE FROM memory_logs WHERE id = $1", memory_id)
         return labels
 
@@ -187,10 +194,14 @@ class ObservationsMixin:
     async def upsert_last_seen(
         self, scope: str, item: str, memory_id: str, observation_id: str, source: str, captured_at: datetime,
         scene_id: str | None, scene_label: str | None, bbox: list[float], confidence: float,
-        image: bytes, image_type: str, width: int, height: int,
+        image: bytes, image_type: str, width: int, height: int, conn=None,
     ) -> None:
-        """Record a sighting unless a newer one is already stored (late or replayed uploads)."""
-        await self.pool.execute(
+        """Record a sighting unless a newer one is already stored (late or replayed uploads).
+
+        Only a sighting captured after found_at reopens a found item: one taken before "found it"
+        but uploaded after it (an offline queue) moves the record but leaves it found.
+        """
+        await (conn or self.pool).execute(
             """
             INSERT INTO item_last_seen (scope, item, memory_id, observation_id, source, captured_at, scene_id,
                 scene_label, bbox, confidence, image, image_type, image_width, image_height)
@@ -200,7 +211,9 @@ class ObservationsMixin:
                 captured_at = EXCLUDED.captured_at, scene_id = EXCLUDED.scene_id, scene_label = EXCLUDED.scene_label,
                 bbox = EXCLUDED.bbox, confidence = EXCLUDED.confidence, image = EXCLUDED.image,
                 image_type = EXCLUDED.image_type, image_width = EXCLUDED.image_width,
-                image_height = EXCLUDED.image_height, found_at = NULL
+                image_height = EXCLUDED.image_height,
+                found_at = CASE WHEN EXCLUDED.captured_at > item_last_seen.found_at THEN NULL
+                                ELSE item_last_seen.found_at END
             WHERE item_last_seen.captured_at <= EXCLUDED.captured_at
             """,
             scope, item, memory_id, observation_id, source, captured_at, scene_id, scene_label,
@@ -208,28 +221,40 @@ class ObservationsMixin:
         )
 
     async def rebuild_last_seen(self, scope: str, item: str, device_ids: list[str]) -> None:
-        """After a deletion: the latest remaining sighting of the item becomes last-seen."""
-        row = await self.pool.fetchrow(
-            """
-            SELECT m.id, m.observation_id, m.created_at, m.image, m.image_type,
-                   d.scene_id, d.scene_label, d.bbox, d.confidence, d.image_width, d.image_height
-            FROM memory_detections d JOIN memory_logs m ON m.id = d.memory_id
-            WHERE d.label = $1 AND d.event = ANY($2::text[]) AND m.device_id = ANY($3::text[])
-            ORDER BY m.created_at DESC, d.id DESC LIMIT 1
-            """,
-            item,
-            list(LOCATING_EVENTS),
-            device_ids,
-        )
-        if row is None:
-            await self.pool.execute("DELETE FROM item_last_seen WHERE scope = $1 AND item = $2", scope, item)
-            return
-        await self.pool.execute("DELETE FROM item_last_seen WHERE scope = $1 AND item = $2", scope, item)
-        await self.upsert_last_seen(
-            scope, item, str(row["id"]), str(row["observation_id"]) if row["observation_id"] else None, "auto",
-            row["created_at"], row["scene_id"], row["scene_label"], list(row["bbox"]), row["confidence"],
-            row["image"], row["image_type"], row["image_width"], row["image_height"],
-        )
+        """After a deletion: the latest remaining sighting of the item becomes last-seen.
+
+        It stays found if it was found after that sighting (same rule as upsert_last_seen). One
+        transaction, so a failure part-way never loses found_at or leaves the item missing.
+        """
+        async with self.pool.acquire() as conn, conn.transaction():
+            found_at = await conn.fetchval(
+                "SELECT found_at FROM item_last_seen WHERE scope = $1 AND item = $2 FOR UPDATE", scope, item
+            )
+            row = await conn.fetchrow(
+                """
+                SELECT m.id, m.observation_id, m.created_at, m.image, m.image_type,
+                       d.scene_id, d.scene_label, d.bbox, d.confidence, d.image_width, d.image_height
+                FROM memory_detections d JOIN memory_logs m ON m.id = d.memory_id
+                WHERE d.label = $1 AND d.event = ANY($2::text[]) AND m.device_id = ANY($3::text[])
+                ORDER BY m.created_at DESC, d.id DESC LIMIT 1
+                """,
+                item,
+                list(LOCATING_EVENTS),
+                device_ids,
+            )
+            await conn.execute("DELETE FROM item_last_seen WHERE scope = $1 AND item = $2", scope, item)
+            if row is None:
+                return
+            await self.upsert_last_seen(
+                scope, item, str(row["id"]), str(row["observation_id"]) if row["observation_id"] else None, "auto",
+                row["created_at"], row["scene_id"], row["scene_label"], list(row["bbox"]), row["confidence"],
+                row["image"], row["image_type"], row["image_width"], row["image_height"], conn=conn,
+            )
+            if found_at is not None:
+                await conn.execute(
+                    "UPDATE item_last_seen SET found_at = $3 WHERE scope = $1 AND item = $2 AND captured_at <= $3",
+                    scope, item, found_at,
+                )
 
     async def last_seen(self, scope: str, item: str | None = None) -> list[LastSeen]:
         rows = await self.pool.fetch(

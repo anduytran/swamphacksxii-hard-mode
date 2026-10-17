@@ -151,3 +151,58 @@ def test_household_shares_last_seen_and_dashboard_shows_boxes(c):
     history = c.get("/api/v1/dashboard/history").json()
     auto = [e for e in history if e["source"] == "auto"]
     assert auto and auto[0]["detections"][0]["bbox"] and auto[0]["summary"].startswith("wallet")
+
+
+def ago(minutes):
+    return datetime.now(timezone.utc) - timedelta(minutes=minutes)
+
+
+def last_seen_keys(c):
+    return c.get("/api/v1/items/keys/last-seen").json()
+
+
+def test_late_upload_from_before_found_does_not_reopen(c):
+    # Sighting A (t0); "found it" at t2; a queued sighting B captured at t1 (t0 < t1 < t2) arrives late.
+    assert post(c, obs(minutes_ago=30)).status_code == 201
+    found_at = ago(10)
+    assert c.post("/api/v1/items/keys/found", json={"found_at": found_at.isoformat()}).status_code == 200
+    assert post(c, obs(minutes_ago=20, scene="hallway table")).status_code == 201
+    ls = last_seen_keys(c)
+    assert ls["found_at"] is not None, "a sighting from before 'found it' reopened the item"
+    assert datetime.fromisoformat(ls["found_at"]) == found_at
+
+    # A sighting after found_at does reopen it.
+    assert post(c, obs(minutes_ago=1, scene="dining table")).status_code == 201
+    ls = last_seen_keys(c)
+    assert ls["scene"]["label"] == "dining table" and ls["found_at"] is None
+
+
+def test_delete_keeps_found_when_remaining_sighting_is_older(c):
+    z, a, b = obs(minutes_ago=40, scene="garage shelf"), obs(minutes_ago=30), obs(minutes_ago=20, scene="hallway table")
+    for o in (z, a, b):
+        assert post(c, o).status_code == 201
+    found_at = ago(10)
+    assert c.post("/api/v1/items/keys/found", json={"found_at": found_at.isoformat()}).status_code == 200
+
+    # Deleting an older sighting rebuilds last-seen from B, which is still before found_at.
+    assert c.delete(f"/api/v1/observations/{z['observation_id']}").status_code == 200
+    ls = last_seen_keys(c)
+    assert ls["scene"]["label"] == "hallway table" and ls["found_at"] is not None
+    assert datetime.fromisoformat(ls["found_at"]) == found_at
+
+    # Deleting the current last-seen rolls back to A, also before found_at.
+    assert c.delete(f"/api/v1/observations/{b['observation_id']}").status_code == 200
+    ls = last_seen_keys(c)
+    assert ls["scene"]["label"] == "kitchen counter" and ls["found_at"] is not None
+    assert datetime.fromisoformat(ls["found_at"]) == found_at
+
+
+def test_delete_removes_last_seen_left_in_pre_household_scope(c):
+    # Sent before the device was claimed: last-seen stays scoped to the device itself.
+    early = obs(minutes_ago=30, label="wallet")
+    assert post(c, early).status_code == 201
+    hh = c.post("/api/v1/households", json={"name": f"Scope {RUN}"}).json()["id"]
+    assert c.post(f"/api/v1/households/{hh}/devices", json={"client_id": DEVICE, "pairing_code": "CAM-1"}).status_code == 200
+    assert c.delete(f"/api/v1/observations/{early['observation_id']}").status_code == 200
+    left = c.portal.call(c.app.state.db.pool.fetchval, "SELECT count(*) FROM item_last_seen WHERE scope = $1", DEVICE)
+    assert left == 0
