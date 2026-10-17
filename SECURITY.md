@@ -4,10 +4,18 @@ LastScene handles photos and words from a person's day, so please report anythin
 
 **Report a vulnerability:** use GitHub's [private vulnerability reporting](../../security/advisories/new) for this repository. Include what you found, how to reproduce it, and what it exposes. Please don't test against other people's households or data.
 
-**What's in scope:** the API in `backend/`, the dashboard in `web/`, and the wearable client in `device/`.
+**What's in scope:** the API in `backend/` (including the read-only MCP server at `/mcp`), the dashboard in `web/`, and the wearable client in `device/`.
 
 **For contributors:**
 
 - Never commit secrets. Keys live in `backend/.env`, `device/device.env` and the hosting provider's environment settings; only the `.example` templates belong in git.
 - Turn on the secret check once per clone: `git config core.hooksPath .githooks`.
 - If a secret is ever committed, rotate it at its provider first (deleting the commit doesn't un-publish it), then remove it from history.
+
+**The MCP server (`/mcp`, see [docs/MCP.md](docs/MCP.md)):**
+
+- It is read-only. No tool writes household data. Every request needs a caregiver's Auth0 token, checked like the dashboard's, or a household MCP key. Tools only reach households the caller belongs to, and a key reaches only its own household.
+- MCP keys are random 256-bit values, shown once and stored as SHA-256 hashes. Only the household owner can make or revoke one, and a household can have at most 5.
+- Each caregiver gets 60 requests a minute, counted in the database (429 past that). Request bodies over 64 KiB get 413. Only POST is served.
+- Tool calls are logged with the tool name, household, caregiver and key id, never their arguments. Tools return no photos or photo links.
+- Whatever a tool returns goes to the model that called it, Google included when it's Gemini. Treat an MCP key like a password, and revoke it on the Household page if it leaks.

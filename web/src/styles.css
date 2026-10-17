@@ -1653,3 +1653,13 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
 .segmented.small button { font-size: 0.875rem; }
 .model-line { display: flex; align-items: center; gap: 8px; margin: -8px 0 20px; padding: 10px 14px; border-radius: 10px; background: var(--pending-bg); color: var(--pending-ink); font-size: 0.9375rem; }
 .model-line.good { background: var(--good-bg); color: var(--good-ink); }
+
+/* MCP keys card (Household) */
+.mcp-key-form { display: flex; flex-wrap: wrap; gap: 8px; }
+.mcp-key-form input {
+  flex: 1 1 200px; min-width: 0; min-height: 44px; padding: 0 14px; border-radius: 10px;
+  font: inherit; font-size: 0.9375rem; color: var(--text); background: var(--ground); border: 1px solid var(--field);
+}
+.mcp-key-form input:hover { border-color: var(--line-hi); }
+.mcp-key-form input:focus { border-color: var(--secondary); }
+.setup-card .invite-code { overflow-wrap: anywhere; }
