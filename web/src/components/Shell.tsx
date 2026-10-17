@@ -34,7 +34,10 @@ const NAV: { group: string; items: NavItem[] }[] = [
   },
   {
     group: "Setup",
-    items: [{ page: "household", label: "Household", icon: "household", secondary: true, blurb: "Wearable, family and places" }],
+    items: [
+      { page: "household", label: "Household", icon: "household", secondary: true, blurb: "Wearable, family and places" },
+      { page: "teach", label: "Teach items", icon: "sparkle", secondary: true, blurb: "Help the camera spot your things" },
+    ],
   },
 ];
 

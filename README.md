@@ -105,6 +105,19 @@ Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, 
 | `PATCH /api/v1/households/{id}` | owner | `{share_public}` | public-map opt-in |
 | `PATCH /api/v1/households/{id}/places/{place_id}` | member | `{name?, kind?}` (`kind`: `private` or `public`) | `{places}` |
 
+### Teach items (dashboard → vision pipeline)
+
+| Endpoint | Who | Body | Returns |
+|---|---|---|---|
+| `GET /api/v1/households/{id}/training/items` | member | – | `{items, limits}`: each item's name, other words, photos (signed links) and boxes |
+| `POST /api/v1/households/{id}/training/items` | member | `{name, aliases?}` | the item (409 if the name is taken; up to 50 items) |
+| `PATCH /api/v1/households/{id}/training/items/{item_id}` | member | `{name?, aliases?}` | `{updated}` |
+| `DELETE /api/v1/households/{id}/training/items/{item_id}` | member | – | `{deleted}` (its photos too) |
+| `POST /api/v1/households/{id}/training/items/{item_id}/samples` | member | multipart `image` + `bbox` (`[x, y, w, h]`, 0..1) + `width` + `height` | the photo (up to 30 per item, 2 MB, JPEG/PNG/WebP) |
+| `DELETE /api/v1/households/{id}/training/samples/{sample_id}` | member | – | `{deleted}` |
+| `GET /api/v1/training/vocabulary` | device | – | `{version, classes, items}`: names for YOLO-World's `set_classes`; class id = position |
+| `GET /api/v1/training/dataset` | device | – | `{version, names, samples}`: each photo's signed link, box in pixels and YOLO label line |
+
 ### Public, photos and ops
 
 | Endpoint | Auth | Returns |
@@ -258,6 +271,7 @@ A separate pipeline (YOLO-World detection + ORB scene matching, on a host machin
 - Retention: observations follow the 72 h purge. `LAST_SEEN_RETENTION_HOURS` (default 72) controls the last-seen frames; set 720 if the team adopts the 30-day proposal.
 - The dashboard draws the boxes over photos (dashed + "?" when maybe) with a "Seen automatically" badge.
 - Try it: `backend/scripts/post_observation.py` (post, last-seen, found, delete) with a device's Auth0 credentials.
+- **Teach items.** On the dashboard's **Teach items** page, people add their own items and photos of them, with a box drawn around the item in each. The pipeline reads the names from `GET /api/v1/training/vocabulary` (re-fetch when `version` changes) and the photos from `GET /api/v1/training/dataset`; `backend/scripts/fetch_training_set.py dataset` writes them as a YOLO folder (`data.yaml`, `images/`, `labels/`, `prompts.json` for visual prompts) to fine-tune on. These photos are kept until someone deletes them, not purged after 72 h.
 
 ## Where the ML lives
 

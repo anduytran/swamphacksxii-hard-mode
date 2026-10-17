@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 
 // ---------- routing ----------
 
-export const PAGES = ["items", "map", "timeline", "insights", "search", "public", "household"] as const;
+export const PAGES = ["items", "map", "timeline", "insights", "search", "public", "household", "teach"] as const;
 export type Page = (typeof PAGES)[number];
 export const PUBLIC_PAGES: Page[] = ["public"]; // pages anyone can open without logging in
 const DEFAULT_PAGE: Page = "items";

@@ -13,6 +13,7 @@ import InsightsPage from "./pages/Insights";
 import ItemsPage from "./pages/Items";
 import { Landing } from "./pages/Landing";
 import SearchPage from "./pages/Search";
+import TeachPage from "./pages/Teach";
 import TimelinePage from "./pages/Timeline";
 
 // The map pages carry deck.gl, so they load on first visit. A tab left open across a deploy
@@ -47,6 +48,7 @@ const PAGE_VIEWS: Record<Page, () => JSX.Element> = {
   search: () => <SearchPage />,
   public: () => <PublicMapPage />,
   household: () => <HouseholdPage />,
+  teach: () => <TeachPage />,
 };
 
 export function App() {

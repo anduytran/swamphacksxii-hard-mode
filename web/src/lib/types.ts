@@ -163,3 +163,26 @@ export interface LostMap {
   cells: LostCell[];
   simulated?: boolean;
 }
+
+/** A photo someone added to teach the vision pipeline an item; bbox is [x, y, w, h], 0..1. */
+export interface TrainingSample {
+  id: string;
+  bbox: [number, number, number, number];
+  width: number;
+  height: number;
+  image_url: string;
+  created_at: string;
+}
+
+export interface TrainingItem {
+  id: string;
+  name: string;
+  aliases: string[];
+  created_at: string;
+  samples: TrainingSample[];
+}
+
+export interface TrainingList {
+  items: TrainingItem[];
+  limits: { items: number; samples_per_item: number };
+}

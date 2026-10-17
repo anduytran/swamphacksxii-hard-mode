@@ -15,6 +15,7 @@ export class ApiError extends Error {
   }
 }
 
+/** `body`: JSON, or FormData for file uploads (the browser sets its multipart header). */
 export type Api = <T>(path: string, opts?: { method?: string; body?: unknown }) => Promise<T>;
 
 export function useApi(): Api {
@@ -22,10 +23,11 @@ export function useApi(): Api {
   return useCallback(
     async <T,>(path: string, { method = "GET", body }: { method?: string; body?: unknown } = {}) => {
       const token = await getToken();
+      const form = body instanceof FormData;
       const res = await fetch(path, {
         method,
-        headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
-        body: body ? JSON.stringify(body) : undefined,
+        headers: { Authorization: `Bearer ${token}`, ...(body && !form ? { "Content-Type": "application/json" } : {}) },
+        body: form ? body : body ? JSON.stringify(body) : undefined,
       });
       if (!res.ok) {
         const detail = await res.json().catch(() => ({}));

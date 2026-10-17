@@ -1,0 +1,293 @@
+"""Teaching the vision pipeline a household's own items.
+
+Dashboard (household members, caregiver token):
+    GET    /api/v1/households/{household_id}/training/items
+    POST   /api/v1/households/{household_id}/training/items                    {name, aliases}
+    PATCH  /api/v1/households/{household_id}/training/items/{item_id}          {name?, aliases?}
+    DELETE /api/v1/households/{household_id}/training/items/{item_id}
+    POST   /api/v1/households/{household_id}/training/items/{item_id}/samples  multipart image + bbox + width + height
+    DELETE /api/v1/households/{household_id}/training/samples/{sample_id}
+
+Vision pipeline (device token; the device's household):
+    GET    /api/v1/training/vocabulary   names + other words, for YOLO-World's set_classes
+    GET    /api/v1/training/dataset      every photo as a signed link + its YOLO label line
+                                         (scripts/fetch_training_set.py turns it into a YOLO folder)
+"""
+
+import hashlib
+import json
+from uuid import UUID
+
+import asyncpg
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from pydantic import BaseModel, Field, field_validator
+
+from .. import signing
+from ..auth import Principal, require_caregiver, require_device
+from ..config import Settings, get_settings
+from ..db import MemoryDB
+from ..db_training import MAX_SAMPLES_PER_ITEM, MAX_TRAINING_ITEMS, TrainingItem
+from ..deps import get_db
+from .households import _require_member
+from .memory import ALLOWED_IMAGE_TYPES, MAX_IMAGE_BYTES, _read
+from .observations import _absolute
+
+router = APIRouter(prefix="/api/v1", tags=["training"])
+
+MAX_ALIASES = 8
+
+
+def _clean(text: str) -> str:
+    return " ".join(text.strip().lower().split())
+
+
+class ItemBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=40)
+    aliases: list[str] = Field(default_factory=list, max_length=MAX_ALIASES)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        if not (v := _clean(v)):
+            raise ValueError("Name can't be blank")
+        return v
+
+    @field_validator("aliases")
+    @classmethod
+    def _aliases(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        for a in v:
+            if (a := _clean(a)[:40]) and a not in out:
+                out.append(a)
+        return out
+
+
+class ItemPatch(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=40)
+    aliases: list[str] | None = Field(None, max_length=MAX_ALIASES)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str | None) -> str | None:
+        return _clean(v) if v is not None else None
+
+    @field_validator("aliases")
+    @classmethod
+    def _aliases(cls, v: list[str] | None) -> list[str] | None:
+        return ItemBody._aliases(v) if v is not None else None
+
+
+def _sample_url(request: Request, settings: Settings, sample_id: str, absolute: bool = False) -> str:
+    path = signing.image_url(settings.image_url_secret, f"tr-{sample_id}", settings.image_url_ttl_seconds)
+    return _absolute(request, path) if absolute else path
+
+
+def _item_json(request: Request, settings: Settings, item: TrainingItem) -> dict:
+    return {
+        "id": item.id,
+        "name": item.name,
+        "aliases": item.aliases,
+        "created_at": item.created_at.isoformat(),
+        "samples": [
+            {
+                "id": s.id,
+                "bbox": s.bbox,
+                "width": s.width,
+                "height": s.height,
+                "image_url": _sample_url(request, settings, s.id),
+                "created_at": s.created_at.isoformat(),
+            }
+            for s in item.samples
+        ],
+    }
+
+
+# ---------------------------------------------------------------- dashboard
+
+
+@router.get("/households/{household_id}/training/items")
+async def list_items(
+    household_id: UUID,
+    request: Request,
+    user: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    await _require_member(db, str(household_id), user)
+    items = await db.training_items(str(household_id))
+    return {
+        "items": [_item_json(request, settings, i) for i in items],
+        "limits": {"items": MAX_TRAINING_ITEMS, "samples_per_item": MAX_SAMPLES_PER_ITEM},
+    }
+
+
+@router.post("/households/{household_id}/training/items", status_code=status.HTTP_201_CREATED)
+async def create_item(
+    household_id: UUID,
+    body: ItemBody,
+    request: Request,
+    user: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    hid = str(household_id)
+    await _require_member(db, hid, user)
+    if await db.count_training_items(hid) >= MAX_TRAINING_ITEMS:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"A household can teach up to {MAX_TRAINING_ITEMS} items")
+    try:
+        item = await db.create_training_item(hid, body.name, [a for a in body.aliases if a != body.name])
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"“{body.name}” is already on the list") from None
+    return _item_json(request, settings, item)
+
+
+@router.patch("/households/{household_id}/training/items/{item_id}")
+async def update_item(
+    household_id: UUID,
+    item_id: UUID,
+    body: ItemPatch,
+    user: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+):
+    await _require_member(db, str(household_id), user)
+    if body.name == "":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Name can't be blank")
+    try:
+        ok = await db.update_training_item(str(household_id), str(item_id), body.name, body.aliases)
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"“{body.name}” is already on the list") from None
+    if not ok:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found")
+    return {"updated": True}
+
+
+@router.delete("/households/{household_id}/training/items/{item_id}")
+async def delete_item(
+    household_id: UUID, item_id: UUID, user: Principal = Depends(require_caregiver), db: MemoryDB = Depends(get_db)
+):
+    await _require_member(db, str(household_id), user)
+    if not await db.delete_training_item(str(household_id), str(item_id)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found")
+    return {"deleted": True}
+
+
+def _parse_bbox(raw: str) -> list[float]:
+    """[x, y, w, h] in 0..1 with the box inside the photo and not a sliver."""
+    try:
+        box = [float(v) for v in json.loads(raw)]
+    except (ValueError, TypeError):
+        box = []
+    if len(box) != 4:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "bbox must be [x, y, w, h]")
+    x, y, w, h = box
+    if not (0 <= x <= 1 and 0 <= y <= 1 and 0.01 <= w <= 1 and 0.01 <= h <= 1 and x + w <= 1.001 and y + h <= 1.001):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "bbox must lie inside the photo, values 0 to 1")
+    return [round(v, 5) for v in (x, y, min(w, 1 - x), min(h, 1 - y))]
+
+
+@router.post("/households/{household_id}/training/items/{item_id}/samples", status_code=status.HTTP_201_CREATED)
+async def add_sample(
+    household_id: UUID,
+    item_id: UUID,
+    request: Request,
+    image: UploadFile = File(...),
+    bbox: str = Form(..., description="[x, y, w, h], 0..1, top-left origin"),
+    width: int = Form(..., ge=32, le=8192),
+    height: int = Form(..., ge=32, le=8192),
+    user: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    hid = str(household_id)
+    await _require_member(db, hid, user)
+    box = _parse_bbox(bbox)
+    count = await db.training_item_sample_count(hid, str(item_id))
+    if count is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found")
+    if count >= MAX_SAMPLES_PER_ITEM:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"An item can have up to {MAX_SAMPLES_PER_ITEM} photos")
+    if image.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Photos must be JPEG, PNG or WebP")
+    data = await _read(image, MAX_IMAGE_BYTES, "image")
+    sample = await db.add_training_sample(str(item_id), data, image.content_type, width, height, box)
+    return {
+        "id": sample.id,
+        "bbox": sample.bbox,
+        "width": sample.width,
+        "height": sample.height,
+        "image_url": _sample_url(request, settings, sample.id),
+        "created_at": sample.created_at.isoformat(),
+    }
+
+
+@router.delete("/households/{household_id}/training/samples/{sample_id}")
+async def delete_sample(
+    household_id: UUID, sample_id: UUID, user: Principal = Depends(require_caregiver), db: MemoryDB = Depends(get_db)
+):
+    await _require_member(db, str(household_id), user)
+    if not await db.delete_training_sample(str(household_id), str(sample_id)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Photo not found")
+    return {"deleted": True}
+
+
+# ---------------------------------------------------------------- vision pipeline
+
+
+async def _device_items(db: MemoryDB, device: Principal) -> tuple[str, list[TrainingItem]]:
+    household = await db.household_of_device(device.sub)
+    if household is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "This device isn't in a household yet")
+    return household[0], await db.training_items(household[0])
+
+
+def _version(items: list[TrainingItem]) -> str:
+    """Changes whenever a name, other word or photo does, so the pipeline knows to re-fetch."""
+    key = json.dumps([[i.id, i.name, i.aliases, [s.id for s in i.samples]] for i in items])
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+@router.get("/training/vocabulary")
+async def vocabulary(device: Principal = Depends(require_device), db: MemoryDB = Depends(get_db)):
+    """The household's items as YOLO-World classes: `classes[i]` is class id i everywhere."""
+    household_id, items = await _device_items(db, device)
+    return {
+        "household_id": household_id,
+        "version": _version(items),
+        "classes": [i.name for i in items],
+        "items": [{"class_id": n, "name": i.name, "aliases": i.aliases, "samples": len(i.samples)} for n, i in enumerate(items)],
+    }
+
+
+@router.get("/training/dataset")
+async def dataset(
+    request: Request,
+    device: Principal = Depends(require_device),
+    db: MemoryDB = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Every photo with a signed link and its YOLO label line ("class cx cy w h", 0..1).
+    Links expire after IMAGE_URL_TTL_SECONDS; fetch the photos right away."""
+    household_id, items = await _device_items(db, device)
+    samples = []
+    for class_id, item in enumerate(items):
+        for s in item.samples:
+            x, y, w, h = s.bbox
+            samples.append(
+                {
+                    "id": s.id,
+                    "class_id": class_id,
+                    "name": item.name,
+                    "image_url": _sample_url(request, settings, s.id, absolute=True),
+                    "width": s.width,
+                    "height": s.height,
+                    "bbox": s.bbox,
+                    "bbox_xyxy_px": [round(x * s.width), round(y * s.height), round((x + w) * s.width), round((y + h) * s.height)],
+                    "yolo": f"{class_id} {x + w / 2:.6f} {y + h / 2:.6f} {w:.6f} {h:.6f}",
+                }
+            )
+    return {
+        "household_id": household_id,
+        "version": _version(items),
+        "names": {str(n): i.name for n, i in enumerate(items)},
+        "samples": samples,
+    }

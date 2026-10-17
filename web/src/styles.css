@@ -1403,3 +1403,44 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
   .result .photo { aspect-ratio: 16 / 10; }
   .bar-list { grid-template-columns: minmax(80px, 34%) 1fr auto; }
 }
+
+/* ---------- Teach items ---------- */
+.teach-lede { max-width: 62ch; margin-top: 0; }
+.household-pick { min-width: 220px; }
+.household-pick select { min-height: 44px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--field); background: var(--ground); color: var(--text); font: inherit; }
+.teach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+.teach-card { display: grid; gap: 14px; }
+.teach-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.teach-head h2 { margin: 0; font: 600 21px/1.25 var(--display); color: var(--heading); text-transform: capitalize; }
+.teach-head .hint { margin: 4px 0 0; }
+.chip.good { background: var(--good-bg); border-color: color-mix(in srgb, var(--good) 30%, transparent); color: var(--good-ink); }
+.chip .i { width: 14px; height: 14px; }
+.teach-meter { height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+.teach-meter span { display: block; height: 100%; background: var(--secondary); border-radius: 3px; transition: width 0.3s var(--ease); }
+.sample-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
+.sample-grid li { position: relative; }
+.sample { position: relative; margin: 0; border-radius: 8px; overflow: hidden; background: var(--surface-3); max-height: 120px; }
+.sample img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.sample-box { position: absolute; border: 2px solid var(--gold); border-radius: 3px; box-shadow: 0 0 0 1px rgba(20, 19, 43, 0.6); pointer-events: none; }
+.sample-delete { position: absolute; top: 2px; right: 2px; width: 32px; height: 32px; background: var(--overlay); color: var(--on-overlay); border-radius: 8px; }
+.sample-delete:hover { background: var(--overlay); color: var(--on-overlay); border-color: transparent; }
+.sample-delete .i { width: 16px; height: 16px; }
+.teach-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.teach-actions .primary { min-height: 44px; }
+.confirm-row { display: inline-flex; flex-wrap: wrap; gap: 8px; }
+.teach-tech { margin-top: 24px; color: var(--muted); font-size: 14px; }
+.teach-tech summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+.teach-tech code { font: 13px var(--mono); color: var(--text); }
+
+.box-dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--ground); color: var(--text); }
+.box-dialog::backdrop { background: var(--backdrop); }
+.box-dialog .dialog-inner { display: grid; gap: 14px; padding: 20px; }
+.box-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.box-head h2 { margin: 0; font: 600 20px/1.3 var(--display); color: var(--heading); }
+.box-head .hint { margin: 4px 0 0; }
+.box-stage { display: grid; place-items: center; background: var(--surface); border-radius: 10px; overflow: hidden; }
+.box-frame { position: relative; touch-action: none; cursor: crosshair; user-select: none; }
+.box-frame img { display: block; width: 100%; height: 100%; pointer-events: none; }
+.sample-box.drawing { border-width: 3px; background: color-mix(in srgb, var(--gold) 14%, transparent); }
+.box-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; }
+.box-actions-end { display: inline-flex; gap: 10px; }

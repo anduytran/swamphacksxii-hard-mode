@@ -21,6 +21,8 @@ interface Props {
   hint?: string;
   fields: FieldSpec[];
   submitLabel: string;
+  /** Clear the fields after a successful submit (for forms that add one thing after another). */
+  resetOnSuccess?: boolean;
   /** Returns an optional success message. */
   onSubmit(values: Record<string, string>): Promise<string | void>;
 }
@@ -33,7 +35,7 @@ function message(input: HTMLInputElement, label: string): string {
   return input.validationMessage;
 }
 
-export function FormCard({ title, hint, fields, submitLabel, onSubmit }: Props) {
+export function FormCard({ title, hint, fields, submitLabel, resetOnSuccess, onSubmit }: Props) {
   const formRef = useRef<HTMLFormElement>(null);
   const id = useId();
   const [valid, setValid] = useState(() => fields.every((f) => !f.required || (f.defaultValue ?? "").length >= (f.minLength ?? 1)));
@@ -59,6 +61,10 @@ export function FormCard({ title, hint, fields, submitLabel, onSubmit }: Props) 
     try {
       const values = Object.fromEntries(new FormData(form).entries()) as Record<string, string>;
       setMsg({ text: (await onSubmit(values)) || "", error: false });
+      if (resetOnSuccess) {
+        form.reset();
+        setTouched({});
+      }
     } catch (err) {
       setMsg({ text: err instanceof ApiError ? err.detail : (err as Error).message, error: true });
     } finally {

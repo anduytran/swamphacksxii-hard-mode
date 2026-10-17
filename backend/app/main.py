@@ -10,7 +10,7 @@ from .ai import AIServices
 from .config import Settings, get_settings
 from .db import MemoryDB
 from .geo import Geolocator, usage_month
-from .routers import admin, dashboard, households, images, memory, observations, public
+from .routers import admin, dashboard, households, images, memory, observations, public, training
 
 # The built dashboard (cd web && npm run build; Vercel builds it during each deploy).
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "web" / "dist"
@@ -64,6 +64,7 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
     app.include_router(households.router)
     app.include_router(public.router)
     app.include_router(observations.router)
+    app.include_router(training.router)
 
     async def geolocation_budget(settings) -> dict | None:
         """Google calls used this month against the cap (counts only, never the key)."""
