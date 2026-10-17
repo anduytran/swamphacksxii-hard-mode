@@ -30,8 +30,10 @@
 
   <nav id="tabs" class="tabs wrap" hidden aria-label="Dashboard pages">
     <a href="#/items" data-page="items">Items</a>
+    <a href="#/map" data-page="map">Map</a>
     <a href="#/timeline" data-page="timeline">Timeline</a>
     <a href="#/insights" data-page="insights">Insights</a>
+    <a href="#/search" data-page="search">Search</a>
   </nav>
 
   <main class="wrap">
@@ -58,6 +60,34 @@
       </div>
       <div id="items-featured"></div>
       <ul id="items-grid" class="items-grid"></ul>
+    </section>
+
+    <!-- Map: an indoor floor plan of where items are and get lost (deck.gl) -->
+    <section id="page-map" class="page" hidden>
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Home map · last <span class="window-hours">72</span> hours</p>
+          <h1 class="display">Where things end up.</h1>
+        </div>
+        <div class="map-controls">
+          <button id="map-play" type="button" class="pill" aria-pressed="true">Pause</button>
+          <span id="map-clock" class="mono map-clock" aria-live="off"></span>
+        </div>
+      </div>
+      <div class="card map-card">
+        <div id="home-map" class="home-map" role="img" aria-label="Floor plan showing where items were last seen"></div>
+        <div class="legend map-legend">
+          <span><i class="swatch room-swatch"></i>Room shade: questions about items last seen there</span>
+          <span><i class="dot dot-asked"></i>Asked about</span>
+          <span><i class="dot dot-calm"></i>Not asked about</span>
+          <span><i class="trail-swatch"></i>Moved between rooms</span>
+        </div>
+        <details>
+          <summary>Show as table</summary>
+          <table id="map-table"></table>
+        </details>
+      </div>
+      <p class="hint">Rooms are matched from the spoken location and the camera's description. Drag to pan, scroll to zoom.</p>
     </section>
 
     <!-- Timeline: every memory, newest first -->
@@ -138,6 +168,22 @@
         <ol id="questions" class="questions"></ol>
       </section>
     </section>
+    <!-- Search: the wearable's retrieval step, made visible -->
+    <section id="page-search" class="page" hidden>
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Vector + keyword search over the last <span class="window-hours">72</span> hours</p>
+          <h1 class="display">Ask what the wearer would.</h1>
+        </div>
+      </div>
+      <form id="search-form" class="search-form" role="search">
+        <label for="search-q" class="sr-only">Question</label>
+        <input id="search-q" type="search" placeholder="Where are my keys?" autocomplete="off" required>
+        <button type="submit" class="primary">Search</button>
+      </form>
+      <p class="hint search-hint">Shows the memories the wearable would answer from, and which text chunks matched by meaning or by words.</p>
+      <ol id="search-results" class="search-results"></ol>
+    </section>
   </main>
 
   <div id="tooltip" class="tooltip" hidden></div>
@@ -190,6 +236,20 @@
           <p class="saw" hidden></p>
           <div class="chips"></div>
         </div>
+      </div>
+    </li>
+  </template>
+
+  <template id="result-template">
+    <li class="result">
+      <div class="photo"><img alt="" loading="lazy"></div>
+      <div class="result-body">
+        <div class="result-head">
+          <span class="result-rank mono"></span>
+          <time class="mono"></time>
+          <span class="result-score mono"></span>
+        </div>
+        <ul class="chunks"></ul>
       </div>
     </li>
   </template>

@@ -9,8 +9,10 @@ What is real:
 
 What is simulated (no API call that uses a token is made):
   * every AI stage -> SimulatedAI: deterministic transcription, hashed bag-of-words
-    embeddings, rule-based item extraction, canned photo descriptions, template answers,
-    a beep for speech. No Gemini, Claude or OpenAI calls.
+    embeddings, rule-based item extraction, canned image-to-text output, template
+    answers, a beep for speech. No Gemini, Claude or OpenAI calls.
+  * the RAG layer is real: memories become text chunks in memory_chunks, and questions
+    go through the same vector + keyword search and fusion as production.
   * Auth0 -> device/caregiver checks are bypassed in-process; no token is requested.
   * time -> events are backdated over the last ~72 h so the history looks lived-in.
 
@@ -43,7 +45,7 @@ sys.path.insert(0, str(ROOT / "device"))
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.ai import ItemMention, humanize_ago  # noqa: E402
+from app.ai import ItemMention, SceneText, humanize_ago  # noqa: E402
 from app.auth import Principal, require_caregiver, require_device  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.main import create_app  # noqa: E402
@@ -133,7 +135,7 @@ class SimulatedAI:
     """Drop-in for app.ai.AIServices. Deterministic and offline."""
 
     clock: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    scenes: dict[str, tuple[str, list[ItemMention]]] = field(default_factory=dict)
+    scenes: dict[str, SceneText] = field(default_factory=dict)
     dims: int = 1536
     speech_media_type: str = "audio/wav"
 
@@ -149,6 +151,9 @@ class SimulatedAI:
             vec[h % self.dims] += 1.0
         norm = math.sqrt(sum(v * v for v in vec)) or 1.0
         return [v / norm for v in vec]
+
+    async def embed_many(self, texts: list[str]) -> list[list[float]]:
+        return [await self.embed(t) for t in texts]
 
     async def extract_items(self, text: str) -> list[ItemMention]:
         t = text.lower().strip().rstrip("?.!")
@@ -205,6 +210,7 @@ class Event:
     item: str = ""
     place: str = ""  # where the camera shows it (drives the photo + scene)
     scene: str = ""  # what Gemini vision would say
+    visible: str = ""  # words readable in the photo
 
 
 SCENARIO = [
@@ -221,8 +227,8 @@ SCENARIO = [
     Event(20, "ask", "Have you seen my pill box?"),  # never logged before this
     Event(18, "log", "My glasses are going on the bathroom shelf", "reading glasses", "bathroom shelf", "Reading glasses on the glass shelf above the bathroom sink."),
     Event(12, "ask", "Where are my keys?"),
-    Event(9, "log", "Putting my pill box in the kitchen drawer", "pill box", "kitchen drawer", "Blue weekly pill box in the top kitchen drawer by the fridge."),
-    Event(6, "log", "I'm leaving my wallet on the dining table", "wallet", "dining table", "Wallet on the dining table beside the fruit bowl."),
+    Event(9, "log", "Putting my pill box in the kitchen drawer", "pill box", "kitchen drawer", "Blue weekly pill box in the top kitchen drawer by the fridge.", "MON TUE WED THU FRI SAT SUN"),
+    Event(6, "log", "I'm leaving my wallet on the dining table", "wallet", "dining table", "Wallet on the dining table beside the fruit bowl and a handwritten note.", "Dentist Tuesday 3pm"),
     Event(4, "ask", "Where's my wallet?"),
     Event(3, "log", "Putting my keys on the hallway table", "keys", "hallway table", "Keys in the blue bowl on the hallway table."),
     Event(2, "ask", "Where are my glasses?"),
@@ -288,7 +294,7 @@ def main() -> None:
             stamp = when.astimezone().strftime("%a %I:%M %p")
             if ev.kind in ("log", "log-offline"):
                 photo = scene_png(COLORS[ev.place], ITEM_COLORS[ev.item], n)
-                sim.scenes[hashlib.sha1(photo).hexdigest()] = (ev.scene, [ItemMention(ev.item, ev.place)])
+                sim.scenes[hashlib.sha1(photo).hexdigest()] = SceneText(ev.scene, [ItemMention(ev.item, ev.place)], ev.visible)
                 wav = fake_wav(ev.text)
                 if ev.kind == "log-offline":
                     try:
@@ -304,8 +310,9 @@ def main() -> None:
                     memory_id = api.log_memory(wav, photo)["id"]
                     print(f"{stamp}  🎙  REMEMBER “{ev.text}”")
                 run(db.pool.execute, "UPDATE memory_logs SET created_at = $2 WHERE id = $1::uuid", memory_id, when)
-                items = run(db.pool.fetch, "SELECT name, location FROM memory_items WHERE memory_id = $1::uuid", memory_id)
-                print(f"           → items: {', '.join(f'{i['name']} @ {i['location'] or '?'}' for i in items) or 'none'}")
+                chunks = run(db.pool.fetch, "SELECT kind, content FROM memory_chunks WHERE memory_id = $1::uuid ORDER BY id", memory_id)
+                for c in chunks:
+                    print(f"           ▸ {c['kind']:<6} {c['content']}")
             else:
                 audio, answer = api.ask(fake_wav(ev.text))
                 (out / f"answer-{n:02d}.wav").write_bytes(audio)
@@ -324,6 +331,14 @@ def main() -> None:
               f"{ins['unanswered_count']} about items not logged first, {ins['items_tracked']} items tracked")
         print(f"  Most asked: {', '.join(f'{r['name']} ({r['count']})' for r in ins['most_asked'])}")
         print(f"  Timeline (24h): {len(client.get('/api/v1/dashboard/history').json())} memories")
+        print("\nRetrieval check (same hybrid search the wearable uses):\n")
+        for q in ["Where are my keys?", "When is the dentist?", "Where are my pills?"]:
+            res = client.get("/api/v1/dashboard/search", params={"q": q, "limit": 2}).json()["results"]
+            print(f"  “{q}”")
+            for r in res:
+                hits = [f"{c['kind']}(meaning #{c['vector_rank'] or '-'}, words #{c['keyword_rank'] or '-'})" for c in r["chunks"] if c["matched"]]
+                said = next(c["content"] for c in r["chunks"] if c["kind"] == "speech")
+                print(f"     {r['score']:.4f}  “{said}”  ← {', '.join(hits)}")
         print(f"\nAnswer audio saved in {out}")
         print("Remove these rows any time with:  .venv/bin/python scripts/simulate_hardware.py --clean")
 

@@ -3,7 +3,7 @@ import time
 from collections import Counter
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from .. import signing
 from ..ai import AIServices
@@ -11,6 +11,8 @@ from ..auth import Principal, require_caregiver
 from ..config import Settings, get_settings
 from ..db import ItemSighting, MemoryDB, QueryRecord
 from ..deps import get_ai, get_db
+from ..home_map import BY_ID, ROOMS, UNKNOWN, room_for
+from ..pipeline import retrieve
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
 log = logging.getLogger(__name__)
@@ -180,3 +182,133 @@ async def summary(
         return {"summary": None}
     _summary_cache[facts] = (time.monotonic(), text)
     return {"summary": text}
+
+
+@router.get("/search")
+async def search(
+    q: str = Query(..., min_length=1, max_length=300),
+    limit: int = Query(5, ge=1, le=20),
+    caregiver: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+    ai: AIServices = Depends(get_ai),
+    settings: Settings = Depends(get_settings),
+):
+    """The wearable's retrieval step, shown in full: which memories a question finds and
+    which chunks matched, by meaning (vector) and by words (keyword). Embeds the query,
+    so each search makes one embedding call."""
+    memories = await retrieve(db, ai, q, None, settings.retention_hours, limit)
+    results = []
+    for m in memories:
+        matched = {h.chunk_id: h for h in m.matched}
+        results.append(
+            {
+                "memory_id": m.memory_id,
+                "timestamp": m.created_at.isoformat(),
+                "score": round(m.score, 5),
+                "image_url": _image_url(settings, m.memory_id),
+                "chunks": [
+                    {
+                        "kind": c.kind,
+                        "content": c.content,
+                        "matched": c.chunk_id in matched,
+                        "vector_rank": matched[c.chunk_id].vector_rank if c.chunk_id in matched else None,
+                        "keyword_rank": matched[c.chunk_id].keyword_rank if c.chunk_id in matched else None,
+                        "distance": (
+                            round(matched[c.chunk_id].distance, 4)
+                            if c.chunk_id in matched and matched[c.chunk_id].distance is not None
+                            else None
+                        ),
+                    }
+                    for c in m.chunks
+                ],
+            }
+        )
+    return {"query": q, "results": results}
+
+
+def _curve(a: list[float], b: list[float], steps: int = 12) -> list[list[float]]:
+    """A gentle arc from a to b (quadratic Bezier), so trails read as movement."""
+    mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    cx, cy = mx - dy * 0.25, my + dx * 0.25
+    return [
+        [
+            round((1 - t) ** 2 * a[0] + 2 * (1 - t) * t * cx + t**2 * b[0], 2),
+            round((1 - t) ** 2 * a[1] + 2 * (1 - t) * t * cy + t**2 * b[1], 2),
+        ]
+        for t in (i / steps for i in range(steps + 1))
+    ]
+
+
+@router.get("/map")
+async def home_map(
+    caregiver: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Where each item is, which rooms things get lost in, and how items moved."""
+    window = settings.retention_hours
+    sightings = await db.item_sightings(window)  # newest first
+    asked = Counter(q.item for q in await db.recent_queries(window) if q.item)
+
+    history: dict[str, list] = {}
+    for s in reversed(sightings):  # oldest first
+        history.setdefault(s.name, []).append(s)
+
+    rooms = {r.id: {"id": r.id, "name": r.name, "polygon": r.polygon, "putdowns": 0, "lost": 0, "items": []} for r in (*ROOMS, UNKNOWN)}
+    places = {name: [room_for(s.location, s.scene) for s in seen] for name, seen in history.items()}
+    for name, rooms_visited in places.items():
+        here = rooms_visited[-1]
+        for room in rooms_visited:
+            rooms[room.id]["putdowns"] += 1
+        rooms[here.id]["lost"] += asked.get(name, 0)  # questions count against where it was
+        rooms[here.id]["items"].append(name)
+    # Items sharing a room get evenly spaced spots; past rooms use a stable per-item spot.
+    position = {
+        name: BY_ID[room_id].slot(i, len(r["items"]))
+        for room_id, r in rooms.items()
+        for i, name in enumerate(r["items"])
+    }
+
+    items, trips = [], []
+    start = min((s.created_at for s in sightings), default=None)
+    for name, seen in history.items():
+        visited = places[name]
+        here, latest = visited[-1], seen[-1]
+        items.append(
+            {
+                "name": name,
+                "room": here.id,
+                "room_name": here.name,
+                "location": latest.location,
+                "last_seen": latest.created_at.isoformat(),
+                "mentions": len(seen),
+                "times_asked": asked.get(name, 0),
+                "position": position[name],
+            }
+        )
+        # One animated trip per item: its spot in each room it was put down in, over time.
+        path, stamps = [], []
+        for i, (prev, cur, s) in enumerate(zip([None, *visited], visited, seen)):
+            hours = round((s.created_at - start).total_seconds() / 3600, 3)
+            point = position[name] if i == len(visited) - 1 else cur.spot(name)
+            if prev is None:
+                path.append(point)
+                stamps.append(hours)
+            elif prev.id != cur.id:
+                arc = _curve(path[-1], point)[1:]
+                last = stamps[-1]
+                path += arc
+                stamps += [round(last + (hours - last) * (i + 1) / len(arc), 3) for i in range(len(arc))]
+        if len(path) > 1:
+            trips.append({"name": name, "path": path, "timestamps": stamps, "rooms": [p.name for p in visited]})
+
+    used = [r for r in rooms.values() if r["id"] != UNKNOWN.id or r["putdowns"]]
+    return {
+        "window_hours": window,
+        "start": start.isoformat() if start else None,  # trip timestamps are hours after this
+        "span_hours": round((max(s.created_at for s in sightings) - start).total_seconds() / 3600, 3) if sightings else 0,
+        "rooms": used,
+        "items": items,
+        "trips": trips,
+    }

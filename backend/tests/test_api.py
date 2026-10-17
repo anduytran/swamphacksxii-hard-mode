@@ -1,3 +1,4 @@
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -9,9 +10,10 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from app import auth, signing
-from app.ai import ItemMention, humanize_ago
+from app.ai import ItemMention, SceneText, humanize_ago
 from app.config import Settings, get_settings
 from app.db import ItemSighting, MemoryRecord, QueryRecord
+from app.rag import ChunkHit
 from app.main import create_app
 
 DOMAIN = "test.auth0.local"
@@ -36,8 +38,9 @@ class FakeDB:
         self.images: dict[str, tuple[bytes, str]] = {}
         self.items: list[ItemSighting] = []
         self.queries: list[QueryRecord] = []
+        self.chunks: list[ChunkHit] = []
 
-    async def insert(self, device_id, transcript, embedding, image, image_type):
+    async def insert(self, device_id, transcript, image, image_type):
         rec = MemoryRecord(str(len(self.rows)), device_id, datetime.now(timezone.utc), transcript, image is not None)
         self.rows.append(rec)
         if image is not None:
@@ -47,8 +50,32 @@ class FakeDB:
     async def get_image(self, record_id):
         return self.images.get(record_id)
 
-    async def nearest(self, device_id, embedding, lookback_hours, limit=3):
-        return [r for r in self.rows if r.device_id == device_id][:limit]
+    # Vector store stand-in: "vector" search returns the device's chunks newest first;
+    # keyword search returns chunks sharing a word with the question.
+    async def add_chunks(self, memory_id, chunks):
+        rec = next(r for r in self.rows if r.id == memory_id)
+        for kind, content, _embedding in chunks:
+            self.chunks.append(ChunkHit(len(self.chunks), memory_id, kind, content, rec.created_at))
+
+    def _device_chunks(self, device_id):
+        ids = {r.id for r in self.rows if device_id is None or r.device_id == device_id}
+        return [c for c in self.chunks if c.memory_id in ids]
+
+    async def vector_hits(self, device_id, embedding, hours, limit):
+        found = sorted(self._device_chunks(device_id), key=lambda c: c.chunk_id, reverse=True)[:limit]
+        return [ChunkHit(c.chunk_id, c.memory_id, c.kind, c.content, c.created_at, distance=0.5) for c in found]
+
+    async def keyword_hits(self, device_id, text, hours, limit):
+        words = set(re.findall(r"[a-z]+", text.lower())) - {"where", "are", "my", "is", "the", "did", "i"}
+        found = [c for c in self._device_chunks(device_id) if words & set(re.findall(r"[a-z]+", c.content.lower()))]
+        return [ChunkHit(c.chunk_id, c.memory_id, c.kind, c.content, c.created_at) for c in found[:limit]]
+
+    async def chunks_for(self, memory_ids):
+        out = {}
+        for c in self.chunks:
+            if c.memory_id in memory_ids:
+                out.setdefault(c.memory_id, []).append(ChunkHit(c.chunk_id, c.memory_id, c.kind, c.content, c.created_at))
+        return out
 
     async def recent(self, hours):
         return sorted(self.rows, key=lambda r: r.created_at, reverse=True)
@@ -58,7 +85,7 @@ class FakeDB:
         for name, location in items:
             self.items.append(ItemSighting(name, location, rec.id, rec.created_at, rec.transcript, rec.has_image, rec.scene))
 
-    async def set_scene(self, memory_id, scene, embedding):
+    async def set_scene(self, memory_id, scene):
         next(r for r in self.rows if r.id == memory_id).scene = scene
 
     async def delete_older_than(self, hours):
@@ -83,10 +110,13 @@ class FakeAI:
         return audio.decode()
 
     speech_media_type = "audio/wav"
-    scene = None  # set to (description, [ItemMention]) to simulate Gemini vision
+    scene = None  # set to a SceneText to simulate Gemini image-to-text
 
     async def embed(self, text, *, query=False):
         return [0.1, 0.2]
+
+    async def embed_many(self, texts):
+        return [[0.1, 0.2] for _ in texts]
 
     async def describe_scene(self, image, content_type, transcript):
         return self.scene
@@ -260,9 +290,10 @@ def test_background_extraction_failure_does_not_break_logging(client):
 
 
 def test_photo_description_fills_in_unsaid_location(client):
-    client.app_state.ai.scene = (
+    client.app_state.ai.scene = SceneText(
         "Keys on a wooden table by the front door.",
         [ItemMention("keys", "table by the front door")],
+        "",
     )
     log(client, "I am putting down my keys")  # no place said
     data = client.get("/api/v1/dashboard/items", headers=CAREGIVER).json()
@@ -323,3 +354,58 @@ def test_startup_survives_missing_settings_and_healthz_reports_them(monkeypatch)
     assert body["ok"] is False
     assert {"DATABASE_URL", "IMAGE_URL_SECRET", "GEMINI_API_KEY"} <= set(body["missing_settings"])
     assert "OPENAI_API_KEY" not in body["missing_settings"]  # not used with Gemini defaults
+
+
+def test_memory_is_stored_as_text_chunks(client):
+    client.app_state.ai.scene = SceneText(
+        "Keys on a wooden table by the front door, next to a blue bowl.",
+        [ItemMention("keys", "table by the front door")],
+        "SPARE KEYS",
+    )
+    log(client, "I am putting down my keys")
+    kinds = {c.kind: c.content for c in client.app_state.db.chunks}
+    assert kinds == {
+        "speech": "I am putting down my keys",
+        "scene": "Keys on a wooden table by the front door, next to a blue bowl.",
+        "item": "keys: table by the front door",
+        "text": "SPARE KEYS",
+    }
+
+
+def test_question_is_answered_from_retrieved_chunks(client):
+    log(client, "I am putting my keys on the counter")
+    log(client, "I am putting my wallet on the shelf")
+    ask(client, "Where are my keys?")
+    question, memories = client.app_state.ai.answered_with
+    assert memories[0].transcript == "I am putting my keys on the counter"  # keyword match wins
+    assert {c.kind for c in memories[0].chunks} == {"speech", "item"}
+
+
+def test_search_endpoint_explains_matches(client):
+    log(client, "I am putting my keys on the counter")
+    assert client.get("/api/v1/dashboard/search?q=keys", headers=DEVICE).status_code == 403
+    body = client.get("/api/v1/dashboard/search?q=where%20are%20my%20keys", headers=CAREGIVER).json()
+    (top,) = body["results"]
+    matched = [c for c in top["chunks"] if c["matched"]]
+    assert matched and all(c["vector_rank"] or c["keyword_rank"] for c in matched)
+    assert client.get(top["image_url"]).status_code == 200
+
+
+def test_home_map_places_items_in_rooms_and_traces_moves(client):
+    log(client, "I am putting my keys on the kitchen counter")
+    log(client, "I am putting my keys on the hallway table")
+    log(client, "I am putting my wallet on the moon")  # no known room
+    ask(client, "Where are my keys?")
+    ask(client, "Where are my keys?")
+
+    assert client.get("/api/v1/dashboard/map", headers=DEVICE).status_code == 403
+    data = client.get("/api/v1/dashboard/map", headers=CAREGIVER).json()
+    items = {i["name"]: i for i in data["items"]}
+    assert items["keys"]["room"] == "hallway" and items["keys"]["times_asked"] == 2
+    assert items["wallet"]["room"] == "unknown"
+    rooms = {r["id"]: r for r in data["rooms"]}
+    assert rooms["hallway"]["lost"] == 2 and rooms["kitchen"]["putdowns"] == 1
+    (trip,) = data["trips"]  # only keys moved between rooms
+    assert trip["name"] == "keys" and trip["rooms"] == ["Kitchen", "Hallway"]
+    assert len(trip["path"]) == len(trip["timestamps"]) > 2
+    assert trip["timestamps"] == sorted(trip["timestamps"])

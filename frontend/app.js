@@ -2,7 +2,7 @@ let auth0Client;
 let audience;
 
 const $ = (id) => document.getElementById(id);
-const PAGES = ["items", "timeline", "insights"];
+const PAGES = ["items", "map", "timeline", "insights", "search"];
 const DEFAULT_PAGE = "items";
 
 async function init() {
@@ -36,6 +36,7 @@ async function init() {
     auth0Client.logout({ logoutParams: { returnTo: window.location.origin } });
   $("refresh").onclick = () => showPage(currentPage(), { force: true });
   $("item-filter").oninput = filterItems;
+  $("search-form").onsubmit = runSearch;
 
   if (await auth0Client.isAuthenticated()) {
     const user = await auth0Client.getUser();
@@ -67,7 +68,8 @@ async function showPage(name, { force = false } = {}) {
     else a.removeAttribute("aria-current");
   }
   if (!force && loaded[name] && Date.now() - loaded[name] < STALE_AFTER_MS) return;
-  const loaders = { items: loadItems, timeline: loadTimeline, insights: loadInsights };
+  // Search has no loader: it only runs when the caregiver submits a question.
+  const loaders = { items: loadItems, map: loadMap, timeline: loadTimeline, insights: loadInsights, search: async () => {} };
   const status = $("status");
   status.textContent = "Loading…";
   try {
@@ -261,6 +263,265 @@ async function loadTimeline() {
       return node;
     })
   );
+}
+
+// ---------- Map page (deck.gl, loaded on first visit) ----------
+
+const DECK_URL = "https://cdn.jsdelivr.net/npm/deck.gl@9.4.0/dist.min.js";
+const MAP_COLORS = {
+  roomLine: [52, 49, 45],
+  roomFill: [28, 27, 25],
+  lost: [201, 133, 0], // --series-2
+  asked: [244, 167, 59], // --amber
+  calm: [57, 135, 229], // --series-1
+  label: [168, 161, 150],
+  text: [243, 239, 232],
+};
+const LOOP_SECONDS = 10;
+let mapState = null;
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) return resolve();
+    const el = document.createElement("script");
+    el.src = src;
+    el.onload = resolve;
+    el.onerror = () => reject(new Error("Could not load the map library"));
+    document.head.append(el);
+  });
+}
+
+async function loadMap() {
+  const [data] = await Promise.all([api("/api/v1/dashboard/map"), loadScript(DECK_URL)]);
+  setWindowHours(data.window_hours);
+  renderMapTable(data);
+  const container = $("home-map");
+  if (!data.items.length) {
+    mapState?.deck.finalize();
+    mapState = null;
+    return emptyState(container, "Nothing to map yet. Items appear here once the wearable logs where they were put down.");
+  }
+  if (!mapState) {
+    container.replaceChildren();
+    const { Deck, OrthographicView } = deck;
+    // Fit the floor plan (plus a margin) to the frame.
+    const xs = data.rooms.flatMap((r) => r.polygon.map((pt) => pt[0]));
+    const ys = data.rooms.flatMap((r) => r.polygon.map((pt) => pt[1]));
+    const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    const fit = Math.min((container.clientWidth || 800) / (maxX - minX + 10), (container.clientHeight || 480) / (maxY - minY + 10));
+    mapState = {
+      data,
+      time: 0,
+      playing: !matchMedia("(prefers-reduced-motion: reduce)").matches,
+      deck: new Deck({
+        parent: container,
+        views: new OrthographicView({ flipY: true }),
+        initialViewState: { target: [(minX + maxX) / 2, (minY + maxY) / 2, 0], zoom: Math.log2(fit), minZoom: 1, maxZoom: 6 },
+        controller: true,
+        getTooltip: mapTooltip,
+        style: { position: "absolute", inset: "0" },
+      }),
+      lastFrame: performance.now(),
+    };
+    $("map-play").onclick = () => {
+      mapState.playing = !mapState.playing;
+      updatePlayButton();
+    };
+    requestAnimationFrame(tickMap);
+  }
+  mapState.data = data;
+  updatePlayButton();
+  drawMap();
+}
+
+function updatePlayButton() {
+  const btn = $("map-play");
+  btn.textContent = mapState.playing ? "Pause" : "Play";
+  btn.setAttribute("aria-pressed", String(mapState.playing));
+  btn.hidden = !mapState.data.trips.length;
+}
+
+function tickMap(now) {
+  if (!mapState) return;
+  const span = Math.max(mapState.data.span_hours, 1);
+  if (mapState.playing && !$("page-map").hidden) {
+    mapState.time = (mapState.time + ((now - mapState.lastFrame) / 1000) * (span / LOOP_SECONDS)) % (span + 2);
+    drawMap();
+  }
+  mapState.lastFrame = now;
+  requestAnimationFrame(tickMap);
+}
+
+function drawMap() {
+  const { PolygonLayer, ScatterplotLayer, TextLayer, TripsLayer, PathLayer } = deck;
+  const { data, playing, time } = mapState;
+  const maxLost = Math.max(1, ...data.rooms.map((r) => r.lost));
+  const maxAsked = Math.max(1, ...data.items.map((i) => i.times_asked));
+  $("map-clock").textContent = data.trips.length
+    ? new Date(Date.parse(data.start) + Math.min(time, data.span_hours) * 3.6e6).toLocaleString(undefined, {
+        weekday: "short",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : "";
+
+  const layers = [
+    new PolygonLayer({
+      id: "rooms",
+      data: data.rooms,
+      getPolygon: (r) => r.polygon,
+      getFillColor: (r) => (r.lost ? [...MAP_COLORS.lost, 40 + Math.round((r.lost / maxLost) * 150)] : [...MAP_COLORS.roomFill, 255]),
+      getLineColor: MAP_COLORS.roomLine,
+      lineWidthUnits: "pixels",
+      getLineWidth: 2,
+      pickable: true,
+      updateTriggers: { getFillColor: maxLost },
+    }),
+    new TextLayer({
+      id: "room-names",
+      data: data.rooms,
+      getPosition: (r) => [r.polygon[0][0] + 2, r.polygon[0][1] + 3],
+      getText: (r) => r.name.toUpperCase(),
+      getColor: MAP_COLORS.label,
+      getSize: 11,
+      getTextAnchor: "start",
+      getAlignmentBaseline: "top",
+      fontFamily: "IBM Plex Mono, monospace",
+      characterSet: "auto",
+    }),
+    playing
+      ? new TripsLayer({
+          id: "trails",
+          data: data.trips,
+          getPath: (t) => t.path,
+          getTimestamps: (t) => t.timestamps,
+          getColor: MAP_COLORS.asked,
+          widthUnits: "pixels",
+          getWidth: 3,
+          capRounded: true,
+          jointRounded: true,
+          trailLength: Math.max(data.span_hours / 4, 2),
+          currentTime: time,
+          fadeTrail: true,
+        })
+      : new PathLayer({
+          id: "trails",
+          data: data.trips,
+          getPath: (t) => t.path,
+          getColor: [...MAP_COLORS.asked, 140],
+          widthUnits: "pixels",
+          getWidth: 2,
+          capRounded: true,
+          jointRounded: true,
+        }),
+    new ScatterplotLayer({
+      id: "items",
+      data: data.items,
+      getPosition: (i) => i.position,
+      getRadius: (i) => 6 + (i.times_asked / maxAsked) * 10,
+      radiusUnits: "pixels",
+      getFillColor: (i) => (i.times_asked ? MAP_COLORS.asked : MAP_COLORS.calm),
+      getLineColor: [18, 17, 16],
+      stroked: true,
+      lineWidthUnits: "pixels",
+      getLineWidth: 2,
+      pickable: true,
+    }),
+    new TextLayer({
+      id: "item-names",
+      data: data.items,
+      getPosition: (i) => i.position,
+      getText: (i) => i.name,
+      getColor: MAP_COLORS.text,
+      getSize: 13,
+      getPixelOffset: [0, 20],
+      fontFamily: "Bricolage Grotesque, system-ui, sans-serif",
+      characterSet: "auto",
+      outlineWidth: 3,
+      outlineColor: [18, 17, 16, 255],
+      fontSettings: { sdf: true },
+    }),
+  ];
+  mapState.deck.setProps({ layers });
+}
+
+function mapTooltip({ object, layer }) {
+  if (!object) return null;
+  const style = { background: "#f3efe8", color: "#121110", fontSize: "13px", borderRadius: "6px", padding: "6px 8px" };
+  if (layer.id === "items") {
+    return {
+      text: `${capitalize(object.name)} — ${object.room_name}\n“${object.location || "no place said"}”, ${timeAgo(object.last_seen)}\nPut down ${object.mentions}×, asked about ${object.times_asked}×`,
+      style,
+    };
+  }
+  if (layer.id === "rooms") {
+    const items = object.items.length ? object.items.join(", ") : "nothing now";
+    return { text: `${object.name}\n${object.putdowns} put down here · ${object.lost} questions\nNow here: ${items}`, style };
+  }
+  return null;
+}
+
+function renderMapTable(data) {
+  Charts.dataTable(
+    $("map-table"),
+    ["Room", "Put down here", "Questions about items last here", "Items there now"],
+    data.rooms.map((r) => [r.name, r.putdowns, r.lost, r.items.join(", ") || "–"])
+  );
+}
+
+// ---------- Search page ----------
+
+const KIND_LABELS = { speech: "Said", scene: "Camera saw", item: "Item", text: "Readable text" };
+
+async function runSearch(event) {
+  event.preventDefault();
+  const q = $("search-q").value.trim();
+  const list = $("search-results");
+  if (!q) return;
+  $("status").textContent = "Searching…";
+  try {
+    const { results } = await api(`/api/v1/dashboard/search?q=${encodeURIComponent(q)}`);
+    $("status").textContent = "";
+    if (!results.length) return emptyState(list, "No memories matched. Nothing has been logged about that yet.");
+    const tpl = $("result-template");
+    list.replaceChildren(
+      ...results.map((r, i) => {
+        const node = tpl.content.firstElementChild.cloneNode(true);
+        fillPhoto(node.querySelector(".photo"), r.image_url, "Photo for this memory");
+        node.querySelector(".result-rank").textContent = `#${i + 1}`;
+        const time = node.querySelector("time");
+        time.dateTime = r.timestamp;
+        time.textContent = `${clockTime(r.timestamp)} · ${timeAgo(r.timestamp)}`;
+        node.querySelector(".result-score").textContent = `score ${r.score.toFixed(4)}`;
+        node.querySelector(".chunks").replaceChildren(
+          ...r.chunks.map((c) => {
+            const li = document.createElement("li");
+            li.className = `chunk${c.matched ? " matched" : ""}`;
+            const kind = document.createElement("span");
+            kind.className = `kind kind-${c.kind}`;
+            kind.textContent = KIND_LABELS[c.kind] || c.kind;
+            const text = document.createElement("span");
+            text.className = "chunk-text";
+            text.textContent = c.content;
+            li.append(kind, text);
+            if (c.matched) {
+              const why = [];
+              if (c.vector_rank) why.push(`meaning #${c.vector_rank}`);
+              if (c.keyword_rank) why.push(`words #${c.keyword_rank}`);
+              const tag = document.createElement("span");
+              tag.className = "why mono";
+              tag.textContent = why.join(" · ");
+              li.append(tag);
+            }
+            return li;
+          })
+        );
+        return node;
+      })
+    );
+  } catch (err) {
+    $("status").textContent = `Search failed: ${err.message}`;
+  }
 }
 
 // ---------- Insights page ----------

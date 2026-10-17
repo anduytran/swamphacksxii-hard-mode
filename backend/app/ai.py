@@ -5,6 +5,7 @@ per stage: OpenAI for speech-to-text, embeddings and text-to-speech, Claude for 
 language tasks.
 """
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cached_property
@@ -14,16 +15,18 @@ import openai
 from pydantic import BaseModel
 
 from .config import Settings
-from .db import MemoryRecord
+from .rag import ITEM, TEXT, RetrievedMemory
 from .gemini import GeminiAI
 
 ANSWER_SYSTEM_PROMPT = """\
 You are LastScene, a gentle voice assistant on a wearable that helps someone \
 with memory loss find everyday items. Your reply is spoken aloud through a small speaker.
 
-You are given the user's question and a few things they said out loud earlier while \
-putting items down, each with how long ago it was said and, when available, what the \
-wearable's camera saw at that moment. Answer using only those notes.
+You are given the user's question and the memories retrieved for it. Each memory says \
+how long ago it happened, what the user said, and what the wearable's camera saw \
+(a description, the items and where they are, and any readable text). Answer using \
+only those memories; when several are about the same item, the most recent one is \
+where it is now.
 - Reply in one or two short, warm, plain sentences. No lists, markdown or emoji.
 - Say where the item is and roughly when it was left there, e.g. "about two hours ago".
 - If none of the notes are about what they asked, say kindly that you don't have a \
@@ -47,11 +50,12 @@ Return an empty list if no physical item is mentioned."""
 
 SCENE_SYSTEM_PROMPT = """\
 This photo was taken by a chest-worn camera at the moment its wearer, who has memory \
-loss, said: "{transcript}". Help a family member find the item later.
+loss, said: "{transcript}". Turn it into text a search engine can use to find the item later.
 - description: one plain sentence (under 25 words) saying where things are, naming \
 visible landmarks ("Keys on a wooden table by the front door, next to a blue bowl.").
 - items: the physical items being put down, as short lowercase singular names \
 ("keys", "reading glasses"), each with its location as a short phrase.
+- visible_text: any words readable in the photo (labels, notes, screens), or empty.
 If the photo is too dark or blurry to tell, say so in the description and return no items."""
 
 
@@ -74,6 +78,16 @@ class ExtractedItems(BaseModel):
 class SceneDescription(BaseModel):
     description: str
     items: list[_ExtractedItem]
+    visible_text: str
+
+
+@dataclass
+class SceneText:
+    """The image-to-text step's output: everything search needs from a photo."""
+
+    description: str
+    items: list["ItemMention"]
+    visible_text: str
 
 
 @dataclass
@@ -88,6 +102,17 @@ def _mentions(items: list[_ExtractedItem]) -> list[ItemMention]:
         for i in items
         if i.name.strip()
     ]
+
+
+def _note(m: RetrievedMemory) -> str:
+    parts = [f'said "{m.transcript}"']
+    if m.scene:
+        parts.append(f"camera saw: {m.scene}")
+    if items := m.facts(ITEM):
+        parts.append("items: " + "; ".join(items))
+    if text := m.facts(TEXT):
+        parts.append("readable text: " + " / ".join(text))
+    return f"- ({humanize_ago(m.created_at)}) " + "; ".join(parts)
 
 
 def humanize_ago(then: datetime, now: datetime | None = None) -> str:
@@ -154,6 +179,18 @@ class AIServices:
 
     # ---------------------------------------------------------------- retrieval
 
+    async def embed_many(self, texts: list[str]) -> list[list[float]]:
+        """Embed several memory chunks."""
+        if not texts:
+            return []
+        if self.s.embedding_provider == "gemini":
+            # One request per chunk: a list sent to the multimodal model is one input.
+            return list(await asyncio.gather(*(self.gemini.embed(t, query=False) for t in texts)))
+        result = await self.openai.embeddings.create(
+            model=self.s.embedding_model, input=texts, dimensions=self.s.embedding_dimensions
+        )
+        return [d.embedding for d in result.data]
+
     async def embed(self, text: str, *, query: bool = False) -> list[float]:
         """Embed a memory (query=False) or a question (query=True) for vector search."""
         if self.s.embedding_provider == "gemini":
@@ -200,16 +237,9 @@ class AIServices:
             return None
         return response.parsed_output
 
-    async def answer(self, question: str, memories: list[MemoryRecord]) -> str:
-        if memories:
-            notes = "\n".join(
-                f"- ({humanize_ago(m.created_at)}) \"{m.transcript}\""
-                + (f" [camera saw: {m.scene}]" if m.scene else "")
-                for m in memories
-            )
-        else:
-            notes = "(no notes recorded recently)"
-        text = await self._generate(ANSWER_SYSTEM_PROMPT, f"Earlier notes:\n{notes}\n\nQuestion: {question}")
+    async def answer(self, question: str, memories: list[RetrievedMemory]) -> str:
+        notes = "\n".join(_note(m) for m in memories) or "(nothing retrieved)"
+        text = await self._generate(ANSWER_SYSTEM_PROMPT, f"Memories:\n{notes}\n\nQuestion: {question}")
         if text is None:
             return "Sorry, I can't help with that one."
         return text or "Sorry, I couldn't come up with an answer just now."
@@ -222,10 +252,8 @@ class AIServices:
         parsed = await self._generate_json(EXTRACT_SYSTEM_PROMPT, text, ExtractedItems)
         return _mentions(parsed.items) if parsed else []
 
-    async def describe_scene(
-        self, image: bytes, content_type: str, transcript: str
-    ) -> tuple[str, list[ItemMention]] | None:
-        """What the camera saw: a one-line description plus items and where they are."""
+    async def describe_scene(self, image: bytes, content_type: str, transcript: str) -> SceneText | None:
+        """Image to text: a description, the items and where they are, and readable text."""
         if self.s.vision_provider != "gemini":
             return None
         from google.genai import types
@@ -237,7 +265,7 @@ class AIServices:
         )
         if parsed is None:
             return None
-        return parsed.description.strip(), _mentions(parsed.items)
+        return SceneText(parsed.description.strip(), _mentions(parsed.items), parsed.visible_text.strip())
 
     async def caregiver_summary(self, facts: str) -> str | None:
         return await self._generate(SUMMARY_SYSTEM_PROMPT, facts)

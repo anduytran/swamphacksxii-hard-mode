@@ -1,7 +1,9 @@
 """TigerData (Timescale Postgres) with the pgvector extension.
 
-Photos are stored in the same row as their transcript, so the retention purge
-removes both in one statement and no separate object store is needed.
+memory_logs holds one row per memory (transcript, photo, timestamps). Everything used
+for retrieval lives in memory_chunks: text chunks derived from speech and from the
+photo, each with an embedding and a full-text index (see rag.py). Chunks, items and the
+photo all go with their memory in the retention purge.
 """
 
 import asyncio
@@ -11,6 +13,7 @@ from datetime import datetime
 import asyncpg
 
 from .config import Settings
+from .rag import ChunkHit
 
 
 def _vec(values: list[float]) -> str:
@@ -25,7 +28,6 @@ class MemoryRecord:
     transcript: str
     has_image: bool
     scene: str | None = None  # what the camera saw (Gemini vision), filled in after upload
-    distance: float | None = None
 
 
 @dataclass
@@ -102,12 +104,37 @@ class MemoryDB:
             await conn.execute("ALTER TABLE memory_logs ADD COLUMN IF NOT EXISTS image bytea")
             await conn.execute("ALTER TABLE memory_logs ADD COLUMN IF NOT EXISTS image_type text")
             await conn.execute("ALTER TABLE memory_logs ADD COLUMN IF NOT EXISTS scene text")
+            # Retrieval moved to memory_chunks; the per-memory vector is no longer written.
+            await conn.execute("ALTER TABLE memory_logs ALTER COLUMN embedding DROP NOT NULL")
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS memory_logs_created_at_idx ON memory_logs (created_at DESC)"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS memory_logs_embedding_idx "
                 "ON memory_logs USING hnsw (embedding vector_cosine_ops)"
+            )
+            # The vector store: text chunks per memory, searchable by meaning and by words.
+            await conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS memory_chunks (
+                    id         bigserial PRIMARY KEY,
+                    memory_id  uuid NOT NULL REFERENCES memory_logs (id) ON DELETE CASCADE,
+                    kind       text NOT NULL,
+                    content    text NOT NULL,
+                    embedding  vector({self.dims}) NOT NULL,
+                    tsv        tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
+                )
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS memory_chunks_memory_id_idx ON memory_chunks (memory_id)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS memory_chunks_embedding_idx "
+                "ON memory_chunks USING hnsw (embedding vector_cosine_ops)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS memory_chunks_tsv_idx ON memory_chunks USING gin (tsv)"
             )
             # Items named in each memory; removed with the memory by the retention purge.
             await conn.execute(
@@ -141,45 +168,92 @@ class MemoryDB:
             )
 
     async def insert(
-        self,
-        device_id: str,
-        transcript: str,
-        embedding: list[float],
-        image: bytes | None,
-        image_type: str | None,
+        self, device_id: str, transcript: str, image: bytes | None, image_type: str | None
     ) -> MemoryRecord:
         row = await self.pool.fetchrow(
             f"""
-            INSERT INTO memory_logs (device_id, transcript, embedding, image, image_type)
-            VALUES ($1, $2, $3::vector, $4, $5)
+            INSERT INTO memory_logs (device_id, transcript, image, image_type)
+            VALUES ($1, $2, $3, $4)
             RETURNING {_COLUMNS}
             """,
             device_id,
             transcript,
-            _vec(embedding),
             image,
             image_type,
         )
         return _record(row)
 
-    async def nearest(
-        self, device_id: str, embedding: list[float], lookback_hours: int, limit: int = 3
-    ) -> list[MemoryRecord]:
+    # ---------------------------------------------------------------- vector store
+
+    async def add_chunks(self, memory_id: str, chunks: list[tuple[str, str, list[float]]]) -> None:
+        """Store (kind, content, embedding) chunks for a memory."""
+        if chunks:
+            await self.pool.executemany(
+                "INSERT INTO memory_chunks (memory_id, kind, content, embedding) "
+                "VALUES ($1::uuid, $2, $3, $4::vector)",
+                [(memory_id, kind, content, _vec(emb)) for kind, content, emb in chunks],
+            )
+
+    async def vector_hits(
+        self, device_id: str | None, embedding: list[float], hours: int, limit: int
+    ) -> list[ChunkHit]:
+        """Chunks closest in meaning to the question (cosine distance)."""
         rows = await self.pool.fetch(
-            f"""
-            SELECT {_COLUMNS}, embedding <=> $2::vector AS distance
-            FROM memory_logs
-            WHERE device_id = $1
-              AND created_at > now() - make_interval(hours => $3)
-            ORDER BY embedding <=> $2::vector
+            """
+            SELECT c.id, c.memory_id, c.kind, c.content, m.created_at,
+                   c.embedding <=> $1::vector AS distance
+            FROM memory_chunks c
+            JOIN memory_logs m ON m.id = c.memory_id
+            WHERE m.created_at > now() - make_interval(hours => $2)
+              AND ($3::text IS NULL OR m.device_id = $3)
+            ORDER BY c.embedding <=> $1::vector
             LIMIT $4
             """,
-            device_id,
             _vec(embedding),
-            lookback_hours,
+            hours,
+            device_id,
             limit,
         )
-        return [_record(r) for r in rows]
+        return [_hit(r, distance=r["distance"]) for r in rows]
+
+    async def keyword_hits(self, device_id: str | None, text: str, hours: int, limit: int) -> list[ChunkHit]:
+        """Chunks sharing words with the question (Postgres full-text, any word, stemmed)."""
+        rows = await self.pool.fetch(
+            """
+            WITH q AS (
+                SELECT to_tsquery('english', coalesce(string_agg(quote_literal(w), ' | '), '')) AS query
+                FROM unnest(tsvector_to_array(to_tsvector('english', $1))) AS w
+            )
+            SELECT c.id, c.memory_id, c.kind, c.content, m.created_at
+            FROM memory_chunks c
+            JOIN memory_logs m ON m.id = c.memory_id, q
+            WHERE c.tsv @@ q.query
+              AND m.created_at > now() - make_interval(hours => $2)
+              AND ($3::text IS NULL OR m.device_id = $3)
+            ORDER BY ts_rank_cd(c.tsv, q.query) DESC, m.created_at DESC
+            LIMIT $4
+            """,
+            text,
+            hours,
+            device_id,
+            limit,
+        )
+        return [_hit(r) for r in rows]
+
+    async def chunks_for(self, memory_ids: list[str]) -> dict[str, list[ChunkHit]]:
+        rows = await self.pool.fetch(
+            """
+            SELECT c.id, c.memory_id, c.kind, c.content, m.created_at
+            FROM memory_chunks c JOIN memory_logs m ON m.id = c.memory_id
+            WHERE c.memory_id = ANY($1::uuid[])
+            ORDER BY c.id
+            """,
+            memory_ids,
+        )
+        out: dict[str, list[ChunkHit]] = {}
+        for r in rows:
+            out.setdefault(str(r["memory_id"]), []).append(_hit(r))
+        return out
 
     async def recent(self, hours: int) -> list[MemoryRecord]:
         rows = await self.pool.fetch(
@@ -200,14 +274,9 @@ class MemoryDB:
         )
         return (row["image"], row["image_type"] or "image/jpeg") if row else None
 
-    async def set_scene(self, memory_id: str, scene: str, embedding: list[float]) -> None:
-        """Store what the camera saw, and re-embed so search matches it too."""
-        await self.pool.execute(
-            "UPDATE memory_logs SET scene = $2, embedding = $3::vector WHERE id = $1::uuid",
-            memory_id,
-            scene,
-            _vec(embedding),
-        )
+    async def set_scene(self, memory_id: str, scene: str) -> None:
+        """What the camera saw, for the dashboard (its chunk is what search uses)."""
+        await self.pool.execute("UPDATE memory_logs SET scene = $2 WHERE id = $1::uuid", memory_id, scene)
 
     async def add_items(self, memory_id: str, items: list[tuple[str, str]]) -> None:
         if items:
@@ -269,7 +338,7 @@ class MemoryDB:
                 "DELETE FROM query_logs WHERE created_at < now() - make_interval(hours => $1)",
                 hours,
             )
-            # memory_items rows go with their memory via ON DELETE CASCADE.
+            # memory_items and memory_chunks rows go with their memory via ON DELETE CASCADE.
             result = await conn.execute(
                 "DELETE FROM memory_logs WHERE created_at < now() - make_interval(hours => $1)",
                 hours,
@@ -285,5 +354,15 @@ def _record(row) -> MemoryRecord:
         transcript=row["transcript"],
         has_image=row["has_image"],
         scene=row["scene"],
-        distance=row["distance"] if "distance" in row.keys() else None,
+    )
+
+
+def _hit(row, distance: float | None = None) -> ChunkHit:
+    return ChunkHit(
+        chunk_id=row["id"],
+        memory_id=str(row["memory_id"]),
+        kind=row["kind"],
+        content=row["content"],
+        created_at=row["created_at"],
+        distance=distance,
     )
