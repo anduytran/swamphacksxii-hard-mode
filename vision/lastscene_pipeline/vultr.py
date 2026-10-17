@@ -4,9 +4,9 @@
     python -m lastscene_pipeline.vultr run [--gpu]       train once if the photos changed
     python -m lastscene_pipeline.vultr cleanup           destroy anything this tool created
 
-Needs two env files (both outside git): the pipeline's device credentials (--env-file, as for sync) and
-VULTR_API_KEY (--vultr-env, default ~/.lastscene/vultr.env). Turn on Vultr's API access control and allow
-only your own IP for that key: it controls the whole account and is never sent to the server.
+Needs the pipeline's device credentials and VULTR_API_KEY, both in the --env-file (kept out of git); an
+older ~/.lastscene/vultr.env (--vultr-env) still works. Turn on Vultr's API access control and allow only
+your own IP for that key: it controls the whole account and is never sent to the server.
 
 Guardrails, all checked before a server is created (any one failing means nothing is created):
   * not on or after the day before the credit expires (VULTR_CREDIT_EXPIRES, default 2026-11-17)
@@ -76,7 +76,7 @@ class Vultr:
 
     def __init__(self, key: str, session=None, timeout: float = 30):
         if not key:
-            raise PipelineError(EXIT_CONFIG, "VULTR_API_KEY is not set (put it in ~/.lastscene/vultr.env)")
+            raise PipelineError(EXIT_CONFIG, "VULTR_API_KEY is not set (add it to the --env-file)")
         self.http = session or requests.Session()
         self.headers = {"Authorization": f"Bearer {key}"}
         self.timeout = timeout
@@ -297,8 +297,9 @@ class Runner:
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["status", "run", "cleanup"])
-    p.add_argument("--env-file", help="the pipeline's device credentials (KEY=VALUE, never commit)")
-    p.add_argument("--vultr-env", default=str(Path.home() / ".lastscene" / "vultr.env"))
+    p.add_argument("--env-file", help="device credentials and VULTR_API_KEY (KEY=VALUE, never commit)")
+    p.add_argument("--vultr-env", default=str(Path.home() / ".lastscene" / "vultr.env"),
+                   help="optional, older setup: a file holding only VULTR_API_KEY")
     p.add_argument("--gpu", action="store_true", help="a GPU plan instead of a 4 vCPU / 8 GB CPU one")
     p.add_argument("--region", default="atl", help="Vultr region id (atl = Atlanta); with --gpu, the nearest region offering one")
     p.add_argument("--ref", default="master", help="git branch the server trains from")

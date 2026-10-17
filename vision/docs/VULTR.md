@@ -7,21 +7,19 @@ LastScene API, and destroys the server. Wearables pick the model up with `python
 
 1. **Account → API → Enable API**, then **Access Control**: allow only your own IP address (or your
    phone hotspot's). The key controls the whole account, so a leaked key is useless from anywhere else.
-2. Copy the key into a file outside the repo, readable only by you:
-   ```bash
-   mkdir -p ~/.lastscene && printf 'VULTR_API_KEY=%s\n' '<paste key>' > ~/.lastscene/vultr.env && chmod 600 ~/.lastscene/vultr.env
-   ```
-   The key never leaves your machine: the training server never sees it.
-3. Have the pipeline's device credentials in another env file (as for `sync`): `API_URL`, `AUTH0_DOMAIN`,
-   `AUTH0_AUDIENCE`, `DEVICE_CLIENT_ID`, `DEVICE_CLIENT_SECRET`, `PAIRING_CODE`.
+2. Put the key in your env file (`vision/.env`, from `.env.example`; gitignored) as `VULTR_API_KEY=...`, next
+   to the pipeline's device credentials (as for `sync`): `API_URL`, `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`,
+   `DEVICE_CLIENT_ID`, `DEVICE_CLIENT_SECRET`, `PAIRING_CODE`. Keep it readable only by you (`chmod 600 .env`).
+   The key never leaves your machine: the training server only gets the device credentials.
+   (An older `~/.lastscene/vultr.env` holding only the key still works.)
 
 ## Use
 
 ```bash
 cd vision
-python -m lastscene_pipeline.vultr status                      # credit left, expiry, any trainer servers
-python -m lastscene_pipeline.vultr run --env-file ~/.lastscene/pipeline.env
-python -m lastscene_pipeline.vultr cleanup                     # destroy anything labelled lastscene-trainer
+python -m lastscene_pipeline.vultr status --env-file .env       # credit left, expiry, any trainer servers
+python -m lastscene_pipeline.vultr run --env-file .env
+python -m lastscene_pipeline.vultr cleanup --env-file .env      # destroy anything labelled lastscene-trainer
 ```
 
 `run` does nothing (and rents nothing) when there are no Teach photos or the published model already
