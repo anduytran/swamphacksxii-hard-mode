@@ -2,9 +2,10 @@
 // (styles.css → "Insights"). Every chart has a hover tooltip with the exact value and a text
 // alternative. See README → "Adding a visualization".
 //
-// Colours: series use the validated slots --series-1 (blue) and --series-2 (deep amber). To add
-// a third series colour, validate it against the surface first:
-//   node <dataviz skill>/scripts/validate_palette.js "#3987e5,#c98500,#NEW" --mode dark --surface "#171614"
+// Colours: series use the validated slots --series-1 (periwinkle) and --series-2 (deep gold),
+// one pair per theme. To add a third series colour, validate it against both surfaces first:
+//   node <dataviz skill>/scripts/validate_palette.js "#6F6BC2,#B07D12,#NEW" --mode light --surface "#FFFFFF"
+//   node <dataviz skill>/scripts/validate_palette.js "#7A76CC,#BF8714,#NEW" --mode dark --surface "#232048"
 // and add --series-3 / .s3 in styles.css. Never reuse the status colours for data.
 import { useMemo, useState, type PointerEvent } from "react";
 

@@ -4,11 +4,11 @@ import type { LostCell, LostItem, LostMap } from "./types";
 
 export type RGB = [number, number, number];
 
-// Warm sequential ramp: dark crimson (few) → bright yellow (many). Lightness rises
-// monotonically (OKLab L 0.38 → 0.88), so it reads as "more" on the dark map; the legend
-// under the map uses the same stops.
+// Sequential ramp on the night-indigo map: indigo → plum → coral → gold, from few to many.
+// Lightness rises monotonically (OKLab L 0.41 → 0.84, ground 0.21), so it reads as "more";
+// the legend under the map (.heat-ramp in styles.css) uses the same stops.
 export const HEAT_COLORS: RGB[] = [
-  [122, 16, 48], [176, 24, 46], [222, 59, 36], [242, 106, 27], [249, 161, 27], [255, 210, 63],
+  [75, 58, 140], [122, 63, 142], [176, 74, 115], [217, 96, 76], [232, 137, 58], [245, 194, 90],
 ];
 
 export function rampColor(t: number): RGB {

@@ -5,20 +5,23 @@ import { BitmapLayer } from "@deck.gl/layers";
 
 export type RGBA = [number, number, number, number?];
 
+// Maps are night maps in both themes: indigo ground, cream labels. Keep in step with the
+// --map-* tokens in styles.css (the legends under each map use them).
 export const MAP_COLORS = {
-  roomLine: [62, 58, 52],
-  roomFill: [23, 22, 20], // --surface
-  lost: [201, 133, 0], // --series-2
-  asked: [244, 167, 59], // --amber
-  calm: [57, 135, 229], // --series-1
-  label: [168, 161, 150],
-  text: [243, 239, 232],
-  ground: [14, 13, 12],
+  roomLine: [72, 68, 122],
+  roomFill: [35, 32, 72], // dark --surface #232048
+  asked: [217, 96, 76], // --map-asked, coral: needs attention
+  calm: [156, 152, 224], // --map-calm, periwinkle
+  publicPlace: [227, 162, 26], // --map-public, trinket gold
+  trail: [185, 182, 240], // --map-trail
+  label: [180, 177, 209],
+  text: [248, 244, 235], // cream
+  ground: [22, 20, 46], // --map-ground #16142E
 } satisfies Record<string, [number, number, number]>;
 
 export const GEO_TOOLTIP_STYLE = {
-  background: "#f3efe8",
-  color: "#0e0d0c",
+  background: "#F8F4EB",
+  color: "#25233A",
   fontSize: "13px",
   fontFamily: "Geist, system-ui, sans-serif",
   borderRadius: "8px",
@@ -26,13 +29,13 @@ export const GEO_TOOLTIP_STYLE = {
   lineHeight: "1.45",
 };
 
-export const NAVY_TINT: [number, number, number] = [46, 56, 72]; // the public map's basemap
+export const INDIGO_TINT: [number, number, number] = [62, 58, 112]; // basemap tint: desaturated OSM, night indigo
 
 // OpenStreetMap's standard tiles (no key; light use with attribution, per the OSM tile
-// policy), desaturated and tinted down to sit on the dark theme.
+// policy), desaturated and tinted indigo to sit under the data.
 const BASEMAP_URLS = ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"];
 
-export function basemap(tint: [number, number, number] = [70, 66, 60]) {
+export function basemap(tint: [number, number, number] = INDIGO_TINT) {
   return new TileLayer({
     id: "basemap",
     data: BASEMAP_URLS,
@@ -83,8 +86,8 @@ export function buildingsLayer(tiles: string[]) {
     extruded: true,
     stroked: false,
     getElevation: (f: { properties: BuildingProps }) => (f.properties.hide_3d ? 0 : f.properties.render_height || 6),
-    getFillColor: [74, 68, 60, 240],
-    material: { ambient: 0.5, diffuse: 0.55, shininess: 6, specularColor: [30, 28, 24] },
+    getFillColor: [70, 66, 118, 240], // indigo-gray, lit from above
+    material: { ambient: 0.5, diffuse: 0.55, shininess: 6, specularColor: [40, 38, 70] },
   });
 }
 

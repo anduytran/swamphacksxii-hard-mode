@@ -8,7 +8,7 @@ High-fidelity, responsive spec for the caregiver dashboard as built in `web/` (R
 |---|---|
 | **Context** | Web dashboard (also used on phones) for family members who look after someone with memory loss. They check where things were left, what keeps going missing, and set up the wearable. Often older, often on a phone, often in a hurry. |
 | **Structure** | Desktop ≥ 961px: 248px sidebar + content column, max 1320px, 48px side padding, 16px gutters. Tablet 641–960px and phone ≤ 640px: sticky top bar + fixed bottom tab bar, single column, 16–20px side padding. Grids are `auto-fill` / `auto-fit` (e.g. item cards `minmax(250px, 1fr)`: 3–4 columns desktop, 2 tablet, 1 phone). |
-| **Constraints** | Dark only ("Darkroom"). No box shadows: depth comes from layered surfaces and 1px borders. No stock photography: real camera frames, plus line-art and geometric illustration. No placeholder-only labels. Every interactive element ≥ 44×44px. Text ≥ 4.5:1 contrast. Chart colours come only from the validated series pair, never from status colours. |
+| **Constraints** | Light (warm cream) by default, dark (night indigo) when the system is dark; maps are night maps in both. No box shadows: depth comes from layered surfaces and 1px borders. No stock photography: real camera frames, plus line-art and geometric illustration. No placeholder-only labels. Every interactive element ≥ 44×44px. Text ≥ 4.5:1 contrast. Chart colours come only from the validated series pair, never from status colours. |
 | **Output** | Responsive, production code. This file is the reference. |
 
 ## 2. Screens and flows
@@ -37,17 +37,19 @@ High-fidelity, responsive spec for the caregiver dashboard as built in `web/` (R
 
 ## 3. Visual style
 
-Mood: calm, warm and quiet: a darkroom with a safelight. Amber means "this matters / where it is now"; everything else stays neutral.
+Mood: "a raven's treasure". The raven brings back lost things, so the palette is deep indigo plumage with shiny warm finds. Indigo means trust and calm; gold is kept rare, for the payoff moments ("found it", the latest scene, a matched search result, the spot an item was left); cream does the heavy lifting.
 
-| Token | Value | Use |
-|---|---|---|
-| `--ground` | `#0e0d0c` | Page |
-| `--surface` / `-2` / `-3` | `#171614` / `#1f1d1a` / `#292723` | Cards → raised controls → selected/pressed |
-| `--line` / `-strong` / `-hi` | warm white at 7% / 12% / 20% | Card borders → control borders → hover borders |
-| `--text` / `--text-2` / `--muted` / `--faint` | `#f3efe8` / `#d2cbbf` / `#a8a196` / `#918a7f` | ≥ 4.9:1 on every text surface |
-| `--amber` | `#f4a73b` | Accent, primary action, focus ring |
-| `--series-1` / `-2` | `#3987e5` / `#c98500` | Chart series (validated pair, CVD-safe) |
-| good / warn / danger | `#8fd6a5` / `#f1c46b` / `#ff8a7a` on tinted grounds | Status, always with an icon or label |
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `--ground` | `#F8F4EB` warm cream | `#16142E` | Page |
+| `--surface` / `-2` / `-3` | `#FFFFFF` / `#F3F1F9` / `#E6E4F2` pale lavender | `#232048` / `#2B2855` / `#353163` | Cards → hover → selected, chips, dividers |
+| `--text` / `--muted` | `#25233A` ink / `#6B6985` dusk gray | `#F8F4EB` / `#B4B1D1` | ≥ 4.8:1 on every text surface |
+| `--heading`, `--primary` | `#2E2A5C` raven indigo | cream headings, `#9C98E0` periwinkle buttons | Logo, headers, main buttons |
+| `--secondary` / `--link` | `#7F7BC9` periwinkle (icons, selected) / `#5B57A6` for text | `#9C98E0` / `#B3B0EC` | Links, selected states, focus ring (`--link`) |
+| `--gold` | `#E3A21A` trinket gold, with indigo text on top | same | Found-it moments: fills, icons, badges, never small text on cream |
+| good / pending / attention | moss `#4C9A74` / periwinkle `#7F7BC9` / coral `#D9604C`, as tinted fills with `#2F6B4F` / `#4A4690` / `#A8402F` text | lighter inks on darker tints | Found or matched / searching or pending / needs attention or not found, always with an icon or label |
+| `--series-1` / `-2` | `#6F6BC2` / `#B07D12` | `#7A76CC` / `#BF8714` | Chart series (validated per theme, CVD-safe) |
+| `--map-*` | night indigo `#16142E`; coral asked, periwinkle calm, gold public, cream labels | same | Map canvases (deck.gl colours in `lib/mapLayers.ts`); public grid ramp indigo → plum → coral → gold |
 
 **Type**
 
@@ -67,7 +69,7 @@ Illustration: the landing scene card is an inline SVG (line-art counter, keys, m
 
 | Data (`/dashboard/insights?hours=`) | Visual | Weight |
 |---|---|---|
-| memories_logged, questions_asked, unanswered_count, items_tracked | KPI tiles; "never logged" turns amber when > 0 | Full width, top |
+| memories_logged, questions_asked, unanswered_count, items_tracked | KPI tiles; "never logged" turns coral (needs attention) when > 0 | Full width, top |
 | Gemini summary | Bordered summary card | Full width |
 | Highlights | "Worth a conversation" notice | Full width |
 | most_asked / most_logged | Ranked bar lists, rows open the item drawer | Two 50% columns (stack < 680px) |
@@ -86,7 +88,7 @@ Illustration: the landing scene card is an inline SVG (line-art counter, keys, m
 ## 6. Accessibility
 
 - Skip-to-content link is the first focusable element; `main` takes focus.
-- Focus ring: 2px solid amber, 2px offset, on every control. Cards show the ring around the whole card.
+- Focus ring: 2px solid deep periwinkle (`--link`), 2px offset, on every control. Cards show the ring around the whole card.
 - Persistent visible labels, `label for`, inline errors via `aria-describedby` + `aria-invalid`, an "(optional)" marker.
 - `role="status"` for loading, results count and errors; icon-only buttons carry `aria-label`; dialogs are labelled by their title; skeletons are `aria-hidden`.
 - Alt text describes the item and place, adds detected objects, and quotes what was said for search results.
@@ -96,7 +98,7 @@ Illustration: the landing scene card is an inline SVG (line-art counter, keys, m
 
 | Component | Variants | States |
 |---|---|---|
-| Button | `.primary` (amber), `.pill` (secondary), `.ghost`, `.danger`, `.icon-btn` | default · hover (lighter surface/border) · active (pressed surface) · focus-visible (ring) · disabled (45% opacity, not-allowed) · loading (`aria-busy`: inline spinner, disabled) |
+| Button | `.primary` (indigo; periwinkle in dark), `.pill` (secondary), `.ghost`, `.danger`, `.icon-btn` | default · hover (lighter surface/border) · active (pressed surface) · focus-visible (ring) · disabled (45% opacity, not-allowed) · loading (`aria-busy`: inline spinner, disabled) |
 | Segmented control | – | default · hover · pressed (`aria-pressed`, raised surface + border) |
 | Chip | neutral, `.warn`, `.auto` (info), `.place` | static |
 | Card | `.card`, `.item-card`, `.featured`, `.tile`, `.tile.alert`, `.summary` | default · hover (border, raised surface) · focus-within (ring) |

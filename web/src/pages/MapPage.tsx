@@ -106,7 +106,7 @@ export default function MapPage() {
               Private place (only your household sees it)
             </span>
             <span>
-              <i className="dot dot-asked" />
+              <i className="dot dot-public" />
               Public place
             </span>
             <span>
@@ -188,7 +188,7 @@ function houseLayers(data: HouseMap, playing: boolean, time: number) {
       id: "rooms",
       data: data.rooms,
       getPolygon: (r) => r.polygon,
-      getFillColor: (r) => (r.lost ? [...MAP_COLORS.lost, 40 + Math.round((r.lost / maxLost) * 150)] : [...MAP_COLORS.roomFill, 255]),
+      getFillColor: (r) => (r.lost ? [...MAP_COLORS.asked, 40 + Math.round((r.lost / maxLost) * 150)] : [...MAP_COLORS.roomFill, 255]),
       getLineColor: MAP_COLORS.roomLine,
       lineWidthUnits: "pixels",
       getLineWidth: 2,
@@ -213,7 +213,7 @@ function houseLayers(data: HouseMap, playing: boolean, time: number) {
           data: data.trips,
           getPath: (t) => t.path,
           getTimestamps: (t) => t.timestamps,
-          getColor: MAP_COLORS.asked,
+          getColor: MAP_COLORS.trail,
           widthUnits: "pixels",
           getWidth: 3,
           capRounded: true,
@@ -226,7 +226,7 @@ function houseLayers(data: HouseMap, playing: boolean, time: number) {
           id: "trails",
           data: data.trips,
           getPath: (t) => t.path,
-          getColor: [...MAP_COLORS.asked, 140],
+          getColor: [...MAP_COLORS.trail, 150],
           widthUnits: "pixels",
           getWidth: 2,
           capRounded: true,
@@ -301,8 +301,8 @@ function PlacesMapView({ data, onRetry }: { data?: PlacesResponse; onRetry(): vo
         getRadius: (p) => p.radius_m,
         radiusUnits: "meters",
         radiusMinPixels: 10,
-        getFillColor: (p) => (p.kind === "public" ? [...MAP_COLORS.asked, 90] : [...MAP_COLORS.calm, 70]),
-        getLineColor: (p) => (p.kind === "public" ? MAP_COLORS.asked : MAP_COLORS.calm),
+        getFillColor: (p) => (p.kind === "public" ? [...MAP_COLORS.publicPlace, 90] : [...MAP_COLORS.calm, 70]),
+        getLineColor: (p) => (p.kind === "public" ? MAP_COLORS.publicPlace : MAP_COLORS.calm),
         stroked: true,
         lineWidthUnits: "pixels",
         getLineWidth: 2,

@@ -10,7 +10,7 @@ import { Icon } from "../components/Icons";
 import { publicGet } from "../lib/api";
 import { useLoadStatus } from "../lib/app";
 import { capitalize, prefersReducedMotion } from "../lib/format";
-import { basemap, buildingsLayer, buildingTileUrls, fitView, GEO_TOOLTIP_STYLE, NAVY_TINT, type GeoView } from "../lib/mapLayers";
+import { basemap, buildingsLayer, buildingTileUrls, fitView, GEO_TOOLTIP_STYLE, type GeoView } from "../lib/mapLayers";
 import { binCells, coreSpots, gridLevel, rampColor, simulatedLostMap, spotView, UF_CAMPUS, type GridCell } from "../lib/publicGrid";
 import { useResource } from "../lib/resource";
 import type { LostCell, LostMap } from "../lib/types";
@@ -69,7 +69,7 @@ export default function PublicMapPage() {
     const binned = binCells(data?.cells ?? [], level);
     const maxTotal = Math.max(1, ...binned.map((c) => c.total));
     return [
-      basemap(NAVY_TINT),
+      basemap(),
       tiles && buildingsLayer(tiles),
       // 3D grid: one square column per cell (78% of the cell width, so neighbours keep a gap);
       // height and colour both encode how often things were lost or asked about there.
@@ -186,7 +186,7 @@ export default function PublicMapPage() {
           <h2>
             Busiest spots{" "}
             {mode === "sim" && (
-              <span className="chip warn">Simulated</span>
+              <span className="chip attention">Simulated</span>
             )}
           </h2>
           <ol className="public-list">
