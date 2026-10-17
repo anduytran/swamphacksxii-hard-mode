@@ -1,68 +1,72 @@
-/* LastScene — "a raven's treasure": deep indigo plumage on warm cream, with gold kept for
-   the shiny "found it" moments. Light by default; dark (night indigo) follows the system.
+/* LastScene — indigo on white: one deep indigo for brand, headings and the main button, a
+   brighter indigo for links, and amber kept for one highlight per screen.
+   Light by default; dark (deep indigo) follows the system.
    Bricolage Grotesque for display type, Geist for UI text, Geist Mono for times and counts.
    Layout: a sidebar when signed in (a top bar + bottom tab bar on phones), a slim top bar when signed out.
 
-   Contrast rules: periwinkle, moss, coral and gold fail as small text on cream, so text uses
-   their deeper "-ink"/--link shades; gold is for fills, icons and badges with indigo text on top. */
+   Contrast rules: body text is always --text. Amber is a fill with --on-gold text on top, never
+   text on white (use --amber-ink). --line is decorative only; anything interactive (fields,
+   outlined buttons) is bordered with --field. Status always pairs its colour with an icon or label. */
 :root {
-  --ground: #F8F4EB;          /* warm cream page */
-  --sidebar: #F2EDE1;
-  --surface: #FFFFFF;         /* cards, item listings */
-  --surface-2: #F3F1F9;       /* hover, raised controls */
-  --surface-3: #E6E4F2;       /* pale lavender: selected, chips, dividers */
-  --line: color-mix(in srgb, #25233A 10%, transparent);
-  --line-strong: color-mix(in srgb, #25233A 16%, transparent);
-  --line-hi: color-mix(in srgb, #25233A 28%, transparent);
-  --text: #25233A;            /* ink */
-  --text-2: #3D3A57;
-  --heading: #2E2A5C;         /* headers in raven indigo */
-  --muted: #6B6985;           /* dusk gray, 4.8:1 on cream */
-  --faint: #6B6985;
-  --primary: #2E2A5C;         /* raven indigo: logo, main buttons */
-  --primary-hover: #3B3673;
+  --ground: #FFFFFF;          /* page */
+  --sidebar: #F4F5F9;
+  --surface: #F4F5F9;         /* cards, sections, input fills */
+  --surface-2: #ECEDF4;       /* hover */
+  --surface-3: #E8E9F7;       /* selected, chips (the info tint) */
+  --line: #DADCE8;            /* dividers: decorative only */
+  --line-strong: #DADCE8;
+  --line-hi: #4B4E6A;         /* hover on bordered controls */
+  --field: #80839E;           /* field and outlined-button borders, 3.7:1 on white */
+  --text: #17162E;            /* body text, 17.6:1 */
+  --text-2: #17162E;
+  --heading: #2E2A5C;         /* logo, headings, nav */
+  --muted: #4B4E6A;           /* secondary text, 8.1:1 */
+  --faint: #4B4E6A;
+  --primary: #2E2A5C;         /* main buttons */
+  --primary-hover: #3B35A8;
   --primary-active: #24204A;
-  --on-primary: #F8F4EB;
-  --secondary: #7F7BC9;       /* periwinkle: icons, selected states (not small text) */
-  --link: #5B57A6;            /* periwinkle deep enough for text: 5.7:1 on cream */
+  --on-primary: #FFFFFF;
+  --secondary: #3B35A8;       /* icons, focus, selected states */
+  --link: #3B35A8;            /* inline links, active tab: 9.3:1 */
   --link-hover: #2E2A5C;
-  --gold: #E3A21A;            /* trinket gold: only the "found it" moments, as fills */
-  --on-gold: #2E2A5C;         /* indigo on gold: 5.9:1 */
-  --gold-soft: color-mix(in srgb, #E3A21A 18%, #FFFFFF);
-  --gold-line: color-mix(in srgb, #E3A21A 60%, transparent);
+  --gold: #F5B23C;            /* the accent: one highlight per screen, as a fill */
+  --on-gold: #17162E;         /* 9.5:1 */
+  --amber-ink: #9A5B00;       /* amber-toned text, 5.4:1 on white */
   --brand: #2E2A5C;
-  --brand-tile: #E6E4F2;
-  /* Status: always with an icon or label */
-  --good: #4C9A74;            /* item found / matched (moss) */
-  --good-bg: color-mix(in srgb, #4C9A74 14%, #FFFFFF);
-  --good-ink: #2F6B4F;
-  --pending: #7F7BC9;         /* searching / pending (periwinkle) */
-  --pending-bg: color-mix(in srgb, #7F7BC9 16%, #FFFFFF);
-  --pending-ink: #4A4690;
-  --attention: #D9604C;       /* needs attention / not found (coral) */
-  --attention-bg: color-mix(in srgb, #D9604C 11%, #FFFFFF);
-  --attention-line: color-mix(in srgb, #D9604C 40%, transparent);
-  --attention-ink: #A8402F;
-  /* Chart series: validated pair (periwinkle / deep gold) on --surface #FFFFFF */
-  --series-1: #6F6BC2;
+  --brand-tile: #E8E9F7;
+  /* Status: dark text on a soft tint, always with an icon or label */
+  --good: #14633F;            /* matched / found */
+  --good-bg: #E6F4EC;
+  --good-ink: #14633F;
+  --pending: #B26A00;         /* pending / searching */
+  --pending-bg: #FDF0D8;
+  --pending-ink: #7A4200;
+  --attention: #C2334B;       /* lost / not found */
+  --attention-bg: #FCE8EC;
+  --attention-line: color-mix(in srgb, #9B1C31 32%, transparent);
+  --attention-ink: #9B1C31;
+  --info-bg: #E8E9F7;
+  --info-ink: #2E2A5C;
+  /* Chart series: validated pair (indigo / deep gold) on --surface #F4F5F9 */
+  --series-1: #5F5BC0;
   --series-2: #B07D12;
   /* Maps are night maps in both themes (deck.gl colours in lib/mapLayers.ts) */
-  --map-ground: #16142E;
-  --map-asked: #D9604C;
-  --map-calm: #9C98E0;
-  --map-public: #E3A21A;
+  --map-ground: #14132B;
+  --map-asked: #E8687E;
+  --map-calm: #A9A5F0;
+  --map-public: #F5B23C;
   --map-trail: #B9B6F0;
-  --map-memory: #F8F4EB;
-  --overlay: rgba(22, 20, 46, 0.74); /* labels over photos and maps */
-  --on-overlay: #F8F4EB;
-  --tooltip-bg: #25233A;
-  --tooltip-ink: #F8F4EB;
-  --backdrop: rgba(22, 20, 46, 0.45);
-  --header-bg: color-mix(in srgb, #F8F4EB 96%, transparent);
-  --skeleton-a: #EEECF5;
-  --skeleton-b: #E1DEEF;
-  --glow-1: rgba(127, 123, 201, 0.16);
-  --glow-2: rgba(227, 162, 26, 0.1);
+  --map-memory: #F4F5F9;
+  --overlay: rgba(20, 19, 43, 0.74); /* labels over photos and maps */
+  --on-overlay: #FFFFFF;
+  --tooltip-bg: #17162E;
+  --tooltip-ink: #FFFFFF;
+  --backdrop: rgba(20, 19, 43, 0.45);
+  --header-bg: color-mix(in srgb, #FFFFFF 96%, transparent);
+  --skeleton-a: #F4F5F9;
+  --skeleton-b: #E6E7EF;
+  --glow-1: transparent;
+  --glow-2: transparent;
 
   --radius-xl: 22px;
   --radius-lg: 16px;
@@ -84,51 +88,54 @@
   color-scheme: light;
 }
 
-/* Dark: night indigo. Primary elements flip to periwinkle; gold stays (it glows on indigo);
-   the logo goes pale lavender. */
+/* Dark: deep indigo. Buttons and links flip to periwinkle; the accent stays. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --ground: #16142E;
-    --sidebar: #1A1836;
-    --surface: #232048;
-    --surface-2: #2B2855;
-    --surface-3: #353163;
-    --line: color-mix(in srgb, #E6E4F2 9%, transparent);
-    --line-strong: color-mix(in srgb, #E6E4F2 15%, transparent);
-    --line-hi: color-mix(in srgb, #E6E4F2 26%, transparent);
-    --text: #F8F4EB;
-    --text-2: #DEDBEE;
-    --heading: #F8F4EB;
-    --muted: #B4B1D1;
-    --faint: #9592BC;
-    --primary: #9C98E0;
-    --primary-hover: #AEAAE8;
-    --primary-active: #8C88D6;
-    --on-primary: #16142E;
-    --secondary: #9C98E0;
-    --link: #B3B0EC;
-    --link-hover: #F8F4EB;
-    --on-gold: #16142E;
-    --gold-soft: color-mix(in srgb, #E3A21A 20%, #232048);
-    --brand: #E6E4F2;
-    --brand-tile: #2B2855;
-    --good-bg: color-mix(in srgb, #4C9A74 22%, #232048);
-    --good-ink: #7CC6A0;
-    --pending-bg: color-mix(in srgb, #7F7BC9 24%, #232048);
-    --pending-ink: #C3C0F2;
-    --attention-bg: color-mix(in srgb, #D9604C 20%, #232048);
-    --attention-ink: #F08A76;
-    /* validated on --surface #232048 */
+    --ground: #14132B;
+    --sidebar: #181733;
+    --surface: #1E1D3D;
+    --surface-2: #27264B;
+    --surface-3: #2A2955;
+    --line: color-mix(in srgb, #F4F5F9 10%, transparent);
+    --line-strong: color-mix(in srgb, #F4F5F9 14%, transparent);
+    --line-hi: #B4B7D0;
+    --field: #7A7D9E;         /* 4.0:1 on --surface */
+    --text: #F4F5F9;
+    --text-2: #F4F5F9;
+    --heading: #F4F5F9;
+    --muted: #B4B7D0;
+    --faint: #B4B7D0;
+    --primary: #A9A5F0;
+    --primary-hover: #BCB9F4;
+    --primary-active: #9590E6;
+    --on-primary: #14132B;    /* 8.1:1 */
+    --secondary: #A9A5F0;
+    --link: #A9A5F0;
+    --link-hover: #F4F5F9;
+    --amber-ink: #F2C27A;
+    --brand: #F4F5F9;
+    --brand-tile: #27264B;
+    --good: #4FB386;
+    --good-bg: #1F3B37;
+    --good-ink: #7FD3A8;
+    --pending: #E0A040;
+    --pending-bg: #3A2F22;
+    --pending-ink: #F2C27A;
+    --attention: #E8687E;
+    --attention-bg: #3E2235;
+    --attention-line: color-mix(in srgb, #F49AAA 35%, transparent);
+    --attention-ink: #F49AAA;
+    --info-bg: #2A2955;
+    --info-ink: #C9C7F7;
+    /* validated on --surface #1E1D3D */
     --series-1: #7A76CC;
     --series-2: #BF8714;
-    --tooltip-bg: #F8F4EB;
-    --tooltip-ink: #25233A;
-    --backdrop: rgba(8, 7, 20, 0.66);
-    --header-bg: color-mix(in srgb, #16142E 96%, transparent);
-    --skeleton-a: #2B2855;
-    --skeleton-b: #353163;
-    --glow-1: rgba(156, 152, 224, 0.12);
-    --glow-2: rgba(227, 162, 26, 0.07);
+    --tooltip-bg: #F4F5F9;
+    --tooltip-ink: #17162E;
+    --backdrop: rgba(6, 6, 16, 0.66);
+    --header-bg: color-mix(in srgb, #14132B 96%, transparent);
+    --skeleton-a: #1E1D3D;
+    --skeleton-b: #27264B;
     color-scheme: dark;
   }
 }
@@ -202,7 +209,7 @@ a:hover { color: var(--link-hover); }
 .tabs a .i { color: var(--faint); transition: color 0.15s; }
 .tabs a:hover { color: var(--text); background: var(--surface-2); }
 .tabs a:hover .i { color: var(--text-2); }
-.tabs a[aria-current="page"] { color: var(--text); background: var(--surface-3); border-color: var(--line-strong); }
+.tabs a[aria-current="page"] { color: var(--link); background: var(--info-bg); border-color: transparent; font-weight: 600; }
 .tabs a[aria-current="page"] .i { color: var(--link); }
 .nav-label {
   display: block;
@@ -330,8 +337,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   min-height: 44px;
   padding: 0 18px;
   border-radius: 999px;
-  border: 1px solid var(--line-strong);
-  background: var(--surface);
+  border: 1px solid var(--field);
+  background: var(--ground);
   color: var(--text);
   transition: background-color 0.15s, border-color 0.15s;
 }
@@ -454,13 +461,13 @@ h3 { margin: 0; }
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--gold);
-  outline: 3px solid color-mix(in srgb, var(--gold) 28%, transparent);
+  background: var(--good);
+  outline: 3px solid color-mix(in srgb, var(--good) 28%, transparent);
   display: inline-block;
   flex: none;
   animation: breathe 2.4s ease-in-out infinite;
 }
-@keyframes breathe { 50% { outline-color: color-mix(in srgb, var(--gold) 6%, transparent); outline-width: 6px; } }
+@keyframes breathe { 50% { outline-color: color-mix(in srgb, var(--good) 6%, transparent); outline-width: 6px; } }
 
 .hero-visual { position: relative; margin: 0; padding: 0 0 104px 28px; }
 .hero-visual::before {
@@ -507,8 +514,8 @@ h3 { margin: 0; }
   font-size: 15px;
   line-height: 1.4;
 }
-.mock-q { left: 0; bottom: 56px; background: var(--surface-3); border: 1px solid var(--line-strong); border-bottom-left-radius: 4px; color: var(--text); }
-.mock-a { right: 8px; bottom: 0; background: var(--gold-soft); border: 1px solid var(--gold-line); border-bottom-right-radius: 4px; color: var(--text); }
+.mock-q { left: 0; bottom: 56px; background: var(--ground); border: 1px solid var(--line-strong); border-bottom-left-radius: 4px; color: var(--text); }
+.mock-a { right: 8px; bottom: 0; background: var(--info-bg); border: 1px solid var(--line); border-bottom-right-radius: 4px; color: var(--text); }
 
 .features {
   list-style: none;
@@ -566,7 +573,7 @@ h3 { margin: 0; }
 }
 .chip.warn { background: var(--pending-bg); border-color: color-mix(in srgb, var(--pending) 35%, transparent); color: var(--pending-ink); }
 .chip.attention { background: var(--attention-bg); border-color: var(--attention-line); color: var(--attention-ink); }
-.chip.auto { background: var(--surface-3); border-color: transparent; color: var(--heading); }
+.chip.auto { background: var(--info-bg); border-color: transparent; color: var(--info-ink); }
 .chip.place { font-size: 14px; padding: 6px 12px; background: var(--surface-2); border-color: var(--line); color: var(--text); }
 .chip.place b { font-weight: 500; color: var(--link); }
 
@@ -613,7 +620,7 @@ h3 { margin: 0; }
   mask: var(--icon-camera) center / contain no-repeat;
 }
 .saw::before { color: var(--secondary); }
-.item-location::before { color: var(--gold); } /* the spot it was found */
+.item-location::before { color: var(--link); } /* the spot it was found */
 .item-location { display: flex; gap: 6px; }
 .item-location::before { -webkit-mask-image: var(--icon-pin); mask-image: var(--icon-pin); }
 .when { display: inline-flex; align-items: center; gap: 6px; }
@@ -625,7 +632,7 @@ h3 { margin: 0; }
   font: inherit;
   color: var(--text);
   background: var(--surface);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--field);
   transition: border-color 0.15s, background-color 0.15s;
 }
 .search input { width: 100%; font-size: 15px; min-height: 44px; padding: 0 14px 0 42px; border-radius: 12px; }
@@ -769,7 +776,7 @@ input::placeholder { color: var(--faint); }
   gap: 2px;
   border-radius: 999px;
   background: var(--surface);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--field);
 }
 .segmented button {
   min-height: 44px;
@@ -916,8 +923,8 @@ input::placeholder { color: var(--faint); }
   font-size: 14px;
   padding: 0 16px;
   border-radius: 999px;
-  border: 1px solid var(--line-strong);
-  background: var(--surface);
+  border: 1px solid var(--field);
+  background: var(--ground);
   color: var(--text-2);
   transition: background-color 0.15s, border-color 0.15s, color 0.15s;
 }
@@ -935,13 +942,14 @@ input::placeholder { color: var(--faint); }
 .result .photo { min-height: 150px; }
 .result-body { padding: 16px 20px 18px; display: flex; flex-direction: column; gap: 12px; }
 .result-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; font-size: 13px; color: var(--muted); }
-.result-rank { display: inline-grid; place-items: center; min-width: 32px; height: 26px; padding: 0 8px; border-radius: 8px; color: var(--on-gold); background: var(--gold); font-size: 13px; font-weight: 500; }
+.result-rank { display: inline-grid; place-items: center; min-width: 32px; height: 26px; padding: 0 8px; border-radius: 8px; color: var(--info-ink); background: var(--info-bg); font-size: 13px; font-weight: 500; }
+.result:first-child .result-rank { color: var(--on-gold); background: var(--gold); } /* the best match: this screen's highlight */
 .result-score { margin-left: auto; color: var(--faint); }
 .chunks { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .chunk { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; color: var(--faint); font-size: 15px; }
 .chunk.matched { color: var(--text); }
 .kind { font: 500 10.5px var(--mono); text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 8px; border-radius: 6px; background: var(--surface-2); color: var(--muted); }
-.chunk.matched .kind { background: var(--gold-soft); color: var(--text); }
+.chunk.matched .kind { background: var(--info-bg); color: var(--info-ink); }
 .chunk-text { flex: 1 1 200px; min-width: 0; }
 .why { font-size: 12px; color: var(--link); }
 
@@ -974,7 +982,7 @@ input::placeholder { color: var(--faint); }
   border: 1px solid transparent;
   background:
     linear-gradient(var(--surface), var(--surface)) padding-box,
-    linear-gradient(130deg, var(--secondary), color-mix(in srgb, var(--secondary) 15%, transparent) 45%, var(--gold-line)) border-box;
+    linear-gradient(130deg, var(--secondary), color-mix(in srgb, var(--secondary) 15%, transparent) 45%, var(--line)) border-box;
 }
 .summary-text { margin: 0; font: 500 21px/1.5 var(--display); letter-spacing: -0.01em; max-width: 62ch; text-wrap: pretty; }
 .summary-by { margin: 14px 0 0; font: 12px var(--mono); color: var(--faint); }
@@ -1120,7 +1128,7 @@ button[aria-busy="true"]::before {
 }
 .more-tab .i { color: var(--faint); }
 .more-tab:hover { color: var(--text); background: var(--surface-2); }
-#tabs:has(.nav-secondary[aria-current="page"]) .more-tab { color: var(--text); background: var(--surface-3); border-color: var(--line-strong); }
+#tabs:has(.nav-secondary[aria-current="page"]) .more-tab { color: var(--link); background: var(--info-bg); border-color: transparent; }
 #tabs:has(.nav-secondary[aria-current="page"]) .more-tab .i { color: var(--link); }
 
 /* ---------- status line with retry ---------- */

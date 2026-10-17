@@ -8,7 +8,7 @@ High-fidelity, responsive spec for the caregiver dashboard as built in `web/` (R
 |---|---|
 | **Context** | Web dashboard (also used on phones) for family members who look after someone with memory loss. They check where things were left, what keeps going missing, and set up the wearable. Often older, often on a phone, often in a hurry. |
 | **Structure** | Desktop ≥ 961px: 248px sidebar + content column, max 1320px, 48px side padding, 16px gutters. Tablet 641–960px and phone ≤ 640px: sticky top bar + fixed bottom tab bar, single column, 16–20px side padding. Grids are `auto-fill` / `auto-fit` (e.g. item cards `minmax(250px, 1fr)`: 3–4 columns desktop, 2 tablet, 1 phone). |
-| **Constraints** | Light (warm cream) by default, dark (night indigo) when the system is dark; maps are night maps in both. No box shadows: depth comes from layered surfaces and 1px borders. No stock photography: real camera frames, plus line-art and geometric illustration. No placeholder-only labels. Every interactive element ≥ 44×44px. Text ≥ 4.5:1 contrast. Chart colours come only from the validated series pair, never from status colours. |
+| **Constraints** | Light (white) by default, dark (deep indigo) when the system is dark; maps are night maps in both. No box shadows: depth comes from layered surfaces and 1px borders. No stock photography: real camera frames, plus line-art and geometric illustration. No placeholder-only labels. Every interactive element ≥ 44×44px. Text ≥ 4.5:1 contrast. Chart colours come only from the validated series pair, never from status colours. |
 | **Output** | Responsive, production code. This file is the reference. |
 
 ## 2. Screens and flows
@@ -37,19 +37,22 @@ High-fidelity, responsive spec for the caregiver dashboard as built in `web/` (R
 
 ## 3. Visual style
 
-Mood: "a raven's treasure". The raven brings back lost things, so the palette is deep indigo plumage with shiny warm finds. Indigo means trust and calm; gold is kept rare, for the payoff moments ("found it", the latest scene, a matched search result, the spot an item was left); cream does the heavy lifting.
+Mood: calm and clear. Indigo means trust; white and a cool gray surface do the heavy lifting. Amber is the one accent, kept to one highlight per screen (the best search match, the latest scene on the timeline, where an item is now on the map, the detection box on a photo).
 
 | Token | Light | Dark | Use |
 |---|---|---|---|
-| `--ground` | `#F8F4EB` warm cream | `#16142E` | Page |
-| `--surface` / `-2` / `-3` | `#FFFFFF` / `#F3F1F9` / `#E6E4F2` pale lavender | `#232048` / `#2B2855` / `#353163` | Cards → hover → selected, chips, dividers |
-| `--text` / `--muted` | `#25233A` ink / `#6B6985` dusk gray | `#F8F4EB` / `#B4B1D1` | ≥ 4.8:1 on every text surface |
-| `--heading`, `--primary` | `#2E2A5C` raven indigo | cream headings, `#9C98E0` periwinkle buttons | Logo, headers, main buttons |
-| `--secondary` / `--link` | `#7F7BC9` periwinkle (icons, selected) / `#5B57A6` for text | `#9C98E0` / `#B3B0EC` | Links, selected states, focus ring (`--link`) |
-| `--gold` | `#E3A21A` trinket gold, with indigo text on top | same | Found-it moments: fills, icons, badges, never small text on cream |
-| good / pending / attention | moss `#4C9A74` / periwinkle `#7F7BC9` / coral `#D9604C`, as tinted fills with `#2F6B4F` / `#4A4690` / `#A8402F` text | lighter inks on darker tints | Found or matched / searching or pending / needs attention or not found, always with an icon or label |
-| `--series-1` / `-2` | `#6F6BC2` / `#B07D12` | `#7A76CC` / `#BF8714` | Chart series (validated per theme, CVD-safe) |
-| `--map-*` | night indigo `#16142E`; coral asked, periwinkle calm, gold public, cream labels | same | Map canvases (deck.gl colours in `lib/mapLayers.ts`); public grid ramp indigo → plum → coral → gold |
+| `--ground` | `#FFFFFF` | `#14132B` | Page |
+| `--surface` / `-2` / `-3` | `#F4F5F9` / `#ECEDF4` / `#E8E9F7` | `#1E1D3D` / `#27264B` / `#2A2955` | Cards, sections, input fills → hover → selected |
+| `--text` | `#17162E` (17.6:1), always the body text colour | `#F4F5F9` | Body text |
+| `--heading`, `--primary` | `#2E2A5C` with `#FFFFFF` on buttons | `#F4F5F9` headings, `#A9A5F0` buttons with `#14132B` text | Logo, headings, nav, main buttons |
+| `--muted` | `#4B4E6A` (8.1:1) | `#B4B7D0` | Secondary text |
+| `--link` / `--secondary` | `#3B35A8` (9.3:1) | `#A9A5F0` | Inline links, active tab, icons, focus ring |
+| `--field` | `#80839E` (3.7:1) | `#7A7D9E` | Borders on anything interactive: fields, outlined buttons, segmented controls |
+| `--line` | `#DADCE8` | 10% pale | Dividers and card edges only, never on interactive elements |
+| `--gold` | `#F5B23C` with `#17162E` text (9.5:1) | same | The one highlight per screen, as a fill. Never amber text on white: use `--amber-ink` `#9A5B00` |
+| matched / pending / lost / info | `#14633F` on `#E6F4EC` / `#7A4200` on `#FDF0D8` / `#9B1C31` on `#FCE8EC` / `#2E2A5C` on `#E8E9F7` | `#7FD3A8` on `#1F3B37` / `#F2C27A` on `#3A2F22` / `#F49AAA` on `#3E2235` / `#C9C7F7` on `#2A2955` | Dark text on a soft tint, always with an icon or label (never colour alone) |
+| `--series-1` / `-2` | `#5F5BC0` / `#B07D12` on `#F4F5F9` | `#7A76CC` / `#BF8714` on `#1E1D3D` | Chart series (validated per theme, CVD-safe) |
+| `--map-*` | deep indigo `#14132B`; rose asked, periwinkle calm, amber public, pale labels | same | Map canvases (deck.gl colours in `lib/mapLayers.ts`); public grid ramp indigo → plum → coral → gold |
 
 **Type**
 
@@ -69,7 +72,7 @@ Illustration: the landing scene card is an inline SVG (line-art counter, keys, m
 
 | Data (`/dashboard/insights?hours=`) | Visual | Weight |
 |---|---|---|
-| memories_logged, questions_asked, unanswered_count, items_tracked | KPI tiles; "never logged" turns coral (needs attention) when > 0 | Full width, top |
+| memories_logged, questions_asked, unanswered_count, items_tracked | KPI tiles; "never logged" turns red (needs attention) when > 0 | Full width, top |
 | Gemini summary | Bordered summary card | Full width |
 | Highlights | "Worth a conversation" notice | Full width |
 | most_asked / most_logged | Ranked bar lists, rows open the item drawer | Two 50% columns (stack < 680px) |

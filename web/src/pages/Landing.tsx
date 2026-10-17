@@ -116,9 +116,9 @@ function SceneCard() {
             <ellipse cx="468" cy="166" rx="11" ry="26" transform="rotate(20 468 166)" fill="#4b6846" />
             <ellipse cx="456" cy="158" rx="9" ry="28" fill="#628259" />
             {/* what the camera found */}
-            <rect x="186" y="226" width="104" height="48" rx="7" fill="#E3A21A" fillOpacity="0.12" stroke="#E3A21A" strokeWidth="2.5" />
-            <rect x="186" y="200" width="86" height="21" rx="5" fill="#E3A21A" />
-            <text x="196" y="215" fontFamily="Geist Mono, monospace" fontSize="12" fontWeight="600" fill="#2E2A5C">
+            <rect x="186" y="226" width="104" height="48" rx="7" fill="#F5B23C" fillOpacity="0.12" stroke="#F5B23C" strokeWidth="2.5" />
+            <rect x="186" y="200" width="86" height="21" rx="5" fill="#F5B23C" />
+            <text x="196" y="215" fontFamily="Geist Mono, monospace" fontSize="12" fontWeight="600" fill="#17162E">
               keys 94%
             </text>
             {/* viewfinder corners */}

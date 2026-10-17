@@ -5,23 +5,23 @@ import { BitmapLayer } from "@deck.gl/layers";
 
 export type RGBA = [number, number, number, number?];
 
-// Maps are night maps in both themes: indigo ground, cream labels. Keep in step with the
+// Maps are night maps in both themes: deep indigo ground, pale labels. Keep in step with the
 // --map-* tokens in styles.css (the legends under each map use them).
 export const MAP_COLORS = {
-  roomLine: [72, 68, 122],
-  roomFill: [35, 32, 72], // dark --surface #232048
-  asked: [217, 96, 76], // --map-asked, coral: needs attention
-  calm: [156, 152, 224], // --map-calm, periwinkle
-  publicPlace: [227, 162, 26], // --map-public, trinket gold
+  roomLine: [70, 68, 120],
+  roomFill: [30, 29, 61], // dark --surface #1E1D3D
+  asked: [232, 104, 126], // --map-asked, rose: needs attention
+  calm: [169, 165, 240], // --map-calm, periwinkle
+  publicPlace: [245, 178, 60], // --map-public, the amber accent
   trail: [185, 182, 240], // --map-trail
   label: [180, 177, 209],
-  text: [248, 244, 235], // cream
-  ground: [22, 20, 46], // --map-ground #16142E
+  text: [244, 245, 249],
+  ground: [20, 19, 43], // --map-ground #14132B
 } satisfies Record<string, [number, number, number]>;
 
 export const GEO_TOOLTIP_STYLE = {
-  background: "#F8F4EB",
-  color: "#25233A",
+  background: "#FFFFFF",
+  color: "#17162E",
   fontSize: "13px",
   fontFamily: "Geist, system-ui, sans-serif",
   borderRadius: "8px",
