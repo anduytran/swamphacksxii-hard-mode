@@ -350,12 +350,20 @@
             <p class="eyebrow">Public · anonymous · opt-in</p>
             <h1 class="display">Where people lose things.</h1>
           </div>
+          <div class="segmented" role="group" aria-label="Map data" id="public-mode">
+            <button type="button" data-public="live" aria-pressed="true">Live data</button>
+            <button type="button" data-public="sim" aria-pressed="false">Simulated</button>
+          </div>
         </div>
         <div class="card map-card">
+          <p id="sim-banner" class="sim-banner" hidden>
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg>
+            Simulated reports around the University of Florida campus, for demonstration. Not real data.
+          </p>
           <div id="public-map" class="home-map geo-map public-map" role="img" aria-label="3D grid map of public places where items are commonly lost; the list below has the same spots"></div>
           <p class="attribution">Buildings: <a href="https://openfreemap.org">OpenFreeMap</a> · <a href="https://www.openmaptiles.org/">© OpenMapTiles</a> · © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</p>
           <div class="legend map-legend">
-            <span class="heat-legend">Fewer <i class="heat-ramp" aria-hidden="true"></i> More · column height and colour: items left or asked about in each ~100 m area</span>
+            <span class="heat-legend">Fewer <i class="heat-ramp" aria-hidden="true"></i> More · column height and colour: items left or asked about in each area (100 m up close; neighbouring areas merge as you zoom out)</span>
           </div>
         </div>
         <div class="public-grid">
@@ -372,7 +380,7 @@
             </ul>
           </div>
           <div class="card">
-            <h2>Busiest spots</h2>
+            <h2>Busiest spots <span id="public-list-tag" class="chip warn" hidden>Simulated</span></h2>
             <ol id="public-list" class="public-list"></ol>
           </div>
         </div>

@@ -325,6 +325,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--clean", action="store_true", help="only remove simulated rows")
     parser.add_argument("--out", default=None, help="folder for the answer WAVs (default: a temp folder)")
+    parser.add_argument(
+        "--public-demo",
+        action="store_true",
+        help="also seed 3 synthetic opted-in households so the real public map shows spots "
+        "(off by default: the dashboard's public map has its own Simulated toggle instead)",
+    )
     args = parser.parse_args()
 
     if not get_settings().database_url:
@@ -421,7 +427,8 @@ def main() -> None:
                 hits = [f"{c['kind']}(meaning #{c['vector_rank'] or '-'}, words #{c['keyword_rank'] or '-'})" for c in r["chunks"] if c["matched"]]
                 said = next(c["content"] for c in r["chunks"] if c["kind"] == "speech")
                 print(f"     {r['score']:.4f}  “{said}”  ← {', '.join(hits)}")
-        seed_public_households(client, db, run, who, cfg)
+        if args.public_demo:
+            seed_public_households(client, db, run, who, cfg)
         who["device"] = DEVICE_ID
 
         claimed = run(db.household_of_device, DEVICE_ID)

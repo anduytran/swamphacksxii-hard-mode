@@ -54,6 +54,7 @@ async function init() {
   for (const btn of document.querySelectorAll("#insights-range [data-hours]")) {
     btn.onclick = () => setInsightsRange(Number(btn.dataset.hours));
   }
+  for (const btn of document.querySelectorAll("#public-mode [data-public]")) btn.onclick = () => setPublicMode(btn.dataset.public);
 
   // Phones: secondary pages and account actions live in the "More" bottom sheet.
   $("more-btn").onclick = () => $("more-sheet").showModal();
@@ -890,64 +891,73 @@ function buildingsLayer(tiles) {
   });
 }
 
+// "live" = the real anonymous aggregate; "sim" = generated in the browser (see simulatedLostMap).
+let publicMode = "live";
+let publicViewMode = null; // which mode the camera was last fitted to
+
+function setPublicMode(mode) {
+  publicMode = mode;
+  for (const btn of document.querySelectorAll("#public-mode [data-public]")) {
+    btn.setAttribute("aria-pressed", String(btn.dataset.public === mode));
+  }
+  $("sim-banner").hidden = mode !== "sim";
+  $("public-list-tag").hidden = mode !== "sim";
+  showPage("public", { force: true });
+}
+
 async function loadPublic() {
   const [data, , tiles] = await Promise.all([
-    fetch("/api/v1/public/lost-map").then((r) => r.json()),
+    publicMode === "sim" ? simulatedLostMap() : fetch("/api/v1/public/lost-map").then((r) => r.json()),
     loadScript(DECK_URL),
     buildingTileUrls(),
   ]);
   $("public-k").textContent = data.min_households;
   const container = $("public-map");
   const cells = data.cells.map((c) => ({ ...c, total: c.left + c.asked }));
-  const maxTotal = Math.max(1, ...cells.map((c) => c.total));
-  const layers = [
-    basemap(NAVY_TINT),
-    tiles && buildingsLayer(tiles),
-    // 3D grid: one square column per ~100 m public spot (78 m across, so neighbours keep a
-    // gap); height and colour both encode how often things were lost or asked about there.
-    new deck.ColumnLayer({
-      id: "public-cells",
-      data: cells,
-      diskResolution: 4,
-      angle: 45,
-      radius: 55,
-      extruded: true,
-      getPosition: (c) => [c.lng, c.lat],
-      getElevation: (c) => 40 + (c.total / maxTotal) * 900,
-      getFillColor: (c) => [...rampColor(c.total / maxTotal), 245],
-      material: { ambient: 0.55, diffuse: 0.65, shininess: 24, specularColor: [60, 50, 40] },
-      pickable: true,
-      autoHighlight: true,
-      highlightColor: [255, 255, 255, 70],
-    }),
-  ];
   const getTooltip = ({ object }) =>
     object && {
-      text: `${object.total} times here\n` + object.items.slice(0, 5).map((i) => `${capitalize(i.name)}: left ${i.left}, asked ${i.asked}`).join("\n"),
+      text: `${object.total} times here${object.spots > 1 ? ` (${object.spots} spots, zoom in for detail)` : ""}\n` +
+        object.items.slice(0, 5).map((i) => `${capitalize(i.name)}: left ${i.left}, asked ${i.asked}`).join("\n"),
       style: GEO_TOOLTIP_STYLE,
     };
+  // A tilted overview of the spots (fit flat, then step back: a tilted camera shows less than
+  // fitBounds assumes); with none yet, the UF campus area. Buildings appear from zoom 13.
+  const overview = () => {
+    if (!cells.length) return { ...UF_CAMPUS, zoom: 13.6, pitch: 52, bearing: -18 };
+    const view = fitView(coreSpots(cells), container, { pitch: 52, bearing: -18 });
+    return { ...view, zoom: Math.min(view.zoom, 14.2) - 0.7 };
+  };
+  publicGrid = { cells, tiles, level: gridLevel(overview().zoom) };
   if (!publicDeck) {
     container.replaceChildren();
     publicDeck = new deck.Deck({
       parent: container,
-      // A tilted overview of every spot (fit flat, then step back: a tilted camera shows less
-      // than fitBounds assumes). Buildings appear from zoom 13; "Busiest spots" flies close.
-      initialViewState: (() => {
-        const view = fitView(coreSpots(cells), container, { pitch: 52, bearing: -18 });
-        return { ...view, zoom: Math.min(view.zoom, 14.2) - 0.7 };
-      })(),
+      initialViewState: overview(),
       controller: true,
       getTooltip,
       style: { position: "absolute", inset: "0" },
+      // Re-bin the grid when the zoom crosses a level, so the data scales with the map.
+      onViewStateChange: ({ viewState }) => {
+        const level = gridLevel(viewState.zoom);
+        if (publicGrid && level !== publicGrid.level) {
+          publicGrid.level = level;
+          drawPublicGrid();
+        }
+        return viewState;
+      },
     });
+  } else if (publicViewMode !== publicMode) {
+    publicDeck.setProps({ initialViewState: { ...overview(), transitionDuration: 700, transitionInterpolator: new deck.FlyToInterpolator() } });
   }
-  publicDeck.setProps({ layers, getTooltip });
+  publicViewMode = publicMode;
+  publicDeck.setProps({ getTooltip });
+  drawPublicGrid();
 
   const list = $("public-list");
   if (!cells.length) {
-    return emptyState(list, `A spot appears once ${data.min_households} or more households have shared lost items there.`, {
+    return emptyState(list, `A spot appears once ${data.min_households} or more households have shared lost items there. Switch to Simulated to see how a busy map looks.`, {
       title: "Nothing public yet",
-      cta: signedIn ? { label: "Choose what to share", href: "#/household" } : { label: "Log in to contribute", onclick: () => $("login").click() },
+      cta: { label: "Show simulated data", onclick: () => setPublicMode("sim") },
     });
   }
   list.replaceChildren(
@@ -978,6 +988,132 @@ function coreSpots(cells) {
   };
   const [[lng0, lng1], [lat0, lat1]] = [range(0), range(1)];
   return points.filter(([lng, lat]) => lng >= lng0 && lng <= lng1 && lat >= lat0 && lat <= lat1);
+}
+
+// ---------- Simulated public map (browser only, never saved) ----------
+
+const UF_CAMPUS = { longitude: -82.3455, latitude: 29.6475 };
+// Busy campus spots (approximate positions) and how busy each one is.
+const UF_SPOTS = [
+  ["Marston Science Library", 29.6481, -82.3438, 1.0],
+  ["Library West", 29.6512, -82.3427, 0.9],
+  ["Reitz Union", 29.6463, -82.3478, 1.0],
+  ["Turlington Plaza", 29.6493, -82.3437, 0.85],
+  ["Ben Hill Griffin Stadium", 29.6500, -82.3486, 0.7],
+  ["The Hub", 29.6480, -82.3455, 0.6],
+  ["Broward dining", 29.6457, -82.3416, 0.55],
+  ["Shands Hospital", 29.6402, -82.3442, 0.6],
+  ["Midtown", 29.6522, -82.3365, 0.8],
+  ["Southwest Rec Center", 29.6386, -82.3681, 0.45],
+];
+const UF_ITEMS = ["umbrella", "water bottle", "keys", "phone charger", "AirPods", "Gator 1 card", "laptop charger",
+  "sunglasses", "wallet", "calculator", "jacket", "headphones"];
+
+// Same shape as /api/v1/public/lost-map, generated with a fixed seed so it looks the same
+// every time: spots scattered around each campus place, snapped to the ~100 m public grid.
+function simulatedLostMap() {
+  let seed = 20260117;
+  const rand = () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const LAT_STEP = 0.0009, LNG_STEP = 0.00103; // ~100 m at Gainesville's latitude
+  const byCell = new Map();
+  for (const [, lat, lng, busy] of UF_SPOTS) {
+    for (let i = 0; i < Math.round(14 + busy * 22); i++) {
+      const r = Math.pow(rand(), 1.7) * 0.0045; // most within ~250 m, a few ~500 m out
+      const a = rand() * Math.PI * 2;
+      const cLat = Math.round((lat + r * Math.sin(a)) / LAT_STEP) * LAT_STEP;
+      const cLng = Math.round((lng + r * Math.cos(a) * 1.15) / LNG_STEP) * LNG_STEP;
+      const count = Math.max(1, Math.round(busy * 26 * Math.exp(-r * 700) * (0.35 + rand())));
+      const key = `${cLat.toFixed(4)},${cLng.toFixed(4)}`;
+      const cell = byCell.get(key) || { lat: +cLat.toFixed(4), lng: +cLng.toFixed(4), items: new Map() };
+      for (let n = 0; n < count; n++) {
+        const name = UF_ITEMS[Math.floor(Math.pow(rand(), 1.5) * UF_ITEMS.length)]; // a few items dominate
+        const item = cell.items.get(name) || { name, left: 0, asked: 0 };
+        if (rand() < 0.7) item.left += 1;
+        else item.asked += 1;
+        cell.items.set(name, item);
+      }
+      byCell.set(key, cell);
+    }
+  }
+  const cells = [...byCell.values()].map((c) => {
+    const items = [...c.items.values()].sort((a, b) => b.left + b.asked - (a.left + a.asked));
+    return { lat: c.lat, lng: c.lng, items, left: items.reduce((s, i) => s + i.left, 0), asked: items.reduce((s, i) => s + i.asked, 0) };
+  });
+  cells.sort((a, b) => b.left + b.asked - (a.left + a.asked));
+  return { min_households: 3, simulated: true, cells };
+}
+
+// ---------- Public grid that scales with the map ----------
+
+let publicGrid = null; // { cells, tiles, level } for the public map currently shown
+
+// Grid level for a zoom: 0 = the ~100 m public cells (zoom 13.5 and closer); each level out
+// doubles the cell size (200 m, 400 m, … 6.4 km), so zooming out merges neighbouring spots
+// into bigger columns instead of shrinking them to specks.
+const gridLevel = (zoom) => Math.max(0, Math.min(6, Math.round(13.5 - zoom)));
+
+function binCells(cells, level) {
+  if (!level) return cells.map((c) => ({ ...c, spots: 1 }));
+  const f = 2 ** level;
+  const latStep = 0.0009 * f;
+  const lngStep = 0.00103 * f;
+  const bins = new Map();
+  for (const c of cells) {
+    const i = Math.floor(c.lat / latStep);
+    const j = Math.floor(c.lng / lngStep);
+    let bin = bins.get(`${i},${j}`);
+    if (!bin) {
+      bin = { lat: (i + 0.5) * latStep, lng: (j + 0.5) * lngStep, left: 0, asked: 0, total: 0, spots: 0, items: new Map() };
+      bins.set(`${i},${j}`, bin);
+    }
+    bin.left += c.left;
+    bin.asked += c.asked;
+    bin.total += c.total;
+    bin.spots += 1;
+    for (const it of c.items) {
+      const item = bin.items.get(it.name) || { name: it.name, left: 0, asked: 0 };
+      item.left += it.left;
+      item.asked += it.asked;
+      bin.items.set(it.name, item);
+    }
+  }
+  return [...bins.values()].map((b) => ({ ...b, items: [...b.items.values()].sort((x, y) => y.left + y.asked - (x.left + x.asked)) }));
+}
+
+function drawPublicGrid() {
+  const { cells, tiles, level } = publicGrid;
+  const f = 2 ** level;
+  const binned = binCells(cells, level);
+  const maxTotal = Math.max(1, ...binned.map((c) => c.total));
+  publicDeck.setProps({
+    layers: [
+      basemap(NAVY_TINT),
+      tiles && buildingsLayer(tiles),
+      // 3D grid: one square column per cell (78% of the cell width, so neighbours keep a gap);
+      // height and colour both encode how often things were lost or asked about there.
+      new deck.ColumnLayer({
+        id: "public-cells",
+        data: binned,
+        diskResolution: 4,
+        angle: 45,
+        radius: 55 * f,
+        extruded: true,
+        getPosition: (c) => [c.lng, c.lat],
+        getElevation: (c) => (20 + (c.total / maxTotal) * 380) * f,
+        getFillColor: (c) => [...rampColor(c.total / maxTotal), 245],
+        material: { ambient: 0.55, diffuse: 0.65, shininess: 24, specularColor: [60, 50, 40] },
+        pickable: true,
+        autoHighlight: true,
+        highlightColor: [255, 255, 255, 70],
+        transitions: { getElevation: { duration: 350 } },
+      }),
+    ],
+  });
 }
 
 // A tilted close-up of one public spot, near enough that the buildings around it read.

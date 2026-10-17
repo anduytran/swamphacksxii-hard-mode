@@ -704,6 +704,26 @@ input::placeholder { color: var(--faint); }
 .places-hint { padding: 0 24px 20px; margin: 10px 0 0; }
 .public-map { height: clamp(380px, 56vw, 620px); }
 .heat-legend { gap: 10px; }
+.map-card { position: relative; }
+.sim-banner {
+  position: absolute;
+  z-index: 2;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: calc(100% - 24px);
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--warn-ink);
+  background: rgba(53, 40, 16, 0.94);
+  border: 1px solid var(--warn-line);
+}
 .heat-ramp {
   display: inline-block;
   width: 120px;

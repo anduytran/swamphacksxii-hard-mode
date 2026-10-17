@@ -159,6 +159,8 @@ cd backend && .venv/bin/python scripts/simulate_hardware.py
 cd backend && .venv/bin/python scripts/simulate_hardware.py --clean
 ```
 
+The simulator no longer touches the real public map. `--public-demo` still seeds 3 synthetic opted-in households onto it, but for demos use the public map's **Simulated** toggle instead, which generates data in the browser and saves nothing.
+
 The scenario covers saving items, a location filled in from the photo, a question about an item that was never logged, and a memory spooled while offline and uploaded later. Viewing the Insights page will still request the real Gemini summary.
 
 Try it end to end as the wearable:
