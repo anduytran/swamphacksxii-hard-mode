@@ -65,8 +65,14 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
 
     @app.get("/healthz")
     async def healthz():
-        missing = missing_settings(get_settings())
-        return {"ok": not missing, "missing_settings": missing}
+        settings = get_settings()
+        missing = missing_settings(settings)
+        # Optional features: whether each is configured, never the value itself.
+        return {
+            "ok": not missing,
+            "missing_settings": missing,
+            "wifi_positioning": bool(settings.google_geolocation_api_key),
+        }
 
     @app.get("/config.json")
     async def spa_config():

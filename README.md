@@ -108,7 +108,7 @@ Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, 
 | `GET /api/v1/public/lost-map` | none | anonymous ~100 m cells (k ≥ 3 households) |
 | `GET /api/v1/images/{id}?exp=…&sig=…` | signed link from the endpoints above (15 min) | the photo (`ls-…` ids are last-seen frames) |
 | `GET /api/v1/admin/purge` | `Authorization: Bearer $CRON_SECRET` | `{deleted, retention_hours, last_seen_deleted}` (Vercel Cron, daily 03:15 UTC) |
-| `GET /healthz` | none | `{ok, missing_settings}` |
+| `GET /healthz` | none | `{ok, missing_settings, wifi_positioning}` (whether the Geolocation key is set, never its value) |
 | `GET /config.json` | none | public Auth0 values for the dashboard |
 
 Queries only search the calling device's own memories from the last 72h (top 3 by cosine distance).
