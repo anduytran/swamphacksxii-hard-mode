@@ -26,6 +26,24 @@ class MemoryRecord:
     distance: float | None = None
 
 
+@dataclass
+class ItemSighting:
+    name: str
+    location: str
+    memory_id: str
+    created_at: datetime
+    transcript: str
+    has_image: bool
+
+
+@dataclass
+class QueryRecord:
+    created_at: datetime
+    question: str
+    answer: str
+    item: str | None
+
+
 # Every query that lists records selects this instead of the image bytes.
 _COLUMNS = "id, device_id, created_at, transcript, image IS NOT NULL AS has_image"
 
@@ -68,6 +86,36 @@ class MemoryDB:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS memory_logs_embedding_idx "
                 "ON memory_logs USING hnsw (embedding vector_cosine_ops)"
+            )
+            # Items named in each memory; removed with the memory by the retention purge.
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_items (
+                    id         bigserial PRIMARY KEY,
+                    memory_id  uuid NOT NULL REFERENCES memory_logs (id) ON DELETE CASCADE,
+                    name       text NOT NULL,
+                    location   text NOT NULL DEFAULT ''
+                )
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS memory_items_memory_id_idx ON memory_items (memory_id)"
+            )
+            # Questions the wearer asked, for the caregiver's Insights page.
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS query_logs (
+                    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                    device_id   text        NOT NULL,
+                    created_at  timestamptz NOT NULL DEFAULT now(),
+                    question    text        NOT NULL,
+                    answer      text        NOT NULL,
+                    item        text
+                )
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS query_logs_created_at_idx ON query_logs (created_at DESC)"
             )
 
     async def insert(
@@ -130,11 +178,70 @@ class MemoryDB:
         )
         return (row["image"], row["image_type"] or "image/jpeg") if row else None
 
-    async def delete_older_than(self, hours: int) -> int:
-        result = await self.pool.execute(
-            "DELETE FROM memory_logs WHERE created_at < now() - make_interval(hours => $1)",
+    async def add_items(self, memory_id: str, items: list[tuple[str, str]]) -> None:
+        if items:
+            await self.pool.executemany(
+                "INSERT INTO memory_items (memory_id, name, location) VALUES ($1::uuid, $2, $3)",
+                [(memory_id, name, location) for name, location in items],
+            )
+
+    async def item_sightings(self, hours: int) -> list[ItemSighting]:
+        """Every item mention in the window, newest first."""
+        rows = await self.pool.fetch(
+            """
+            SELECT i.name, i.location, m.id AS memory_id, m.created_at, m.transcript,
+                   m.image IS NOT NULL AS has_image
+            FROM memory_items i
+            JOIN memory_logs m ON m.id = i.memory_id
+            WHERE m.created_at > now() - make_interval(hours => $1)
+            ORDER BY m.created_at DESC
+            """,
             hours,
         )
+        return [
+            ItemSighting(
+                name=r["name"],
+                location=r["location"],
+                memory_id=str(r["memory_id"]),
+                created_at=r["created_at"],
+                transcript=r["transcript"],
+                has_image=r["has_image"],
+            )
+            for r in rows
+        ]
+
+    async def log_query(self, device_id: str, question: str, answer: str, item: str | None) -> None:
+        await self.pool.execute(
+            "INSERT INTO query_logs (device_id, question, answer, item) VALUES ($1, $2, $3, $4)",
+            device_id,
+            question,
+            answer,
+            item,
+        )
+
+    async def recent_queries(self, hours: int) -> list[QueryRecord]:
+        rows = await self.pool.fetch(
+            """
+            SELECT created_at, question, answer, item
+            FROM query_logs
+            WHERE created_at > now() - make_interval(hours => $1)
+            ORDER BY created_at DESC
+            """,
+            hours,
+        )
+        return [QueryRecord(**dict(r)) for r in rows]
+
+    async def delete_older_than(self, hours: int) -> int:
+        async with self.pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "DELETE FROM query_logs WHERE created_at < now() - make_interval(hours => $1)",
+                hours,
+            )
+            # memory_items rows go with their memory via ON DELETE CASCADE.
+            result = await conn.execute(
+                "DELETE FROM memory_logs WHERE created_at < now() - make_interval(hours => $1)",
+                hours,
+            )
         return int(result.split()[-1])  # asyncpg returns e.g. "DELETE 12"
 
 

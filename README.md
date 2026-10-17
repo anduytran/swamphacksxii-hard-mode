@@ -13,7 +13,7 @@ backend/          FastAPI service (Vultr VPS)
   app/routers/        /api/v1/memory/{log,query}, /api/v1/dashboard/history, /api/v1/images/{id}
   app/retention.py    72h purge job (run from cron)
   scripts/device_sim.py  pretend-wearable client for end-to-end testing
-frontend/         plain HTML/JS caregiver dashboard (auth0-spa-js)
+frontend/         plain HTML/JS caregiver dashboard: Items, Timeline, Insights pages (auth0-spa-js)
 deploy/           systemd unit + crontab for the Vultr instance
 ```
 
@@ -24,9 +24,13 @@ deploy/           systemd unit + crontab for the Vultr instance
 | `POST /api/v1/memory/log` | device M2M token with `write:memories` | multipart `audio`, `image` (JPEG) | `{id, timestamp, transcript}` |
 | `POST /api/v1/memory/query` | device M2M token with `write:memories` | multipart `audio` | spoken answer (`audio/wav` by default); `X-Question` / `X-Answer` headers hold the URL-encoded text |
 | `GET /api/v1/dashboard/history` | caregiver user token | – | `[{id, device_id, timestamp, transcript, image_url}]`, last 24h, newest first |
-| `GET /api/v1/images/{id}?exp=…&sig=…` | signed link from `/history` (15 min) | – | the photo |
+| `GET /api/v1/dashboard/items` | caregiver user token | – | one entry per item: last location, photo, earlier spots, times asked (72h) |
+| `GET /api/v1/dashboard/insights` | caregiver user token | – | counts, most-asked / most-logged items, questions about items never logged, activity, recent Q&A (72h) |
+| `GET /api/v1/images/{id}?exp=…&sig=…` | signed link from the dashboard endpoints (15 min) | – | the photo |
 
 Queries only search the calling device's own memories from the last 72h (top 3 by cosine distance).
+
+After each `log` and `query` response is sent, Claude extracts the items mentioned ("keys" → "kitchen counter") into `memory_items`, and questions are recorded in `query_logs`. These feed the dashboard's **Items** and **Insights** pages and are purged with everything else after 72h.
 
 ## Setup
 

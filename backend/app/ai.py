@@ -1,10 +1,12 @@
 """Speech-to-text, embeddings and text-to-speech (OpenAI) plus answer generation (Claude)."""
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cached_property
 
 import anthropic
 import openai
+from pydantic import BaseModel
 
 from .config import Settings
 from .db import MemoryRecord
@@ -20,6 +22,35 @@ putting items down, each with how long ago it was said. Answer using only those 
 - If none of the notes are about what they asked, say kindly that you don't have a \
 note about it yet and suggest they tell you next time they put it down.
 - Latency-sensitive; begin your visible answer immediately."""
+
+
+EXTRACT_SYSTEM_PROMPT = """\
+You read one sentence spoken to a memory-aid wearable. It is either a note about \
+putting something down ("I'm putting my keys on the kitchen counter") or a question \
+("Where are my glasses?").
+
+List each physical item it is about:
+- name: a short lowercase singular noun phrase a family member would recognise, with no \
+possessive ("keys", "reading glasses", "wallet", "blue umbrella"). Use the same name \
+every time for the same kind of item.
+- location: where the item was put, as a short phrase ("kitchen counter", "coat pocket"). \
+Use an empty string for questions or when no place is said.
+Return an empty list if no physical item is mentioned."""
+
+
+class _ExtractedItem(BaseModel):
+    name: str
+    location: str
+
+
+class ExtractedItems(BaseModel):
+    items: list[_ExtractedItem]
+
+
+@dataclass
+class ItemMention:
+    name: str
+    location: str
 
 
 def humanize_ago(then: datetime, now: datetime | None = None) -> str:
@@ -90,6 +121,30 @@ class AIServices:
             return "Sorry, I can't help with that one."
         text = "".join(b.text for b in response.content if b.type == "text").strip()
         return text or "Sorry, I couldn't come up with an answer just now."
+
+    async def extract_items(self, text: str) -> list[ItemMention]:
+        """Pull the items (and where they were put) out of a statement or question.
+
+        Feeds the dashboard's Items and Insights pages; runs after the response is
+        sent so it never slows the wearable down.
+        """
+        response = await self.claude.beta.messages.parse(
+            model=self.s.llm_model,
+            max_tokens=1024,
+            system=EXTRACT_SYSTEM_PROMPT,
+            output_config={"effort": self.s.llm_effort},
+            output_format=ExtractedItems,
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+            messages=[{"role": "user", "content": text}],
+        )
+        if response.stop_reason == "refusal" or response.parsed_output is None:
+            return []
+        return [
+            ItemMention(name=i.name.strip().lower(), location=i.location.strip())
+            for i in response.parsed_output.items
+            if i.name.strip()
+        ]
 
     async def speak(self, text: str) -> bytes:
         result = await self.openai.audio.speech.create(

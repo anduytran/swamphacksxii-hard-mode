@@ -3,38 +3,179 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#121110">
   <title>LastScene</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.jsdelivr.net/npm/@auth0/auth0-spa-js@2.1.3/dist/auth0-spa-js.production.js"></script>
 </head>
 <body>
-  <header>
-    <h1>LastScene</h1>
-    <div id="user-bar" hidden>
-      <span id="user-name"></span>
-      <button id="refresh" type="button">Refresh</button>
-      <button id="logout" type="button" class="secondary">Log out</button>
+  <header class="site-header wrap">
+    <a class="brand" href="#/items">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+        <rect x="2" y="5" width="24" height="18" rx="3" stroke="currentColor" stroke-width="2"/>
+        <circle cx="14" cy="14" r="4.5" stroke="currentColor" stroke-width="2"/>
+        <path d="M5 2v3M9 2v3M19 2v3M23 2v3M5 23v3M9 23v3M19 23v3M23 23v3" stroke="var(--faint)" stroke-width="1.5"/>
+      </svg>
+      <span>LastScene</span>
+    </a>
+    <div id="user-bar" class="user-bar" hidden>
+      <span id="user-name" class="mono"></span>
+      <button id="refresh" type="button" class="pill">Refresh</button>
+      <button id="logout" type="button" class="pill quiet">Log out</button>
     </div>
   </header>
 
-  <main>
-    <section id="logged-out" hidden>
-      <button id="login" type="button">Log in with Auth0</button>
+  <nav id="tabs" class="tabs wrap" hidden aria-label="Dashboard pages">
+    <a href="#/items" data-page="items">Items</a>
+    <a href="#/timeline" data-page="timeline">Timeline</a>
+    <a href="#/insights" data-page="insights">Insights</a>
+  </nav>
+
+  <main class="wrap">
+    <section id="logged-out" class="signin" hidden>
+      <p class="eyebrow">Caregiver dashboard</p>
+      <h1 class="display">Where things were left.</h1>
+      <p class="lede">See what the wearer put down, where, and what they've been asking about.</p>
+      <button id="login" type="button" class="primary">Log in</button>
     </section>
 
-    <section id="logged-in" hidden>
-      <p class="hint">What was recorded in the last 24 hours, newest first.</p>
-      <p id="status" role="status"></p>
-      <ol id="feed"></ol>
+    <p id="status" role="status"></p>
+
+    <!-- Items: where each thing was last put -->
+    <section id="page-items" class="page" hidden>
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Last <span class="window-hours">72</span> hours · <span id="items-count">0 items</span></p>
+          <h1 class="display">Where things were left.</h1>
+        </div>
+        <label class="search">
+          Find an item
+          <input id="item-filter" type="search" placeholder="keys, glasses…">
+        </label>
+      </div>
+      <div id="items-featured"></div>
+      <ul id="items-grid" class="items-grid"></ul>
+    </section>
+
+    <!-- Timeline: every memory, newest first -->
+    <section id="page-timeline" class="page" hidden>
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Last 24 hours · newest first</p>
+          <h1 class="display">The day, scene by scene.</h1>
+        </div>
+      </div>
+      <ol id="feed" class="timeline"></ol>
+    </section>
+
+    <!-- Insights: patterns a caregiver should know about -->
+    <section id="page-insights" class="page" hidden>
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Last <span class="window-hours">72</span> hours</p>
+          <h1 class="display">How the week is going.</h1>
+        </div>
+      </div>
+
+      <div class="tiles">
+        <div class="tile"><span class="tile-value" id="stat-memories">–</span><span class="tile-label">Things put down</span></div>
+        <div class="tile"><span class="tile-value" id="stat-questions">–</span><span class="tile-label">Questions asked</span></div>
+        <div class="tile" id="tile-unanswered"><span class="tile-value" id="stat-unanswered">–</span><span class="tile-label">Asked about but never logged</span></div>
+        <div class="tile"><span class="tile-value" id="stat-items">–</span><span class="tile-label">Items tracked</span></div>
+      </div>
+
+      <section id="highlights" class="card notice" aria-labelledby="notice-h">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>
+        <div>
+          <h2 id="notice-h">Worth a conversation</h2>
+          <div id="highlight-list"></div>
+        </div>
+      </section>
+
+      <div class="two-col">
+        <section class="card">
+          <h2>Most asked about</h2>
+          <div id="chart-asked" class="bar-list"></div>
+        </section>
+        <section class="card">
+          <h2>Most often put down</h2>
+          <div id="chart-logged" class="bar-list"></div>
+        </section>
+      </div>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Activity by time of day</h2>
+          <div class="legend" aria-hidden="true">
+            <span><i class="swatch s1"></i>Things put down</span>
+            <span><i class="swatch s2"></i>Questions asked</span>
+          </div>
+        </div>
+        <div id="chart-activity" class="column-chart" role="img"></div>
+        <details>
+          <summary>Show as table</summary>
+          <table id="activity-table"></table>
+        </details>
+      </section>
+
+      <section class="card">
+        <h2>Recent questions</h2>
+        <ol id="questions" class="questions"></ol>
+      </section>
     </section>
   </main>
 
+  <div id="tooltip" class="tooltip" hidden></div>
+
+  <template id="featured-template">
+    <article class="featured">
+      <div class="photo">
+        <span class="tag">Latest scene</span>
+        <img alt="" loading="lazy">
+      </div>
+      <div class="featured-body">
+        <span class="when mono"></span>
+        <h2 class="item-name"></h2>
+        <p class="item-location"></p>
+        <p class="quote"></p>
+        <div class="chips"></div>
+      </div>
+    </article>
+  </template>
+
+  <template id="item-template">
+    <li class="item-card">
+      <div class="photo"><img alt="" loading="lazy"></div>
+      <div class="item-body">
+        <div class="item-title">
+          <h3 class="item-name"></h3>
+          <span class="when mono"></span>
+        </div>
+        <p class="item-location"></p>
+        <div class="chips"></div>
+        <div class="before" hidden>
+          <span class="eyebrow small">Before that</span>
+          <ul></ul>
+        </div>
+      </div>
+    </li>
+  </template>
+
   <template id="entry-template">
-    <li class="entry">
-      <img alt="" loading="lazy">
-      <div class="entry-body">
-        <time></time>
-        <p class="transcript"></p>
+    <li class="scene">
+      <div class="scene-time">
+        <time class="mono"></time>
+        <span class="ago mono"></span>
+      </div>
+      <div class="scene-body">
+        <div class="photo"><img alt="" loading="lazy"></div>
+        <div class="scene-text">
+          <p class="quote"></p>
+          <div class="chips"></div>
+        </div>
       </div>
     </li>
   </template>

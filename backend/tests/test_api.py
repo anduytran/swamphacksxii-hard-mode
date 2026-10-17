@@ -9,9 +9,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from app import auth, signing
-from app.ai import humanize_ago
+from app.ai import ItemMention, humanize_ago
 from app.config import Settings, get_settings
-from app.db import MemoryRecord
+from app.db import ItemSighting, MemoryRecord, QueryRecord
 from app.main import create_app
 
 DOMAIN = "test.auth0.local"
@@ -34,6 +34,8 @@ class FakeDB:
     def __init__(self):
         self.rows: list[MemoryRecord] = []
         self.images: dict[str, tuple[bytes, str]] = {}
+        self.items: list[ItemSighting] = []
+        self.queries: list[QueryRecord] = []
 
     async def insert(self, device_id, transcript, embedding, image, image_type):
         rec = MemoryRecord(str(len(self.rows)), device_id, datetime.now(timezone.utc), transcript, image is not None)
@@ -50,6 +52,20 @@ class FakeDB:
 
     async def recent(self, hours):
         return sorted(self.rows, key=lambda r: r.created_at, reverse=True)
+
+    async def add_items(self, memory_id, items):
+        rec = next(r for r in self.rows if r.id == memory_id)
+        for name, location in items:
+            self.items.append(ItemSighting(name, location, rec.id, rec.created_at, rec.transcript, rec.has_image))
+
+    async def item_sightings(self, hours):
+        return sorted(self.items, key=lambda s: s.created_at, reverse=True)
+
+    async def log_query(self, device_id, question, answer, item):
+        self.queries.append(QueryRecord(datetime.now(timezone.utc), question, answer, item))
+
+    async def recent_queries(self, hours):
+        return sorted(self.queries, key=lambda q: q.created_at, reverse=True)
 
 
 class FakeAI:
@@ -68,6 +84,15 @@ class FakeAI:
 
     async def speak(self, text):
         return b"RIFF-fake-wav"
+
+    async def extract_items(self, text):
+        # Tiny stand-in for the Claude extractor: "... my <item> on the <place>" / "where are my <item>".
+        words = text.lower().rstrip("?.").split()
+        if "my" not in words:
+            return []
+        name = words[words.index("my") + 1]
+        location = " ".join(words[words.index("the") + 1 :]) if "the" in words else ""
+        return [ItemMention(name, location)]
 
 
 @pytest.fixture
@@ -169,3 +194,49 @@ def test_humanize_ago():
     assert humanize_ago(now - timedelta(seconds=10), now) == "just now"
     assert humanize_ago(now - timedelta(minutes=5), now) == "5 minutes ago"
     assert humanize_ago(now - timedelta(hours=2, minutes=10), now) == "about 2 hours ago"
+
+
+def ask(client, text):
+    return client.post("/api/v1/memory/query", headers=DEVICE, files={"audio": ("q.wav", text.encode(), "audio/wav")})
+
+
+def test_items_page_shows_latest_spot_and_history(client):
+    log(client, "I am putting my keys on the counter")
+    log(client, "I am putting my keys on the hallway table")
+    ask(client, "Where are my keys?")
+
+    assert client.get("/api/v1/dashboard/items", headers=DEVICE).status_code == 403
+    body = client.get("/api/v1/dashboard/items", headers=CAREGIVER).json()
+    (keys,) = body["items"]
+    assert keys["name"] == "keys"
+    assert keys["location"] == "hallway table"
+    assert keys["mentions"] == 2 and keys["times_asked"] == 1
+    assert [p["location"] for p in keys["previous"]] == ["counter"]
+    assert client.get(keys["image_url"]).status_code == 200
+
+
+def test_insights_flags_questions_about_items_never_logged(client):
+    log(client, "I am putting my keys on the counter")
+    ask(client, "Where are my keys?")
+    ask(client, "Where are my glasses?")
+    ask(client, "Where are my glasses?")
+
+    data = client.get("/api/v1/dashboard/insights", headers=CAREGIVER).json()
+    assert data["memories_logged"] == 1
+    assert data["questions_asked"] == 3
+    assert data["items_tracked"] == 1
+    assert data["unanswered_count"] == 2
+    assert data["most_asked"][0] == {"name": "glasses", "count": 2}
+    assert {q["item"]: q["answerable"] for q in data["recent_questions"]} == {"keys": True, "glasses": False}
+    assert sorted(a["kind"] for a in data["activity"]) == ["memory", "question", "question", "question"]
+
+
+def test_background_extraction_failure_does_not_break_logging(client):
+    async def boom(text):
+        raise RuntimeError("Claude is down")
+
+    client.app_state.ai.extract_items = boom
+    assert log(client).status_code == 200
+    assert ask(client, "Where are my keys?").status_code == 200
+    assert client.app_state.db.items == []
+    assert client.app_state.db.queries[0].item is None  # question still logged, just untagged

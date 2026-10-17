@@ -1,6 +1,16 @@
+import logging
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Response,
+    UploadFile,
+    status,
+)
 
 from ..ai import AIServices
 from ..auth import Principal, require_device
@@ -9,6 +19,7 @@ from ..db import MemoryDB
 from ..deps import get_ai, get_db
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
+log = logging.getLogger(__name__)
 
 MAX_IMAGE_BYTES = 2 * 1024 * 1024  # photos live in Postgres; ESP32 JPEGs are ~50-200 KB
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
@@ -24,8 +35,33 @@ async def _read(upload: UploadFile, limit: int, label: str) -> bytes:
     return data
 
 
+# These run after the response is sent, so the wearable can go back to sleep (or play
+# its answer) without waiting. A failure only costs the dashboard some detail.
+async def _index_items(db: MemoryDB, ai: AIServices, memory_id: str, transcript: str) -> None:
+    try:
+        items = await ai.extract_items(transcript)
+        await db.add_items(memory_id, [(i.name, i.location) for i in items])
+    except Exception:
+        log.exception("Item extraction failed for memory %s", memory_id)
+
+
+async def _record_query(
+    db: MemoryDB, ai: AIServices, device_id: str, question: str, answer: str
+) -> None:
+    try:
+        items = await ai.extract_items(question)
+    except Exception:
+        log.exception("Item extraction failed for question %r", question)
+        items = []
+    try:
+        await db.log_query(device_id, question, answer, items[0].name if items else None)
+    except Exception:
+        log.exception("Failed to log question %r", question)
+
+
 @router.post("/log")
 async def log_memory(
+    background: BackgroundTasks,
     audio: UploadFile = File(...),
     image: UploadFile = File(...),
     device: Principal = Depends(require_device),
@@ -43,11 +79,13 @@ async def log_memory(
     image_type = image.content_type if image.content_type in ALLOWED_IMAGE_TYPES else "image/jpeg"
     embedding = await ai.embed(transcript)
     record = await db.insert(device.sub, transcript, embedding, image_bytes, image_type)
+    background.add_task(_index_items, db, ai, record.id, transcript)
     return {"id": record.id, "timestamp": record.created_at.isoformat(), "transcript": transcript}
 
 
 @router.post("/query")
 async def query_memory(
+    background: BackgroundTasks,
     audio: UploadFile = File(...),
     device: Principal = Depends(require_device),
     db: MemoryDB = Depends(get_db),
@@ -61,6 +99,7 @@ async def query_memory(
         embedding = await ai.embed(question)
         matches = await db.nearest(device.sub, embedding, settings.query_lookback_hours)
         answer = await ai.answer(question, matches)
+        background.add_task(_record_query, db, ai, device.sub, question, answer)
     else:
         answer = "Sorry, I didn't catch that. Could you ask again?"
 
