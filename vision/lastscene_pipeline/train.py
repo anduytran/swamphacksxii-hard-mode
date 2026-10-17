@@ -34,10 +34,14 @@ from lastscene_pipeline.common import PipelineError, data_dir, read_json, resolv
 
 DEFAULT_BASE = "yolo11s.pt"
 MIN_PHOTOS = 5
-SMALL_DATASET = 64  # photos: below this, batch 8 and no gradient accumulation
+SMALL_DATASET = 64  # item photos: below this, batch 8 (else 16); never gradient accumulation
 BACKGROUNDS = 40  # photos with no items (COCO128) mixed into training; 0 = off
 COCO128_URL = "https://github.com/ultralytics/assets/releases/download/v0.0.0/coco128.zip"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+# COCO class ids of things people carry and misplace (backpack..bowl, laptop..cell phone, book..toothbrush).
+# A background photo must not contain one: an unlabeled phone in a background teaches "phones are not items",
+# which is wrong as soon as someone teaches "phone". 47 of COCO128's 128 photos qualify.
+COCO_CARRYABLE = frozenset(range(24, 46)) | {63, 64, 65, 66, 67} | frozenset(range(73, 80))
 
 
 def photos_per_class(dataset: Path, n_classes: int) -> list[int]:
@@ -65,8 +69,8 @@ def validate(weights, data_yaml, imgsz, device) -> tuple[float, dict]:
     return float(v.box.map50), per
 
 
-def add_backgrounds(dataset: Path, folders=(), coco: Path | None = None, coco_count: int = 0) -> int:
-    """Copy every image in `folders` and the first `coco_count` of `coco` into dataset/background/, unlabeled.
+def add_backgrounds(dataset: Path, folders=(), coco=(), coco_count: int = 0) -> int:
+    """Copy every image in `folders` and the first `coco_count` of `coco` (paths) into dataset/background/.
 
     Ultralytics treats an image with no label as "nothing here". Trained only on close-ups of the item,
     the model learns "anything that stands out" (a 10-photo pin model fired on faces at 1.00 confidence
@@ -74,7 +78,7 @@ def add_backgrounds(dataset: Path, folders=(), coco: Path | None = None, coco_co
     The folder name has no "images" in it, so Ultralytics never looks for labels next to these files."""
     folder = dataset / "background"
     shutil.rmtree(folder, ignore_errors=True)
-    files = [*(f for d in folders for f in _images(d)), *(_images(coco)[:coco_count] if coco else [])]
+    files = [*(f for d in folders for f in _images(d)), *list(coco)[:coco_count]]
     if not files:
         return 0
     folder.mkdir()
@@ -95,6 +99,19 @@ def coco128_images(cache: Path) -> Path:
 
         download(COCO128_URL, dir=cache, unzip=True, delete=True)
     return folder
+
+
+def clean_backgrounds(images: Path) -> list[Path]:
+    """The COCO photos whose labels contain no carryable item (COCO_CARRYABLE), in name order."""
+    labels = images.parent.parent / "labels" / images.name
+    keep = []
+    for f in _images(images):
+        label = labels / (f.stem + ".txt")
+        ids = {int(line.split()[0]) for line in label.read_text(encoding="utf-8").splitlines() if line.strip()} \
+            if label.exists() else set()
+        if not ids & COCO_CARRYABLE:
+            keep.append(f)
+    return keep
 
 
 def train_yaml(dataset: Path, data_yaml: Path) -> Path:
@@ -130,8 +147,8 @@ def run_train(data_yaml: Path, base: str, epochs: int, imgsz: int, out: Path, ex
 
         device = "0" if torch.cuda.is_available() else "cpu"
 
-    n_background = add_backgrounds(dataset, background_dirs, coco128_images(dataset.parent) if backgrounds else None,
-                                   backgrounds)
+    n_background = add_backgrounds(dataset, background_dirs,
+                                   clean_backgrounds(coco128_images(dataset.parent)) if backgrounds else (), backgrounds)
     train_data = train_yaml(dataset, data_yaml) if n_background else data_yaml
     log(f"training on {sum(counts)} item photo(s) + {n_background} background photo(s)")
 
@@ -140,12 +157,13 @@ def run_train(data_yaml: Path, base: str, epochs: int, imgsz: int, out: Path, ex
     # patience: with a handful of photos the score sits near 0 for the first epochs; a short patience
     # stopped a 14-photo run at epoch 11 with map50 0.02
     # batch: Ultralytics accumulates gradients up to a nominal batch of 64, so with 16 per batch and 10 photos
-    # (one batch per epoch) the weights changed once every 4 epochs: 50 epochs gave map50 0.065. Small
-    # datasets use batch 8 with no accumulation (nbs = batch): 9/10 held-out photos found at 0.35.
+    # (one batch per epoch) the weights changed once every 4 epochs: 50 epochs gave map50 0.065. nbs = batch
+    # turns accumulation off at every size (a Teach set tops out at 50 items x 30 photos, where updating
+    # every batch is still cheap); small sets use batch 8 for more updates per epoch.
     batch = 8 if sum(counts) < SMALL_DATASET else 16
     model.train(data=str(train_data), epochs=epochs, imgsz=imgsz, patience=max(25, epochs // 2), device=device,
                 project=str(runs.resolve()), name=version, exist_ok=True, plots=False, verbose=False, seed=0,
-                deterministic=True, workers=0, batch=batch, nbs=batch if sum(counts) < SMALL_DATASET else 64)
+                deterministic=True, workers=0, batch=batch, nbs=batch)
     trained_epochs = model.trainer.epoch + 1
     best = runs / version / "weights" / "best.pt"
     if not best.exists():
@@ -202,7 +220,8 @@ def main():
     p.add_argument("--calib", action="append", default=[], help="extra folder of real camera frames for INT8 calibration")
     p.add_argument("--device", help="e.g. 0 or cpu (default: GPU if available)")
     p.add_argument("--backgrounds", type=int, default=BACKGROUNDS,
-                   help=f"COCO128 photos with no items mixed into training (default {BACKGROUNDS}; 0 = off)")
+                   help=f"COCO128 photos without carryable items mixed into training (default {BACKGROUNDS}, "
+                        "at most 47; 0 = off)")
     p.add_argument("--background", action="append", default=[],
                    help="extra folder of camera frames that show none of the items (repeatable)")
     args = p.parse_args()

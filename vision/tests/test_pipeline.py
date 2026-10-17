@@ -14,7 +14,7 @@ from lastscene_pipeline.common import Api, PipelineError, _explain, resolve_mode
 from lastscene_pipeline.detect import ReloadingDetector, folder_frames, load_classes
 from lastscene_pipeline.runtime import decode, letterbox
 from lastscene_pipeline.sync import run_sync
-from lastscene_pipeline.train import add_backgrounds, photos_per_class, run_train, set_current, train_yaml
+from lastscene_pipeline.train import add_backgrounds, clean_backgrounds, photos_per_class, run_train, set_current, train_yaml
 from tests.test_bridge import _queue_one, bus, make_uploader, server  # noqa: F401
 
 VOCAB = {"household_id": "h1", "version": "v1", "classes": ["keys", "wallet"],
@@ -220,11 +220,23 @@ def test_backgrounds_are_unlabeled_copies_and_join_training_only(tmp_path):
             cv2.imwrite(str(folder / f"{i}.jpg"), np.zeros((8, 8, 3), np.uint8))
     (camera / "notes.txt").write_text("not an image")
     dataset.mkdir()
-    assert add_backgrounds(dataset, [camera], coco, 3) == 5  # every camera frame + the first 3 COCO photos
+    coco_photos = sorted(coco.glob("*.jpg"))
+    assert add_backgrounds(dataset, [camera], coco_photos, 3) == 5  # every camera frame + the first 3 COCO photos
     names = sorted(f.name for f in (dataset / "background").iterdir())
     assert names == [f"bg{i:04d}.jpg" for i in range(5)]  # no label files: Ultralytics reads them as "no item"
-    assert add_backgrounds(dataset, [], coco, 1) == 1  # a rerun replaces the folder
+    assert add_backgrounds(dataset, [], coco_photos, 1) == 1  # a rerun replaces the folder
     assert add_backgrounds(dataset) == 0
     (dataset / "data.yaml").write_text('path: /x\ntrain: images/train\nval: images/train\nnames:\n  0: "pin"\n')
     text = train_yaml(dataset, dataset / "data.yaml").read_text()
     assert "train: [images/train, background]" in text and "val: images/train" in text and '0: "pin"' in text
+
+
+def test_background_photos_never_contain_a_carryable_item(tmp_path):
+    images, labels = tmp_path / "coco128/images/train2017", tmp_path / "coco128/labels/train2017"
+    images.mkdir(parents=True), labels.mkdir(parents=True)
+    rows = {"a": "0 .5 .5 .1 .1\n", "b": "0 .5 .5 .1 .1\n67 .2 .2 .1 .1\n", "c": None, "d": "41 .5 .5 .1 .1\n", "e": "\n"}
+    for name, label in rows.items():  # 0 person, 67 cell phone, 41 cup
+        cv2.imwrite(str(images / f"{name}.jpg"), np.zeros((8, 8, 3), np.uint8))
+        if label is not None:
+            (labels / f"{name}.txt").write_text(label)
+    assert [f.stem for f in clean_backgrounds(images)] == ["a", "c", "e"]

@@ -185,3 +185,20 @@ def test_server_script_powers_off_whatever_happens_and_never_holds_the_vultr_key
     assert "DEVICE_CLIENT_SECRET=s3cret" in script  # the device secret is shredded at the end
     assert "--device cpu" in script and "whl/cpu" in script
     base64.b64encode(script.encode())  # what Vultr receives
+
+
+def test_time_limit_grows_with_photos_in_whole_billed_hours():
+    from lastscene_pipeline.vultr import time_limit
+
+    assert time_limit(10, 100) == 60  # the 10-photo Pin set: about 40 min estimated
+    assert time_limit(100, 100) == 180  # about 85 min estimated, plus half again
+    assert time_limit(1500, 100) == 1200  # 50 items x 30 photos: 20 h, about $1.10 at $0.055/h
+    assert all(time_limit(n, 100) % 60 == 0 for n in range(0, 2000, 37))
+
+
+def test_the_time_limit_follows_the_photo_count_into_the_server_script():
+    fake = FakeVultr(stops_after=1)
+    runner(fake, Pipeline(photos=100)).run(ENV)
+    import base64
+
+    assert "shutdown -P +180" in base64.b64decode(fake.created[0]["user_data"]).decode()

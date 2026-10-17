@@ -34,7 +34,7 @@ matches them. The server trains from the `master` branch on GitHub, so push befo
 | Stop the day before the credit expires (then the card would be charged) | 2026-11-17 | `VULTR_CREDIT_EXPIRES` |
 | Worst case per run (hourly price × time limit, whole hours) | $2.00 | `MAX_RUN_COST` |
 | Credit that must remain after that worst case | $20.00 | `MIN_CREDIT_LEFT` |
-| Time limit, after which the server is destroyed | 60 min (still one billed hour) | `--max-minutes` |
+| Time limit, after which the server is destroyed | sized from the photo count, whole billed hours (1 h for 10 photos, about 20 h for 50 items x 30 photos) | `--max-minutes` |
 | One trainer at a time | – | – |
 
 The server is created with backups, IPv6, DDoS protection and activation emails off, and no snapshots,
@@ -51,8 +51,10 @@ it's destroyed) and is shredded from the disk when training ends.
 Training defaults to 100 epochs with 40 COCO128 photos mixed in as "no item" backgrounds (see
 `lastscene_pipeline/train.py`). On Oct 17, 2026, with 10 Pin photos at 320 px, that took 8.5 min on a
 MacBook (M2, 4 CPU threads), including the INT8 export. Vultr's shared vCPUs are slower, so expect roughly
-15 to 35 min of training plus 5 to 10 min to boot and install, inside the 60 min limit. More photos take
-longer: if a run hits the limit, pass `--max-minutes 120` (two billed hours, still under `MAX_RUN_COST`).
+15 to 35 min of training plus 5 to 10 min to boot and install. More photos take
+longer, so the time limit is estimated from the photo count (`vultr.time_limit`: 15 min setup + 0.3 s per
+photo per epoch, plus half again, rounded up to whole billed hours). At $0.055/h the largest Teach set
+(50 items x 30 photos, about 20 h) still costs about $1.10, under `MAX_RUN_COST`. `--max-minutes` overrides it.
 
 ## Cost
 
