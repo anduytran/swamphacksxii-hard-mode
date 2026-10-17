@@ -22,7 +22,7 @@ High-fidelity, responsive spec for the caregiver dashboard as built in `web/` (R
 | Insights | `#/insights` | KPIs, summary, rankings, activity, questions | Charts say what's missing | Tile, bar, chart and list skeletons | Status notice + Try again |
 | Search | `#/search` | Ask what the wearer would | "No memories matched" + "Try “keys”" | 2 result skeletons + button spinner | Status notice + Try again (resubmits) |
 | Public map | `#/public` | Anonymous lost-item map (no login). Live data / Simulated toggle: Simulated is generated in the browser around the UF campus (fixed seed, never saved) with a "Not real data" banner and list tag. 3D OpenStreetMap buildings (OpenFreeMap, no key), a 3D grid that scales with zoom (one square column per ~100 m spot up close; each zoom level out doubles the cell size and merges neighbours, height and colour = items lost/asked, crimson → yellow ramp with monotonic lightness, navy-tinted basemap, tilted overview, gradient legend, hover details); opens on the busiest spot, each "Busiest spots" row flies there | "Nothing public yet" + "Show simulated data" | Map shimmer + row skeletons | Status notice + Try again |
-| Household | `#/household` | Create/join, add wearable, invite, places, sharing | Create / Join forms | Two form-card skeletons | Inline field errors; form message |
+| Household | `#/household` | Create/join, add wearable, invite (any member), change your name, places, sharing; "Join another household" for members (up to 5) | Create / Join forms | Two form-card skeletons | Inline field errors; form message |
 | Item detail | drawer | Drill-down for one item | "Never logged" + tip | Photo + line skeletons | Message + Try again |
 
 **Journeys**

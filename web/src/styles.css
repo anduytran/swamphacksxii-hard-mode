@@ -1059,6 +1059,9 @@ input::placeholder { color: var(--faint); }
 /* ---------- Household setup ---------- */
 .household { display: grid; gap: 16px; }
 .household .two-col { margin-bottom: 0; }
+.join-another { margin-top: 24px; }
+.rename-form { display: grid; gap: 10px; }
+.rename-form .hint { margin: 0; }
 .setup-card { display: flex; flex-direction: column; gap: 14px; margin-bottom: 0; }
 .setup-card h2 { margin: 0; }
 .setup-card .hint { margin: 0; }

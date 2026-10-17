@@ -292,6 +292,13 @@ class PlacesMixin:
             device_id,
         )
 
+    async def set_display_name(self, user_sub: str, display_name: str) -> int:
+        """Rename the caller in every household they belong to; how many memberships changed."""
+        result = await self.pool.execute(
+            "UPDATE household_members SET display_name = $2 WHERE user_sub = $1", user_sub, display_name
+        )
+        return int(result.split()[-1])
+
     async def create_invite(self, household_id: str, user_sub: str, hours: int = 72) -> str:
         code = "-".join(secrets.token_hex(2).upper() for _ in range(3))
         await self.pool.execute(
