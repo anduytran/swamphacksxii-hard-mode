@@ -1,0 +1,206 @@
+[
+  {
+    "model": "data/onnx/keys-s640-fp32.onnx",
+    "sha256": "126dd4619bf3c1921f87e60b55a2f16ecf20f4feb3308a0cdbff8468e072a2f7",
+    "bytes": 51227852,
+    "clips": {
+      "IMG_7687.MP4": {
+        "memory_count": 1,
+        "median_seconds": 0.08800325000629527,
+        "p95_seconds": 0.10444662499867263,
+        "frames": 16,
+        "proposals": 10,
+        "visible_scored_frames": 16,
+        "localized_key_frames": 10,
+        "detection_misses": 6,
+        "non_key_proposals": 0
+      },
+      "04_return_and_find.MOV": {
+        "memory_count": 1,
+        "median_seconds": 0.0971361500050989,
+        "p95_seconds": 0.10962775500447605,
+        "frames": 24,
+        "proposals": 5,
+        "visible_scored_frames": 10,
+        "localized_key_frames": 5,
+        "detection_misses": 5,
+        "non_key_proposals": 0
+      },
+      "second take cluttered.MOV": {
+        "memory_count": 2,
+        "median_seconds": 0.09910880000097677,
+        "p95_seconds": 0.11107771999959368,
+        "frames": 17,
+        "proposals": 17,
+        "visible_scored_frames": 14,
+        "localized_key_frames": 13,
+        "detection_misses": 1,
+        "non_key_proposals": 1
+      },
+      "IMG_7688.MOV": {
+        "memory_count": 3,
+        "median_seconds": 0.099712900002487,
+        "p95_seconds": 0.1165901999993366,
+        "frames": 64,
+        "proposals": 30,
+        "visible_scored_frames": 0,
+        "localized_key_frames": 0,
+        "detection_misses": 0,
+        "non_key_proposals": 30
+      }
+    }
+  },
+  {
+    "model": "data/onnx/keys-s640-int8.onnx",
+    "sha256": "d3606632f4a93fde6e6c2b0729c3f286408f635a623e98ba9e2a46351707132f",
+    "bytes": 13354586,
+    "clips": {
+      "IMG_7687.MP4": {
+        "memory_count": 1,
+        "median_seconds": 0.1281943499998306,
+        "p95_seconds": 0.14737147499545245,
+        "frames": 16,
+        "proposals": 8,
+        "visible_scored_frames": 16,
+        "localized_key_frames": 8,
+        "detection_misses": 8,
+        "non_key_proposals": 0
+      },
+      "04_return_and_find.MOV": {
+        "memory_count": 1,
+        "median_seconds": 0.12314925000828225,
+        "p95_seconds": 0.1446556000060809,
+        "frames": 24,
+        "proposals": 2,
+        "visible_scored_frames": 10,
+        "localized_key_frames": 2,
+        "detection_misses": 8,
+        "non_key_proposals": 0
+      },
+      "second take cluttered.MOV": {
+        "memory_count": 1,
+        "median_seconds": 0.14190110001072753,
+        "p95_seconds": 0.15225090000021738,
+        "frames": 17,
+        "proposals": 13,
+        "visible_scored_frames": 14,
+        "localized_key_frames": 11,
+        "detection_misses": 3,
+        "non_key_proposals": 2
+      },
+      "IMG_7688.MOV": {
+        "memory_count": 1,
+        "median_seconds": 0.1294342500041239,
+        "p95_seconds": 0.14844078999230986,
+        "frames": 64,
+        "proposals": 9,
+        "visible_scored_frames": 0,
+        "localized_key_frames": 0,
+        "detection_misses": 0,
+        "non_key_proposals": 9
+      }
+    }
+  },
+  {
+    "model": "data/onnx/keys-s320-fp32.onnx",
+    "sha256": "fe18c92f481417086c32d489d1e8ececce9265c84cb772fc29878ca877f73d9e",
+    "bytes": 51101848,
+    "clips": {
+      "IMG_7687.MP4": {
+        "memory_count": 1,
+        "median_seconds": 0.023197099995741155,
+        "p95_seconds": 0.029158325003663776,
+        "frames": 16,
+        "proposals": 7,
+        "visible_scored_frames": 16,
+        "localized_key_frames": 7,
+        "detection_misses": 9,
+        "non_key_proposals": 0
+      },
+      "04_return_and_find.MOV": {
+        "memory_count": 1,
+        "median_seconds": 0.02876799999648938,
+        "p95_seconds": 0.03535461999781546,
+        "frames": 24,
+        "proposals": 4,
+        "visible_scored_frames": 10,
+        "localized_key_frames": 4,
+        "detection_misses": 6,
+        "non_key_proposals": 0
+      },
+      "second take cluttered.MOV": {
+        "memory_count": 1,
+        "median_seconds": 0.030665300000691786,
+        "p95_seconds": 0.03689433999825269,
+        "frames": 17,
+        "proposals": 14,
+        "visible_scored_frames": 14,
+        "localized_key_frames": 11,
+        "detection_misses": 3,
+        "non_key_proposals": 0
+      },
+      "IMG_7688.MOV": {
+        "memory_count": 1,
+        "median_seconds": 0.02756139999110019,
+        "p95_seconds": 0.03517872499069199,
+        "frames": 64,
+        "proposals": 4,
+        "visible_scored_frames": 0,
+        "localized_key_frames": 0,
+        "detection_misses": 0,
+        "non_key_proposals": 4
+      }
+    }
+  },
+  {
+    "model": "data/onnx/keys-s320-int8.onnx",
+    "sha256": "162adae99f3807b25f2ce41e9062364c80f0c40a9c473ffcfd9e784bb3d3b25b",
+    "bytes": 13228543,
+    "clips": {
+      "IMG_7687.MP4": {
+        "memory_count": 1,
+        "median_seconds": 0.03441939999902388,
+        "p95_seconds": 0.041746249993593665,
+        "frames": 16,
+        "proposals": 6,
+        "visible_scored_frames": 16,
+        "localized_key_frames": 6,
+        "detection_misses": 10,
+        "non_key_proposals": 0
+      },
+      "04_return_and_find.MOV": {
+        "memory_count": 1,
+        "median_seconds": 0.03607385000213981,
+        "p95_seconds": 0.04293479000625666,
+        "frames": 24,
+        "proposals": 4,
+        "visible_scored_frames": 10,
+        "localized_key_frames": 4,
+        "detection_misses": 6,
+        "non_key_proposals": 0
+      },
+      "second take cluttered.MOV": {
+        "memory_count": 1,
+        "median_seconds": 0.04061939999519382,
+        "p95_seconds": 0.046006540002417745,
+        "frames": 17,
+        "proposals": 8,
+        "visible_scored_frames": 14,
+        "localized_key_frames": 8,
+        "detection_misses": 6,
+        "non_key_proposals": 0
+      },
+      "IMG_7688.MOV": {
+        "memory_count": 1,
+        "median_seconds": 0.03595215000677854,
+        "p95_seconds": 0.042643639994639666,
+        "frames": 64,
+        "proposals": 2,
+        "visible_scored_frames": 0,
+        "localized_key_frames": 0,
+        "detection_misses": 0,
+        "non_key_proposals": 2
+      }
+    }
+  }
+]

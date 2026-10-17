@@ -1,0 +1,29 @@
+{
+  "observation_id": "8c955a6f-55b0-5348-ad86-777c6b23dcf4",
+  "captured_at": "2026-10-17T05:36:00.003Z",
+  "source": "auto",
+  "pipeline": {
+    "name": "lastseen-ml",
+    "version": "0.1.0",
+    "detector": "yolo-world yolov8m-worldv2 960px+distractors (preset m960d)",
+    "matcher": "orb"
+  },
+  "image_size": {
+    "width": 1920,
+    "height": 1080
+  },
+  "objects": [
+    {
+      "label": "keys",
+      "confidence": 0.054,
+      "bbox": [
+        0.3797,
+        0.637,
+        0.0885,
+        0.1565
+      ],
+      "track_id": "mem_bunch-of-keys_6efe2634",
+      "event": "seen"
+    }
+  ]
+}

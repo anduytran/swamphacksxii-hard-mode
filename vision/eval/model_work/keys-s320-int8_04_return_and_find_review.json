@@ -1,0 +1,157 @@
+{
+  "frames": [
+    {
+      "frame_ms": 0.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 500.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 1000.0,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 1501.6666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 2001.666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 2501.666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 3001.666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 3501.666666666667,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 4003.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 4503.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 5003.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 5503.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 6003.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 6505.000000000001,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 7005.000000000001,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 7505.000000000001,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 8005.000000000001,
+      "proposals": 1
+    },
+    {
+      "frame_ms": 8506.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 9006.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 9506.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 10006.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 10506.666666666668,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 11008.333333333334,
+      "proposals": 0
+    },
+    {
+      "frame_ms": 11508.333333333334,
+      "proposals": 0
+    }
+  ],
+  "candidates": [
+    {
+      "id": 0,
+      "frame_ms": 6505.000000000001,
+      "box": [
+        699,
+        595,
+        996,
+        913
+      ],
+      "confidence": 0.0623573362827301,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 1,
+      "frame_ms": 7005.000000000001,
+      "box": [
+        788,
+        595,
+        1127,
+        913
+      ],
+      "confidence": 0.21280115842819214,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 2,
+      "frame_ms": 7505.000000000001,
+      "box": [
+        737,
+        574,
+        1117,
+        913
+      ],
+      "confidence": 0.15392610430717468,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    },
+    {
+      "id": 3,
+      "frame_ms": 8005.000000000001,
+      "box": [
+        545,
+        472,
+        1027,
+        862
+      ],
+      "confidence": 0.06010815501213074,
+      "review": "key",
+      "reviewer": "Codex visual contact-sheet review"
+    }
+  ],
+  "memory_count": 1,
+  "median_seconds": 0.03607385000213981,
+  "p95_seconds": 0.04293479000625666
+}

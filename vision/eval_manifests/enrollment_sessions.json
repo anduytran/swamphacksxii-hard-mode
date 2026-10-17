@@ -1,0 +1,12 @@
+{
+  "name": "exploratory_single_keyring_sessions_v1",
+  "identity_claim": "Same physical keyring confirmed by Adam; no different-keyring negatives",
+  "references": ["desk_b.mov"],
+  "development": ["desk_a.mov", "01_normal_placement.MOV", "03_no_keys.MOV"],
+  "held_out_positive": ["IMG_7687.MP4", "04_return_and_find.MOV", "second take cluttered.MOV"],
+  "held_out_no_keys": ["IMG_7688.MOV"],
+  "notes": ["03_no_keys.MOV contains keys", "desk_a.mov is never a reference or another-keyring negative"],
+  "sample_interval_ms": 500,
+  "threshold_rule": "lowest float32 threshold strictly above maximum manually reviewed development-negative score; fail if no development positives pass",
+  "review_required": true
+}

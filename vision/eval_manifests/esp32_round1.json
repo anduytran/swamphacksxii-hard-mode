@@ -1,0 +1,48 @@
+{
+  "name": "esp32_round1",
+  "description": "ESP32 camera, worn as in the demo. Record the same five scenarios as phone_round2 with scripts/record_stream.py, then fill in the windows (seconds) from scripts/contact_sheet.py. Clips with empty windows still run (timelines and memories), they just aren't scored.",
+  "clips_dir": "data/clips/esp32",
+  "prompt": "bunch of keys",
+  "clips": [
+    {
+      "id": "01_placement",
+      "file": "01_placement.mp4",
+      "note": "carry keys ~5 s, put them on a textured surface, keep them in view ~3 s, look away ~8 s, look back from another angle",
+      "windows": [],
+      "placed_at": null,
+      "walk_away": null
+    },
+    {
+      "id": "02_clutter",
+      "file": "02_clutter.mp4",
+      "note": "put keys on a cluttered desk (laptop, cables, cans), keep in view ~3 s, walk away",
+      "windows": [],
+      "first_visible": null,
+      "walk_away": null
+    },
+    {
+      "id": "03_no_keys",
+      "file": "03_no_keys.mp4",
+      "note": "30 s of a cluttered desk WITH NO KEYS anywhere (laptops with keyboards, cables, phones)",
+      "windows": [],
+      "no_keys": true
+    },
+    {
+      "id": "04_return",
+      "file": "04_return.mp4",
+      "note": "start across the room, walk back to the keys from 01, pick them up",
+      "windows": [],
+      "first_visible": null
+    },
+    {
+      "id": "05_quick_putdown",
+      "file": "05_quick_putdown.mp4",
+      "note": "put keys down and walk away within ~2 s (the hard case)",
+      "windows": [],
+      "placed_at": null,
+      "walk_away": null
+    }
+  ],
+  "flow": {"memory_clip": "01_placement", "navigation_clip": "04_return"},
+  "to_confirm": []
+}

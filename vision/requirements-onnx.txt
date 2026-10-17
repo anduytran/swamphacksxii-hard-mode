@@ -1,0 +1,5 @@
+# Optional local export and static INT8 tooling; install after requirements.txt.
+# Verified on Windows x64 / Python 3.12.6. Pi compatibility is not established.
+onnx==1.23.2
+onnxruntime==1.31.0
+onnxslim==0.1.98

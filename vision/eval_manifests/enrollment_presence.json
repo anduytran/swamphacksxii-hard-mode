@@ -1,0 +1,15 @@
+{
+  "method": "Codex visual review of held-out sampled frames and proposal crops; frame presence/localization, not IoU-labelled box AP",
+  "sample_interval_ms": 500,
+  "positive_windows_ms": {
+    "IMG_7687.MP4": [[0, 7800]],
+    "04_return_and_find.MOV": [[4400, 9200]],
+    "second take cluttered.MOV": [[0, 6600]],
+    "IMG_7688.MOV": []
+  },
+  "excluded_windows_ms": {
+    "04_return_and_find.MOV": [[0, 4400], [9200, 9500]],
+    "second take cluttered.MOV": [[6600, 6900]]
+  },
+  "notes": ["The distant approach in 04_return is excluded, consistent with phone_round2; none of the models demonstrated far-away recognition.", "Pickup frames through 9200 ms count as key-visible.", "This is the fixed initial 2 Hz sampling phase, not the five-phase benchmark."]
+}
