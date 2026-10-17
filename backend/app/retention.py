@@ -18,6 +18,7 @@ async def purge() -> int:
     await db.connect()
     try:
         deleted = await db.delete_older_than(settings.retention_hours)
+        await db.purge_last_seen(settings.last_seen_retention_hours)
     finally:
         await db.close()
     log.info("Purged %d records older than %dh", deleted, settings.retention_hours)

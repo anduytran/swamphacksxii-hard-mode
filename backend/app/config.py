@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     # Geolocation API where that is. Empty = positions only from the device (or none).
     google_geolocation_api_key: str = ""
 
+    # Vision pipeline observations (POST /api/v1/observations)
+    min_detection_confidence: float = 0.35  # detections below this are dropped
+    maybe_confidence: float = 0.5  # below this, answers and the dashboard say "maybe"
+    observation_min_interval_seconds: float = 2.0  # per device; faster uploads get 429
+    # How long each item's last-seen frame + box is kept. 72 = same as memories; the
+    # integration contract proposes 720 (30 days) once the team agrees.
+    last_seen_retention_hours: int = 72
+
     # Run item extraction + photo description after the device's response (True) or
     # before it (False). Use False on serverless hosts that may freeze after responding.
     enrich_in_background: bool = True

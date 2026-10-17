@@ -42,18 +42,37 @@ async def history(
     items_by_memory: dict[str, list[dict]] = {}
     for s in await db.item_sightings(hours, devices):
         items_by_memory.setdefault(s.memory_id, []).append({"name": s.name, "location": s.location})
+    detections = await _detections(db, [r.id for r in records if r.source == "auto"], settings)
     return [
         {
             "id": r.id,
             "device_id": r.device_id,
             "timestamp": r.created_at.isoformat(),
+            "source": r.source,
             "transcript": r.transcript,
             "scene": r.scene,
+            # Automatic observations have no speech; this sentence stands in for it.
+            "summary": r.scene.removeprefix(AUTO_PREFIX) if r.source == "auto" and r.scene else None,
+            "detections": detections.get(r.id, []),
             "image_url": _image_url(settings, r.id) if r.has_image else None,
             "items": items_by_memory.get(r.id, []),
         }
         for r in records
     ]
+
+
+AUTO_PREFIX = "Seen automatically: "
+
+
+async def _detections(db: MemoryDB, memory_ids: list[str], settings: Settings) -> dict[str, list[dict]]:
+    """Bounding boxes per memory, flagged "maybe" below the confidence threshold."""
+    if not memory_ids or not hasattr(db, "detections_for"):
+        return {}
+    found = await db.detections_for(memory_ids)
+    for boxes in found.values():
+        for d in boxes:
+            d["maybe"] = d["confidence"] < settings.maybe_confidence
+    return found
 
 
 @router.get("/items")
@@ -71,10 +90,14 @@ async def items(
     for s in sightings:  # newest first, so each list starts with the latest sighting
         by_name.setdefault(s.name, []).append(s)
 
+    photos = {name: next((s for s in seen if s.has_image), None) for name, seen in by_name.items()}
+    boxes = await _detections(db, [p.memory_id for p in photos.values() if p], settings)
+
     result = []
     for name, seen in by_name.items():
         latest = seen[0]
-        photo = next((s for s in seen if s.has_image), None)
+        photo = photos[name]
+        box = next((d for d in boxes.get(photo.memory_id, []) if d["label"] == name), None) if photo else None
         result.append(
             {
                 "name": name,
@@ -83,6 +106,7 @@ async def items(
                 "transcript": latest.transcript,
                 "scene": latest.scene,
                 "image_url": _image_url(settings, photo.memory_id) if photo else None,
+                "detection": box,  # the item's box in that photo, when the vision pipeline saw it
                 "mentions": len(seen),
                 "times_asked": asked.get(name, 0),
                 "previous": [

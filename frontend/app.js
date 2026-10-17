@@ -196,10 +196,51 @@ function fillPhoto(photo, url, alt) {
   }
 }
 
+// Bounding boxes from the vision pipeline, drawn over the photo. The SVG uses the image's
+// own pixel size with "slice", so it crops exactly like the photo's object-fit: cover.
+function drawBoxes(photo, boxes) {
+  const img = photo.querySelector("img");
+  if (!img || !boxes?.length) return;
+  const render = () => {
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    if (!w || !h) return;
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+    svg.setAttribute("preserveAspectRatio", "xMidYMid slice");
+    svg.setAttribute("aria-hidden", "true");
+    svg.classList.add("boxes");
+    for (const b of boxes) {
+      const [x, y, bw, bh] = b.bbox;
+      const rect = document.createElementNS(ns, "rect");
+      for (const [k, v] of Object.entries({ x: x * w, y: y * h, width: bw * w, height: bh * h, rx: Math.min(w, h) * 0.01 })) rect.setAttribute(k, v);
+      rect.setAttribute("vector-effect", "non-scaling-stroke");
+      rect.classList.toggle("maybe", Boolean(b.maybe));
+      const label = document.createElementNS(ns, "text");
+      label.setAttribute("x", x * w);
+      label.setAttribute("y", Math.max(y * h - h * 0.015, h * 0.05));
+      label.setAttribute("font-size", Math.round(h * 0.045));
+      label.textContent = `${b.label}${b.maybe ? "?" : ""} ${Math.round(b.confidence * 100)}%`;
+      svg.append(rect, label);
+    }
+    photo.append(svg);
+  };
+  if (img.complete) render();
+  else img.addEventListener("load", render, { once: true });
+  img.alt += ` Detected: ${boxes.map((b) => b.label).join(", ")}.`;
+}
+
+function autoChips(boxes) {
+  const chips = [chip("Seen automatically", "auto")];
+  if (boxes?.some((b) => b.maybe)) chips.push(chip("Maybe", "warn"));
+  return chips;
+}
+
 // What Gemini saw in the photo, shown under the wearer's own words.
 function fillSaw(node, scene) {
   const saw = node.querySelector(".saw");
-  if (!scene) return;
+  if (!scene || scene.startsWith("Seen automatically")) return;
   saw.hidden = false;
   saw.textContent = `Camera saw: ${scene}`;
 }
@@ -230,8 +271,12 @@ async function loadItems() {
   hero.querySelector(".when").textContent = `${timeAgo(latest.last_seen)} · ${clockTime(latest.last_seen)}`;
   hero.querySelector(".item-name").textContent = capitalize(latest.name);
   hero.querySelector(".item-location").textContent = capitalize(latest.location) || "Location not said";
-  hero.querySelector(".quote").textContent = `“${latest.transcript}”`;
+  hero.querySelector(".quote").textContent = latest.transcript ? `“${latest.transcript}”` : latest.scene || "";
   fillSaw(hero, latest.scene);
+  if (latest.detection) {
+    drawBoxes(hero.querySelector(".photo"), [latest.detection]);
+    hero.querySelector(".chips").append(...autoChips([latest.detection]));
+  }
   hero.querySelector(".chips").replaceChildren(...itemChips(latest));
   featured.replaceChildren(hero);
 
@@ -245,7 +290,8 @@ async function loadItems() {
       node.querySelector(".when").textContent = shortAgo(item.last_seen);
       node.querySelector(".when").title = clockTime(item.last_seen);
       node.querySelector(".item-location").textContent = capitalize(item.location) || `“${item.transcript}”`;
-      node.querySelector(".chips").replaceChildren(...itemChips(item));
+      node.querySelector(".chips").replaceChildren(...itemChips(item), ...(item.detection ? autoChips([item.detection]) : []));
+      if (item.detection) drawBoxes(node.querySelector(".photo"), [item.detection]);
       if (item.previous.length) {
         const before = node.querySelector(".before");
         before.hidden = false;
@@ -283,14 +329,19 @@ async function loadTimeline() {
   feed.replaceChildren(
     ...entries.map((e) => {
       const node = tpl.content.firstElementChild.cloneNode(true);
-      fillPhoto(node.querySelector(".photo"), e.image_url, `Photo taken when they said: ${e.transcript}`);
+      const auto = e.source === "auto";
+      fillPhoto(node.querySelector(".photo"), e.image_url, auto ? `Camera frame: ${e.summary || "automatic sighting"}.` : `Photo taken when they said: ${e.transcript}`);
       const time = node.querySelector("time");
       time.dateTime = e.timestamp;
       time.textContent = new Date(e.timestamp).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
       node.querySelector(".ago").textContent = timeAgo(e.timestamp);
-      node.querySelector(".quote").textContent = `“${e.transcript}”`;
+      node.querySelector(".quote").textContent = e.transcript ? `“${e.transcript}”` : capitalize(e.summary || "");
       fillSaw(node, e.scene);
-      node.querySelector(".chips").replaceChildren(...(e.items || []).map((i) => placeChip(i.name, i.location)));
+      node.querySelector(".chips").replaceChildren(
+        ...(e.items || []).map((i) => placeChip(i.name, i.location)),
+        ...(auto ? autoChips(e.detections) : [])
+      );
+      if (auto) drawBoxes(node.querySelector(".photo"), e.detections);
       return node;
     })
   );

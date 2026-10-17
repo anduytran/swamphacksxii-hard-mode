@@ -108,6 +108,10 @@ class FakeDB:
         self.purged_hours = hours
         return 0
 
+    async def purge_last_seen(self, hours):
+        self.last_seen_purged_hours = hours
+        return 0
+
     async def item_sightings(self, hours, device_ids=None):
         mine = {r.id for r in self._scoped(self.rows, device_ids)}
         return sorted([s for s in self.items if s.memory_id in mine], key=lambda s: s.created_at, reverse=True)

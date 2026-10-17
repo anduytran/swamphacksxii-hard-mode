@@ -9,7 +9,7 @@ from .ai import AIServices
 from .config import Settings, get_settings
 from .db import MemoryDB
 from .geo import Geolocator
-from .routers import admin, dashboard, households, images, memory, public
+from .routers import admin, dashboard, households, images, memory, observations, public
 
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 log = logging.getLogger("lastscene")
@@ -61,6 +61,7 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
     app.include_router(admin.router)
     app.include_router(households.router)
     app.include_router(public.router)
+    app.include_router(observations.router)
 
     @app.get("/healthz")
     async def healthz():

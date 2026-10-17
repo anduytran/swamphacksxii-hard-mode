@@ -13,6 +13,7 @@ from datetime import datetime
 import asyncpg
 
 from .config import Settings
+from .db_observations import ObservationsMixin
 from .db_places import PlacesMixin
 from .rag import ChunkHit
 
@@ -29,6 +30,7 @@ class MemoryRecord:
     transcript: str
     has_image: bool
     scene: str | None = None  # what the camera saw (Gemini vision), filled in after upload
+    source: str = "manual"  # manual (Remember button) | auto (vision pipeline observation)
 
 
 @dataclass
@@ -51,10 +53,10 @@ class QueryRecord:
 
 
 # Every query that lists records selects this instead of the image bytes.
-_COLUMNS = "id, device_id, created_at, transcript, scene, image IS NOT NULL AS has_image"
+_COLUMNS = "id, device_id, created_at, transcript, scene, source, image IS NOT NULL AS has_image"
 
 
-class MemoryDB(PlacesMixin):
+class MemoryDB(PlacesMixin, ObservationsMixin):
     def __init__(self, settings: Settings):
         self.dsn = settings.database_url
         self.dims = settings.embedding_dimensions
@@ -168,6 +170,7 @@ class MemoryDB(PlacesMixin):
                 "CREATE INDEX IF NOT EXISTS query_logs_created_at_idx ON query_logs (created_at DESC)"
             )
             await self.init_places_schema(conn)
+            await self.init_observations_schema(conn)
 
     async def insert(
         self, device_id: str, transcript: str, image: bytes | None, image_type: str | None
@@ -363,6 +366,7 @@ def _record(row) -> MemoryRecord:
         transcript=row["transcript"],
         has_image=row["has_image"],
         scene=row["scene"],
+        source=row["source"] if "source" in row.keys() else "manual",
     )
 
 

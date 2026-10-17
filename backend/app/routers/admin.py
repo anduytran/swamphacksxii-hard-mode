@@ -28,4 +28,5 @@ async def purge(
     Vercel sends "Authorization: Bearer <CRON_SECRET>". Disabled when no secret is set.
     """
     deleted = await db.delete_older_than(settings.retention_hours)
-    return {"deleted": deleted, "retention_hours": settings.retention_hours}
+    last_seen = await db.purge_last_seen(settings.last_seen_retention_hours)
+    return {"deleted": deleted, "retention_hours": settings.retention_hours, "last_seen_deleted": last_seen}

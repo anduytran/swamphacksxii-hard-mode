@@ -40,6 +40,10 @@ deploy/           systemd unit + crontab for the Vultr instance
 | `POST /api/v1/households/{id}/invites` · `POST /api/v1/invites/accept` | owner · caregiver | – · `{code}` | One-use family invite |
 | `PATCH /api/v1/households/{id}` · `.../places/{place}` | owner · member | `{share_public}` · `{name, kind}` | Public-map opt-in · name a place, mark it public/private |
 | `GET /api/v1/public/lost-map` | none | – | Anonymous public cells (k ≥ 3 households) |
+| `POST /api/v1/observations` | device token | multipart `image` + `observation` JSON (+ optional `audio`) | Automatic memory from the vision pipeline: 201 `{memory_id, items}`; same `observation_id` again → 200 |
+| `DELETE /api/v1/observations/{id}` | device token | – | Undo a wrong detection; last-seen rolls back |
+| `GET /api/v1/items/last-seen` · `/items/{label}/last-seen` | device token | – | Last-seen frame (signed link), box, scene, time per item in the household |
+| `POST /api/v1/items/{label}/found` | device token | `{found_at?}` | Mark an item found |
 | `GET /api/v1/images/{id}?exp=…&sig=…` | signed link from the dashboard endpoints (15 min) | – | the photo |
 
 Queries only search the calling device's own memories from the last 72h (top 3 by cosine distance).
@@ -158,6 +162,17 @@ LastScene is usually set up by a family member **for** the person who wears it.
 | Memories, photos, questions, private places (homes, by default every place) | Members of the wearer's household only. Every dashboard endpoint is scoped to the caller's household devices. |
 | Places a member marked **public** (shops, parks, transit) | Feed the anonymous public map only if the owner turned on **Share anonymous counts** (off by default), and only for memories from then on. |
 | Public map (`/#/public`, no login) | Item names and counts per ~100 m cell, from the last 90 days, shown only where **3 or more households** contributed. No words, photos, device or household ids, or exact positions. |
+
+## Vision pipeline (automatic observations)
+
+A separate pipeline (YOLO-World detection + ORB scene matching, on a host machine) creates memories automatically. It posts one **observation** per event (an item placed, moved, picked up, or seen again) to `POST /api/v1/observations`: the uncropped frame plus JSON with labels, confidences, normalised `[x, y, w, h]` boxes, scene id/label, track ids and `captured_at`. The full format, rules and open questions are in the integration contract doc; `app/observations.py` validates it.
+
+- Stored as a memory with `source = 'auto'`, detections in `memory_detections`. Searchable from its structured labels (item and scene chunks, embedded like any memory; no Gemini caption), so voice answers and Search include it.
+- Each item's newest `placed` / `seen` / `moved` sighting is kept in `item_last_seen` with its own copy of the frame and box, shared across the household, for `latest_memory()` / `locate()` / `guide()`. Late or replayed uploads never overwrite a newer sighting; deleting an observation rolls back to the previous one.
+- Limits: detections below `MIN_DETECTION_CONFIDENCE` (0.35) are dropped, below `MAYBE_CONFIDENCE` (0.5) are flagged "maybe"; one observation per device every `OBSERVATION_MIN_INTERVAL_SECONDS` (2) or 429; `captured_at` more than 5 minutes ahead is rejected.
+- Retention: observations follow the 72 h purge. `LAST_SEEN_RETENTION_HOURS` (default 72) controls the last-seen frames; set 720 if the team adopts the 30-day proposal.
+- The dashboard draws the boxes over photos (dashed + "?" when maybe) with a "Seen automatically" badge.
+- Try it: `backend/scripts/post_observation.py` (post, last-seen, found, delete) with a device's Auth0 credentials.
 
 ## Where the ML lives
 

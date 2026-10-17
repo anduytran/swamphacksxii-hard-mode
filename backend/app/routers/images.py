@@ -18,7 +18,11 @@ async def get_image(
 ):
     if not signing.verify(settings.image_url_secret, record_id, exp, sig):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Link expired or invalid")
-    found = await db.get_image(record_id)
+    # "ls-<id>" = an item's last-seen frame (kept apart from memories; see db_observations).
+    if record_id.startswith("ls-"):
+        found = await db.last_seen_image(record_id.removeprefix("ls-"))
+    else:
+        found = await db.get_image(record_id)
     if found is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Image not found")
     data, content_type = found
