@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { repeat, Sk } from "../components/bits";
 import { FormCard } from "../components/FormCard";
+import { McpKeys } from "../components/McpKeys";
 import { ApiError, useApi, type Api } from "../lib/api";
 import { useApp, useLoadStatus } from "../lib/app";
 import { useAuth } from "../lib/auth";
@@ -159,6 +160,7 @@ function HouseholdView({ h, api, onChange }: { h: Household; api: Api; onChange(
       )}
       {language}
       <Places h={h} api={api} />
+      <McpKeys householdId={h.id} api={api} owner={owner} />
     </div>
   );
 }

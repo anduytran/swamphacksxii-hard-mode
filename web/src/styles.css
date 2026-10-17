@@ -1687,3 +1687,12 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
 .named-places h3 { margin: 0 0 6px; font-size: 0.875rem; }
 .named-places ul { margin: 0; padding-left: 18px; font-size: 0.875rem; }
 .public-place { margin: 2px 0 8px; padding: 0 12px; font-size: 0.875rem; }
+/* MCP keys card (Household) */
+.mcp-key-form { display: flex; flex-wrap: wrap; gap: 8px; }
+.mcp-key-form input {
+  flex: 1 1 200px; min-width: 0; min-height: 44px; padding: 0 14px; border-radius: 10px;
+  font: inherit; font-size: 0.9375rem; color: var(--text); background: var(--ground); border: 1px solid var(--field);
+}
+.mcp-key-form input:hover { border-color: var(--line-hi); }
+.mcp-key-form input:focus { border-color: var(--secondary); }
+.setup-card .invite-code { overflow-wrap: anywhere; }

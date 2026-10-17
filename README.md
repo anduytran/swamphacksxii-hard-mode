@@ -122,6 +122,10 @@ Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, 
 | `GET /api/v1/training/models/current` | device | – | the newest model's manifest; download with `GET .../models/{id}/files/{name}/parts/{n}` |
 | `GET /api/v1/households/{id}/training/model` | member | – | `{photos, model, up_to_date}` for the Teach items page |
 
+### MCP (Gemini and other AI assistants)
+
+`POST /mcp` is a read-only [MCP](https://modelcontextprotocol.io) server: Streamable HTTP, stateless, JSON responses. It has 7 tools: `list_households`, `search_memories`, `item_last_seen`, `timeline`, `items`, `missing_times` and `places`. Send a caregiver's Auth0 token or a household MCP key (`/api/v1/households/{id}/mcp-keys`, made by the owner, shown once). See [docs/MCP.md](docs/MCP.md) for auth, limits, privacy and a Gemini example (`backend/scripts/ask_gemini_mcp.py`).
+
 ### Public, photos and ops
 
 | Endpoint | Auth | Returns |
