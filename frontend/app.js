@@ -844,23 +844,59 @@ async function loadPlacesMap() {
 
 let publicDeck = null;
 
+// 3D buildings: OpenFreeMap vector tiles (OpenStreetMap data, free, no key). The tile URL
+// carries a dated version, so it's read from the TileJSON once; no buildings if that fails.
+const BUILDINGS_TILEJSON = "https://tiles.openfreemap.org/planet";
+let buildingTiles = null;
+
+function buildingTileUrls() {
+  buildingTiles ??= fetch(BUILDINGS_TILEJSON)
+    .then((r) => (r.ok ? r.json() : null))
+    .then((tilejson) => tilejson?.tiles || null)
+    .catch(() => null);
+  return buildingTiles;
+}
+
+function buildingsLayer(tiles) {
+  return new deck.MVTLayer({
+    id: "buildings",
+    data: tiles,
+    // Heights (render_height) only come with z14 tiles: always fetch z14, one level finer
+    // than the view, so buildings stand up from zoom 13 inwards.
+    minZoom: 14,
+    maxZoom: 14,
+    zoomOffset: 1,
+    loadOptions: { mvt: { layers: ["building"] } },
+    extruded: true,
+    stroked: false,
+    getElevation: (f) => (f.properties.hide_3d ? 0 : f.properties.render_height || 6),
+    getFillColor: [74, 68, 60, 240],
+    material: { ambient: 0.5, diffuse: 0.55, shininess: 6, specularColor: [30, 28, 24] },
+  });
+}
+
 async function loadPublic() {
-  const [data] = await Promise.all([fetch("/api/v1/public/lost-map").then((r) => r.json()), loadScript(DECK_URL)]);
+  const [data, , tiles] = await Promise.all([
+    fetch("/api/v1/public/lost-map").then((r) => r.json()),
+    loadScript(DECK_URL),
+    buildingTileUrls(),
+  ]);
   $("public-k").textContent = data.min_households;
   const container = $("public-map");
   const cells = data.cells.map((c) => ({ ...c, total: c.left + c.asked }));
   const maxTotal = Math.max(1, ...cells.map((c) => c.total));
   const layers = [
     basemap(),
+    tiles && buildingsLayer(tiles),
+    // Slim cylinders (24 m across) that rise above the rooftops: 30–120 m tall, buildings ~5–60 m.
     new deck.ColumnLayer({
       id: "public-cells",
       data: cells,
-      diskResolution: 6,
-      radius: 60,
+      diskResolution: 24,
+      radius: 12,
       extruded: true,
       getPosition: (c) => [c.lng, c.lat],
-      getElevation: (c) => c.total,
-      elevationScale: 220 / maxTotal,
+      getElevation: (c) => 30 + (c.total / maxTotal) * 90,
       getFillColor: (c) => [...MAP_COLORS.lost, 90 + Math.round((c.total / maxTotal) * 165)],
       material: { ambient: 0.6, diffuse: 0.6, shininess: 20 },
       pickable: true,
@@ -875,11 +911,9 @@ async function loadPublic() {
     container.replaceChildren();
     publicDeck = new deck.Deck({
       parent: container,
-      // Fit flat, then step back: a tilted camera shows less of the map than fitBounds assumes.
-      initialViewState: (() => {
-        const view = fitView(cells.map((c) => [c.lng, c.lat]), container, { pitch: 45, bearing: -15 });
-        return { ...view, zoom: Math.min(view.zoom, 15) - 0.8 };
-      })(),
+      // Open on the busiest spot (cells come busiest first), close enough for the 3D buildings
+      // to read; "Busiest spots" below flies to the others.
+      initialViewState: cells.length ? spotView(cells[0]) : fitView([], container),
       controller: true,
       getTooltip,
       style: { position: "absolute", inset: "0" },
@@ -895,14 +929,25 @@ async function loadPublic() {
     });
   }
   list.replaceChildren(
-    ...cells.slice(0, 10).map((c) => {
-      const li = el("li", { class: "public-row" },
-        el("span", { class: "mono public-where" }, `${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`),
+    ...cells.slice(0, 10).map((c) => el("li", {},
+      el("button", {
+        type: "button",
+        class: "public-row",
+        "aria-label": `Show spot ${c.lat.toFixed(3)}, ${c.lng.toFixed(3)} on the map: ${c.items.slice(0, 4).map((i) => i.name).join(", ")}`,
+        onclick: () => {
+          publicDeck.setProps({ initialViewState: { ...spotView(c), transitionDuration: 900, transitionInterpolator: new deck.FlyToInterpolator() } });
+          $("public-map").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+        },
+      },
         el("span", { class: "public-items" }, c.items.slice(0, 4).map((i) => `${i.name} (${i.left + i.asked})`).join(", ")),
-        el("span", { class: "mono public-total" }, `${c.total}×`));
-      return li;
-    })
+        el("span", { class: "mono public-where" }, `${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`),
+        el("span", { class: "mono public-total" }, `${c.total}×`))))
   );
+}
+
+// A tilted close-up of one public spot, near enough that the buildings around it read.
+function spotView(cell) {
+  return { longitude: cell.lng, latitude: cell.lat, zoom: 15.4, pitch: 55, bearing: -20 };
 }
 
 // ---------- Household setup ----------
