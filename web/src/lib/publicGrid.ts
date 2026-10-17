@@ -28,11 +28,19 @@ export const LAT_STEP = 0.0009;
 export const LNG_STEP = 0.00103;
 
 /**
- * Grid level for a zoom: 0 = the ~100 m public cells (zoom 13.5 and closer); each level out
- * doubles the cell size (200 m, 400 m, … 6.4 km), so zooming out merges neighbouring spots
- * into bigger columns instead of shrinking them to specks.
+ * Grid level for a zoom: 0 = the ~100 m public cells (zoom 12.5 and closer); every two zoom
+ * levels out doubles the cell size (200 m, 400 m, … 6.4 km). Cells grow at half the rate the
+ * map shrinks, so zooming out merges neighbouring spots without collapsing a whole area into
+ * one column, and the columns thin out gradually instead of shrinking to specks.
  */
-export const gridLevel = (zoom: number) => Math.max(0, Math.min(6, Math.round(13.5 - zoom)));
+export const gridLevel = (zoom: number) => Math.max(0, Math.min(6, Math.floor((14 - zoom) / 2)));
+
+/**
+ * How far out the camera may go: three levels past the overview of the spots (never wider than
+ * a region). Further out the grid merges into one column and then shrinks out of sight, and a
+ * tilted camera shows the edge of the world.
+ */
+export const minZoomFor = (overviewZoom: number) => Math.max(6, Math.floor(overviewZoom) - 3);
 
 export function binCells(cells: LostCell[], level: number): GridCell[] {
   if (!level) return cells.map((c) => ({ ...c, total: c.left + c.asked, spots: 1 }));

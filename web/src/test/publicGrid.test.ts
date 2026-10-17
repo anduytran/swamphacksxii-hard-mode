@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { binCells, coreSpots, gridLevel, HEAT_COLORS, rampColor, simulatedLostMap } from "../lib/publicGrid";
+import { binCells, coreSpots, gridLevel, minZoomFor, HEAT_COLORS, rampColor, simulatedLostMap } from "../lib/publicGrid";
 
 const cell = (lat: number, lng: number, left: number, asked = 0, name = "keys") => ({ lat, lng, left, asked, items: [{ name, left, asked }] });
 
 describe("gridLevel", () => {
-  it("is the 100 m grid up close and doubles per zoom level out, capped", () => {
+  it("is the 100 m grid up close and doubles every two zoom levels out, capped", () => {
     expect(gridLevel(15)).toBe(0);
-    expect(gridLevel(13.5)).toBe(0);
-    expect(gridLevel(12.5)).toBe(1);
-    expect(gridLevel(11.5)).toBe(2);
-    expect(gridLevel(3)).toBe(6);
+    expect(gridLevel(12.5)).toBe(0);
+    expect(gridLevel(12)).toBe(1);
+    expect(gridLevel(10)).toBe(2);
+    expect(gridLevel(1)).toBe(6);
   });
 });
 
@@ -76,5 +76,13 @@ describe("simulatedLostMap", () => {
     }
     const totals = a.cells.map((c) => c.left + c.asked);
     expect(totals).toEqual([...totals].sort((x, y) => y - x));
+  });
+});
+
+describe("minZoomFor", () => {
+  it("allows three levels out from the overview, never past a region", () => {
+    expect(minZoomFor(13.4)).toBe(10);
+    expect(minZoomFor(7)).toBe(6);
+    expect(gridLevel(minZoomFor(13.4))).toBe(2); // 400 m cells at the furthest zoom over campus
   });
 });

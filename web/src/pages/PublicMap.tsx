@@ -11,7 +11,7 @@ import { publicGet } from "../lib/api";
 import { useLoadStatus } from "../lib/app";
 import { capitalize, prefersReducedMotion } from "../lib/format";
 import { basemap, buildingsLayer, buildingTileUrls, fitView, GEO_TOOLTIP_STYLE, type GeoView } from "../lib/mapLayers";
-import { binCells, coreSpots, gridLevel, rampColor, simulatedLostMap, spotView, UF_CAMPUS, type GridCell } from "../lib/publicGrid";
+import { binCells, coreSpots, gridLevel, minZoomFor, rampColor, simulatedLostMap, spotView, UF_CAMPUS, type GridCell } from "../lib/publicGrid";
 import { useResource } from "../lib/resource";
 import type { LostCell, LostMap } from "../lib/types";
 import { useSize } from "../lib/useSize";
@@ -19,7 +19,7 @@ import { useSize } from "../lib/useSize";
 type Mode = "live" | "sim";
 let lastMode: Mode = "live"; // survives switching pages
 
-type ViewState = GeoView & { transitionDuration?: number; transitionInterpolator?: FlyToInterpolator };
+type ViewState = GeoView & { minZoom?: number; maxZoom?: number; transitionDuration?: number; transitionInterpolator?: FlyToInterpolator };
 
 export default function PublicMapPage() {
   const [mode, setModeState] = useState<Mode>(lastMode);
@@ -42,9 +42,10 @@ export default function PublicMapPage() {
   // A tilted overview of the spots (fit flat, then step back: a tilted camera shows less than
   // fitBounds assumes); with none yet, the UF campus area. Buildings appear from zoom 13.
   const overview = (cells: LostCell[]): ViewState => {
-    if (!cells.length) return { ...UF_CAMPUS, zoom: 13.6, pitch: 52, bearing: -18 };
+    const zoomed = (v: ViewState): ViewState => ({ ...v, minZoom: minZoomFor(v.zoom), maxZoom: 18 });
+    if (!cells.length) return zoomed({ ...UF_CAMPUS, zoom: 13.6, pitch: 52, bearing: -18 });
     const view = fitView(coreSpots(cells), size?.width ?? 800, size?.height ?? 480, { pitch: 52, bearing: -18 });
-    return { ...view, zoom: Math.min(view.zoom, 14.2) - 0.7 };
+    return zoomed({ ...view, zoom: Math.min(view.zoom, 14.2) - 0.7 });
   };
 
   // The camera: set once per data set (mode), then by the list's fly-to buttons.
@@ -60,7 +61,7 @@ export default function PublicMapPage() {
   }, [data, size, mode]);
 
   const flyTo = (cell: LostCell) => {
-    setView({ ...spotView(cell), transitionDuration: 900, transitionInterpolator: new FlyToInterpolator() });
+    setView({ ...spotView(cell), minZoom: view?.minZoom, maxZoom: view?.maxZoom, transitionDuration: 900, transitionInterpolator: new FlyToInterpolator() });
     ref.current?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "center" });
   };
 

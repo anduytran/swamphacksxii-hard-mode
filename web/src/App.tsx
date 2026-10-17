@@ -15,9 +15,29 @@ import { Landing } from "./pages/Landing";
 import SearchPage from "./pages/Search";
 import TimelinePage from "./pages/Timeline";
 
-// The map pages carry deck.gl, so they load on first visit.
-const MapPage = lazy(() => import("./pages/MapPage"));
-const PublicMapPage = lazy(() => import("./pages/PublicMap"));
+// The map pages carry deck.gl, so they load on first visit. A tab left open across a deploy
+// asks for chunk names that no longer exist: reload once to pick up the new build.
+function lazyPage<T extends { default: () => JSX.Element }>(load: () => Promise<T>) {
+  return lazy(() =>
+    load().then(
+      (mod) => {
+        try { sessionStorage.removeItem("chunk-reload"); } catch { /* storage blocked */ }
+        return mod;
+      },
+      (err: unknown) => {
+        let reloaded = true;
+        try {
+          reloaded = sessionStorage.getItem("chunk-reload") === "1";
+          sessionStorage.setItem("chunk-reload", "1");
+        } catch { /* storage blocked: don't risk a reload loop */ }
+        if (!reloaded) location.reload();
+        throw err;
+      },
+    ),
+  );
+}
+const MapPage = lazyPage(() => import("./pages/MapPage"));
+const PublicMapPage = lazyPage(() => import("./pages/PublicMap"));
 
 const PAGE_VIEWS: Record<Page, () => JSX.Element> = {
   items: () => <ItemsPage />,
