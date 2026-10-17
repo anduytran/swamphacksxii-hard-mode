@@ -64,17 +64,18 @@ class Settings(BaseSettings):
     # (*_RPM) and per day (*_RPD, from midnight Pacific like Gemini's quotas); 0 = no cap.
     # Gemini's quotas are per Google Cloud project; AI Studio shows your project's. Keep these
     # a little under them. Over a cap, questions get a spoken "busy", memories are still saved.
-    # Per model, "model=per_minute/per_day". Only gemini-3.8-flash's 20/day is confirmed (Google's own
-    # 429 on Oct 17); the others are kept under published free-tier figures until AI Studio confirms.
+    # Per model, "model=per_minute/per_day". AI Studio's free tier for the lastscene project (Oct 17):
+    # 3.1 Flash Lite 15/500, 3 Flash 5/20, 3.8 Flash 5/20, each TTS model 3/10, Embedding 2 100/1000.
+    # gemini-2.5-flash isn't listed there, so it gets the same cap as the other small quotas.
     gemini_model_limits: str = (
-        "gemini-3.1-flash-lite=15/900,gemini-3-flash-preview=10/250,gemini-2.5-flash=10/250,gemini-3.8-flash=10/18"
+        "gemini-3.1-flash-lite=14/475,gemini-3-flash-preview=4/18,gemini-2.5-flash=4/18,gemini-3.8-flash=4/18"
     )
-    gemini_rpm: int = 10  # any text model not listed above
-    gemini_rpd: int = 20
-    gemini_tts_rpm: int = 10
-    gemini_tts_rpd: int = 200
-    gemini_embedding_rpm: int = 100
-    gemini_embedding_rpd: int = 1000
+    gemini_rpm: int = 4  # any text model not listed above
+    gemini_rpd: int = 18
+    gemini_tts_rpm: int = 2  # per TTS model
+    gemini_tts_rpd: int = 9
+    gemini_embedding_rpm: int = 95
+    gemini_embedding_rpd: int = 950
     live_tokens_per_day: int = 100  # Gemini Live sessions, all devices together
     openai_rpm: int = 30  # paid providers, when a stage is switched to them
     openai_rpd: int = 300
