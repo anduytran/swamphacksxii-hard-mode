@@ -21,6 +21,7 @@ from ..config import Settings, get_settings
 from ..db import MemoryDB
 from ..deps import get_ai, get_db, get_geo
 from ..geo import Geolocator, locate_and_record, record_public, resolve_location
+from ..intent import classify, strip_wake_phrase
 from ..pipeline import ingest_image, ingest_speech, retrieve
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
@@ -104,6 +105,47 @@ async def _note_pairing(db: MemoryDB, device_id: str, code: str | None) -> None:
         await db.remember_pairing_code(device_id, code)
 
 
+async def _save_memory(
+    background: BackgroundTasks, db: MemoryDB, ai: AIServices, geo: Geolocator, settings: Settings,
+    device_id: str, transcript: str, image_bytes: bytes, image_content_type: str | None, where: Whereabouts,
+) -> dict:
+    # The type is echoed back when the dashboard loads the photo, so never trust it blindly.
+    image_type = image_content_type if image_content_type in ALLOWED_IMAGE_TYPES else "image/jpeg"
+    record = await db.insert(device_id, transcript, image_bytes, image_type)
+    await ingest_speech(db, ai, record.id, transcript)
+    enrich_args = (db, ai, geo, device_id, record.id, transcript, image_bytes, image_type, where)
+    if settings.enrich_in_background:
+        background.add_task(_enrich_memory, *enrich_args)
+    else:
+        await _enrich_memory(*enrich_args)
+    return {"id": record.id, "timestamp": record.created_at.isoformat(), "transcript": transcript}
+
+
+async def _spoken_answer(
+    background: BackgroundTasks, db: MemoryDB, ai: AIServices, geo: Geolocator, settings: Settings,
+    device_id: str, question: str, where: Whereabouts, extra_headers: dict | None = None,
+) -> Response:
+    record_args = None
+    if question:
+        memories = await retrieve(db, ai, question, [device_id], settings.query_lookback_hours)
+        answer = await ai.answer(question, memories)
+        record_args = (db, ai, geo, device_id, question, answer, where)
+        if settings.enrich_in_background:
+            background.add_task(_record_query, *record_args)
+    else:
+        answer = "Sorry, I didn't catch that. Could you ask again?"
+
+    speech = await ai.speak(answer)
+    if record_args and not settings.enrich_in_background:
+        await _record_query(*record_args)
+    return Response(
+        content=speech,
+        media_type=ai.speech_media_type,
+        # Handy for debugging from curl / serial logs; the device can ignore them.
+        headers={"X-Question": quote(question), "X-Answer": quote(answer), **(extra_headers or {})},
+    )
+
+
 @router.post("/log")
 async def log_memory(
     background: BackgroundTasks,
@@ -124,17 +166,7 @@ async def log_memory(
     transcript = await ai.transcribe(audio.filename, audio_bytes, audio.content_type)
     if not transcript:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "No speech detected")
-
-    # The type is echoed back when the dashboard loads the photo, so never trust it blindly.
-    image_type = image.content_type if image.content_type in ALLOWED_IMAGE_TYPES else "image/jpeg"
-    record = await db.insert(device.sub, transcript, image_bytes, image_type)
-    await ingest_speech(db, ai, record.id, transcript)
-    enrich_args = (db, ai, geo, device.sub, record.id, transcript, image_bytes, image_type, where)
-    if settings.enrich_in_background:
-        background.add_task(_enrich_memory, *enrich_args)
-    else:
-        await _enrich_memory(*enrich_args)
-    return {"id": record.id, "timestamp": record.created_at.isoformat(), "transcript": transcript}
+    return await _save_memory(background, db, ai, geo, settings, device.sub, transcript, image_bytes, image.content_type, where)
 
 
 @router.post("/query")
@@ -152,23 +184,35 @@ async def query_memory(
     audio_bytes = await _read(audio, MAX_AUDIO_BYTES, "audio")
     await _note_pairing(db, device.sub, pairing_code)
     question = await ai.transcribe(audio.filename, audio_bytes, audio.content_type)
+    return await _spoken_answer(background, db, ai, geo, settings, device.sub, question, where)
 
-    record_args = None
-    if question:
-        memories = await retrieve(db, ai, question, [device.sub], settings.query_lookback_hours)
-        answer = await ai.answer(question, memories)
-        record_args = (db, ai, geo, device.sub, question, answer, where)
-        if settings.enrich_in_background:
-            background.add_task(_record_query, *record_args)
-    else:
-        answer = "Sorry, I didn't catch that. Could you ask again?"
 
-    speech = await ai.speak(answer)
-    if record_args and not settings.enrich_in_background:
-        await _record_query(*record_args)
-    return Response(
-        content=speech,
-        media_type=ai.speech_media_type,
-        # Handy for debugging from curl / serial logs; the device can ignore them.
-        headers={"X-Question": quote(question), "X-Answer": quote(answer)},
-    )
+@router.post("/voice")
+async def voice(
+    background: BackgroundTasks,
+    audio: UploadFile = File(...),
+    image: UploadFile | None = File(None, description="the photo taken when the wake phrase was heard"),
+    where: Whereabouts = Depends(whereabouts),
+    pairing_code: str | None = Header(None, alias="X-Pairing-Code"),
+    device: Principal = Depends(require_device),
+    db: MemoryDB = Depends(get_db),
+    ai: AIServices = Depends(get_ai),
+    geo: Geolocator = Depends(get_geo),
+    settings: Settings = Depends(get_settings),
+):
+    """Wake phrase, no button: the words decide. A statement is saved like /log (JSON back, with
+    "intent": "remember"); a question is answered like /query (spoken audio back, X-Intent: ask)."""
+    audio_bytes = await _read(audio, MAX_AUDIO_BYTES, "audio")
+    image_bytes = await _read(image, MAX_IMAGE_BYTES, "image") if image is not None else None
+    await _note_pairing(db, device.sub, pairing_code)
+    heard = await ai.transcribe(audio.filename, audio_bytes, audio.content_type)
+    if not heard:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "No speech detected")
+    words = strip_wake_phrase(heard)
+    if classify(heard) == "ask":
+        return await _spoken_answer(background, db, ai, geo, settings, device.sub, words, where, {"X-Intent": "ask"})
+    if image_bytes is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "A memory needs the photo; send image with the audio")
+    saved = await _save_memory(background, db, ai, geo, settings, device.sub, words, image_bytes,
+                               image.content_type if image else None, where)
+    return {**saved, "intent": "remember"}

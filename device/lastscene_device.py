@@ -1,5 +1,10 @@
 """LastScene wearable client for a Raspberry Pi Zero 2 W.
 
+Optional wake phrase, "Last Scene" (WAKE_WORD = path to its openWakeWord model; hey_jarvis is a
+ready-made stand-in for testing): say it, then speak.
+  -> takes a photo, beeps, records until you stop talking, POSTs /api/v1/memory/voice;
+     the server decides from the words: a statement is saved, a question is answered aloud.
+
 Two push-to-talk buttons:
   * REMEMBER (hold, speak, release): "I'm putting my keys on the counter"
       -> takes a photo, records while held, POSTs /api/v1/memory/log
@@ -17,9 +22,12 @@ Run `python lastscene_device.py --help` for test modes that need no hardware.
 from __future__ import annotations
 
 import argparse
+import array
 import json
 import logging
+import math
 import os
+import struct
 import shutil
 import signal
 import subprocess
@@ -57,6 +65,9 @@ class Config:
     fixed_lat: float | None = None  # used for LOCATION_SOURCE=fixed (and as a Wi-Fi fallback)
     fixed_lng: float | None = None
     wifi_interface: str = "wlan0"
+    wake_word: str = ""  # path to the "Last Scene" .onnx (or a stock name like hey_jarvis); empty = buttons only
+    wake_threshold: float = 0.6  # tune per model: with hey_jarvis, "hey Travis" scores ~0.45, the phrase ~1.0
+    wake_max_seconds: int = 10
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -79,6 +90,9 @@ class Config:
             fixed_lat=float(env["HOME_LAT"]) if env.get("HOME_LAT") else None,
             fixed_lng=float(env["HOME_LNG"]) if env.get("HOME_LNG") else None,
             wifi_interface=env.get("WIFI_INTERFACE", "wlan0"),
+            wake_word=env.get("WAKE_WORD", ""),
+            wake_threshold=float(env.get("WAKE_THRESHOLD", 0.6)),
+            wake_max_seconds=int(env.get("WAKE_MAX_SECONDS", 10)),
         )
 
 
@@ -195,6 +209,16 @@ class ApiClient:
             where,
         ).json()
 
+    def voice(self, wav: bytes, jpeg: bytes | None, where: dict | None = None) -> tuple[str, bytes | dict]:
+        """Wake-phrase clip: ("ask", spoken answer audio) or ("remember", the saved memory)."""
+        files = {"audio": ("voice.wav", wav, "audio/wav")}
+        if jpeg is not None:
+            files["image"] = ("scene.jpg", jpeg, "image/jpeg")
+        resp = self._post("/api/v1/memory/voice", files, where)
+        if resp.headers.get("x-intent") == "ask" or resp.headers.get("content-type", "").startswith("audio/"):
+            return "ask", resp.content
+        return "remember", resp.json()
+
     def ask(self, wav: bytes, where: dict | None = None) -> tuple[bytes, str]:
         resp = self._post("/api/v1/memory/query", {"audio": ("question.wav", wav, "audio/wav")}, where)
         return resp.content, unquote(resp.headers.get("x-answer", ""))
@@ -209,12 +233,14 @@ class Spool:
         self.folder = folder
         self.folder.mkdir(parents=True, exist_ok=True)
 
-    def add(self, wav: bytes, jpeg: bytes, where: dict | None = None) -> Path:
+    def add(self, wav: bytes, jpeg: bytes, where: dict | None = None, kind: str = "log") -> Path:
+        """kind "log": a REMEMBER press; "voice": a wake-phrase clip (the server decides what it was)."""
         item = self.folder / f"{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
         tmp = item.with_suffix(".tmp")
         tmp.mkdir()
         (tmp / "audio.wav").write_bytes(wav)
         (tmp / "scene.jpg").write_bytes(jpeg)
+        (tmp / "kind").write_text(kind)
         (tmp / "where.json").write_text(json.dumps(where or {}))  # where it happened, not where it's sent from
         tmp.rename(item)  # atomic: a half-written item is never retried
         return item
@@ -228,7 +254,12 @@ class Spool:
             try:
                 where_file = item / "where.json"
                 where = json.loads(where_file.read_text()) if where_file.exists() else None
-                api.log_memory((item / "audio.wav").read_bytes(), (item / "scene.jpg").read_bytes(), where)
+                kind = (item / "kind").read_text() if (item / "kind").exists() else "log"
+                wav, jpeg = (item / "audio.wav").read_bytes(), (item / "scene.jpg").read_bytes()
+                if kind == "voice":
+                    api.voice(wav, jpeg, where)  # a question asked offline gets no late answer; a statement is saved
+                else:
+                    api.log_memory(wav, jpeg, where)
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == 422:  # e.g. no speech: retrying won't help
                     log.warning("Dropping spooled memory %s: %s", item.name, exc.response.text)
@@ -279,6 +310,185 @@ def play_wav(device: str, data: bytes) -> None:
         subprocess.run(["aplay", "-q", "-D", device, f.name], check=False)
 
 
+# ---------------------------------------------------------------- wake phrase
+
+RATE = 16000
+FRAME_SAMPLES = 1280  # 80 ms: the frame size openWakeWord expects
+FRAME_BYTES = FRAME_SAMPLES * 2
+
+
+def wav_bytes(pcm: bytes, rate: int = RATE) -> bytes:
+    """16-bit mono PCM -> a WAV file."""
+    header = b"RIFF" + struct.pack("<I", 36 + len(pcm)) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+    return header + b"data" + struct.pack("<I", len(pcm)) + pcm
+
+
+def tone(freq: float = 880, ms: int = 120, volume: float = 0.25) -> bytes:
+    """A short beep (WAV) that says "I'm listening" / "saved"."""
+    n = RATE * ms // 1000
+    fade = max(1, n // 10)
+    samples = array.array("h", (
+        int(32767 * volume * math.sin(2 * math.pi * freq * i / RATE) * min(1, i / fade, (n - i) / fade)) for i in range(n)
+    ))
+    return wav_bytes(samples.tobytes())
+
+
+def rms(frame: bytes) -> float:
+    samples = array.array("h", frame)
+    return math.sqrt(sum(x * x for x in samples) / len(samples)) if samples else 0.0
+
+
+class Endpointer:
+    """Decides when someone has finished speaking, from loudness alone (no extra libraries).
+
+    The noise floor is learnt from the quiet before speech; speech is anything clearly louder; the
+    clip ends after `silence_s` of quiet once speech started, or at `max_s`. `timeout_s` without
+    any speech means nothing was said."""
+
+    def __init__(self, max_s: float = 10, silence_s: float = 0.9, timeout_s: float = 4, floor: float = 300.0):
+        self.frame_s = FRAME_SAMPLES / RATE
+        self.max_frames = int(max_s / self.frame_s)
+        self.silence_frames = int(silence_s / self.frame_s)
+        self.timeout_frames = int(timeout_s / self.frame_s)
+        self.floor = floor  # a starting guess; follows the room while nobody speaks
+        self.frames = 0
+        self.quiet = 0
+        self.spoke = False
+
+    def feed(self, frame: bytes) -> str:
+        """'listening', 'speaking', 'done' or 'nothing'."""
+        level = rms(frame)
+        self.frames += 1
+        loud = level > max(self.floor * 2.5, 500)
+        if not self.spoke:
+            if loud:
+                self.spoke = True
+            else:
+                self.floor = 0.9 * self.floor + 0.1 * level
+                return "nothing" if self.frames >= self.timeout_frames else "listening"
+        self.quiet = 0 if loud else self.quiet + 1
+        if self.quiet >= self.silence_frames or self.frames >= self.max_frames:
+            return "done"
+        return "speaking"
+
+
+class WakeListener:
+    """openWakeWord on 80 ms frames. `model` is anything with predict(np.int16 frame) -> {name: score}."""
+
+    def __init__(self, name: str, threshold: float = 0.5, cooldown_s: float = 2.0, model=None, clock=time.monotonic):
+        if model is None:
+            from openwakeword.model import Model  # pip install openwakeword
+
+            model = Model(wakeword_models=[name], inference_framework="onnx")
+        self.model = model
+        self.threshold = threshold
+        self.cooldown_s = cooldown_s
+        self.clock = clock
+        self._last = -1e9
+
+    def heard(self, frame: bytes) -> bool:
+        import numpy as np
+
+        scores = self.model.predict(np.frombuffer(frame, dtype=np.int16))
+        if max(scores.values(), default=0) < self.threshold or self.clock() - self._last < self.cooldown_s:
+            return False
+        self._last = self.clock()
+        self.reset()
+        return True
+
+    def reset(self) -> None:
+        """Forget the audio so far (after a trigger, or after our own speaker played something)."""
+        if hasattr(self.model, "reset"):
+            self.model.reset()
+
+
+class MicStream:
+    """One arecord for everything: the wake listener and recordings both read its 80 ms frames.
+    (On a Pi, two programs can't open the same microphone.)"""
+
+    def __init__(self, device: str, on_frame):
+        self.device = device
+        self.on_frame = on_frame
+        self._proc: subprocess.Popen | None = None
+
+    def start(self) -> None:
+        self._proc = subprocess.Popen(
+            ["arecord", "-q", "-D", self.device, "-f", "S16_LE", "-r", str(RATE), "-c", "1", "-t", "raw"],
+            stdout=subprocess.PIPE,
+        )
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        assert self._proc and self._proc.stdout
+        while True:
+            frame = self._proc.stdout.read(FRAME_BYTES)
+            if len(frame) < FRAME_BYTES:
+                log.error("Microphone stream ended (arecord exited %s)", self._proc.poll())
+                return
+            try:
+                self.on_frame(frame)
+            except Exception:
+                log.exception("Audio frame handler failed")
+
+
+class StreamRecorder:
+    """Push-to-talk recording from the shared MicStream (used when the wake phrase is on)."""
+
+    def __init__(self, max_seconds: int):
+        self.max_frames = int(max_seconds * RATE / FRAME_SAMPLES)
+        self.frames: list[bytes] = []
+        self.active = False
+
+    def start(self) -> None:
+        self.frames, self.active = [], True
+
+    def add(self, frame: bytes) -> None:
+        if self.active and len(self.frames) < self.max_frames:
+            self.frames.append(frame)
+
+    def stop(self) -> bytes:
+        self.active = False
+        return wav_bytes(b"".join(self.frames))
+
+
+class VoiceCapture:
+    """After the wake phrase: collects frames until the Endpointer says the speaker has stopped."""
+
+    def __init__(self):
+        self.listening = False
+        self._endpointer: Endpointer | None = None
+        self._frames: list[bytes] = []
+        self._preroll: list[bytes] = []
+        self._done = threading.Event()
+        self._said = False
+
+    def listen(self, endpointer: Endpointer, timeout_s: float) -> bytes | None:
+        """Blocks until speech ends; the PCM spoken, or None when nothing was said."""
+        self._endpointer, self._frames, self._preroll, self._said = endpointer, [], [], False
+        self._done.clear()
+        self.listening = True
+        self._done.wait(timeout_s)
+        self.listening = False
+        return b"".join(self._frames) if self._said and self._frames else None
+
+    def add(self, frame: bytes) -> None:
+        if not self.listening or self._endpointer is None:
+            return
+        was_quiet = not self._endpointer.spoke
+        state = self._endpointer.feed(frame)
+        if self._endpointer.spoke:
+            if was_quiet:  # speech just started: keep ~240 ms before it, so soft first sounds aren't cut
+                self._frames = self._preroll[-3:]
+            self._frames.append(frame)
+        else:
+            self._preroll = (self._preroll + [frame])[-3:]
+        if state == "done":
+            self._said = True
+            self._done.set()
+        elif state == "nothing":
+            self._done.set()
+
+
 class Camera:
     def __init__(self):
         from picamera2 import Picamera2  # apt: python3-picamera2
@@ -316,14 +526,74 @@ class Device:
         self.remember.when_released = lambda: self._end("remember")
         self.ask.when_pressed = lambda: self._begin("ask")
         self.ask.when_released = lambda: self._end("ask")
-        self._active: tuple[str, Recorder, bytes | None] | None = None
+        self._active: tuple[str, Recorder | StreamRecorder, bytes | None] | None = None
+
+        # Wake phrase: one shared microphone stream for the listener and the buttons.
+        self.mic: MicStream | None = None
+        self.voice = VoiceCapture()
+        if cfg.wake_word:
+            try:
+                self.wake = WakeListener(cfg.wake_word, cfg.wake_threshold)
+            except Exception:  # openwakeword or its model missing: keep the buttons working
+                log.exception("Wake phrase %r unavailable; buttons only (see README step 3)", cfg.wake_word)
+            else:
+                self.stream_rec = StreamRecorder(cfg.max_record_seconds)
+                self.mic = MicStream(cfg.audio_in, self._on_frame)
+
+    def _on_frame(self, frame: bytes) -> None:
+        """Every 80 ms of microphone audio, when the wake phrase is on."""
+        if self.stream_rec.active:  # a button is held
+            self.stream_rec.add(frame)
+        elif self.voice.listening:  # after the wake phrase
+            self.voice.add(frame)
+        elif not self.busy.locked() and self.wake.heard(frame):
+            threading.Thread(target=self._wake, daemon=True).start()
+
+    def _wake(self) -> None:
+        if not self.busy.acquire(blocking=False):
+            return
+        try:
+            self.led.on()
+            photo = self.camera.capture_jpeg()
+            play_wav(self.cfg.audio_out, tone(880))  # "I'm listening" (before recording, so it isn't heard)
+            pcm = self.voice.listen(Endpointer(max_s=self.cfg.wake_max_seconds), self.cfg.wake_max_seconds + 3)
+            if pcm is None:
+                log.info("Wake phrase heard, but nothing said after it")
+                play_wav(self.cfg.audio_out, tone(440))
+                return
+            self.led.blink(on_time=0.1, off_time=0.1)
+            wav = wav_bytes(pcm)
+            where = whereabouts(self.cfg)
+            try:
+                intent, result = self.api.voice(wav, photo, where)
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
+                    log.warning("Server rejected voice clip: %s", exc.response.text)
+                    play_wav(self.cfg.audio_out, tone(440))
+                else:
+                    self.spool.add(wav, photo, where, kind="voice")
+                    log.warning("Offline; voice clip spooled for later")
+                return
+            if intent == "ask":
+                self.led.on()
+                play_wav(self.cfg.audio_out, result)
+            else:
+                log.info("Logged by voice: %s", result.get("transcript"))
+                play_wav(self.cfg.audio_out, tone(1320, 90))  # "saved"
+        except Exception:
+            log.exception("Wake phrase handling failed")
+        finally:
+            self.led.off()
+            self.wake.reset()  # don't let our own beeps or answer trigger it again
+            self.busy.release()
 
     def _begin(self, mode: str) -> None:
         if not self.busy.acquire(blocking=False):
             return
         try:
             photo = self.camera.capture_jpeg() if mode == "remember" else None
-            rec = Recorder(self.cfg.audio_in, self.cfg.max_record_seconds)
+            # With the wake phrase on, the mic is already open: record from the shared stream.
+            rec = self.stream_rec if self.mic else Recorder(self.cfg.audio_in, self.cfg.max_record_seconds)
             rec.start()
             self.led.on()
             self._active = (mode, rec, photo)
@@ -365,6 +635,9 @@ class Device:
             self.busy.release()
 
     def run(self) -> None:
+        if self.mic:
+            self.mic.start()
+            log.info("Listening for the wake phrase (%s)", self.cfg.wake_word)
         log.info("LastScene ready: hold REMEMBER (GPIO%d) or ASK (GPIO%d)", self.cfg.remember_pin, self.cfg.ask_pin)
         while True:
             time.sleep(60)

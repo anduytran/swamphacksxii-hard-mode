@@ -183,3 +183,141 @@ def test_spooled_memory_keeps_where_it_happened(tmp_path):
     spool.add(b"wav", b"jpg", {"lat": "29.65", "lng": "-82.32"})
     assert spool.flush(make_client(capture)) == 1
     assert b'name="lat"' in bodies[0] and b"29.65" in bodies[0]
+
+
+# ---------------------------------------------------------------- wake phrase
+
+import array as _array  # noqa: E402
+import io as _io  # noqa: E402
+import math as _math  # noqa: E402
+import threading as _threading  # noqa: E402
+import wave as _wave  # noqa: E402
+
+from lastscene_device import FRAME_SAMPLES, Endpointer, StreamRecorder, VoiceCapture, WakeListener, tone, wav_bytes  # noqa: E402
+
+
+def frame(level=0, freq=220):
+    """80 ms of a sine at the given amplitude (0 = silence)."""
+    return _array.array("h", (int(level * _math.sin(2 * _math.pi * freq * i / 16000)) for i in range(FRAME_SAMPLES))).tobytes()
+
+
+QUIET, SPEECH = frame(80), frame(6000)
+
+
+def test_wav_bytes_and_tone_are_valid_wav():
+    with _wave.open(_io.BytesIO(wav_bytes(QUIET * 3))) as w:
+        assert (w.getnchannels(), w.getframerate(), w.getsampwidth(), w.getnframes()) == (1, 16000, 2, FRAME_SAMPLES * 3)
+    with _wave.open(_io.BytesIO(tone(880, 120))) as w:
+        assert w.getnframes() == 1920
+
+
+def test_endpointer_waits_for_speech_then_stops_after_silence():
+    e = Endpointer(silence_s=0.4)
+    assert [e.feed(QUIET) for _ in range(5)] == ["listening"] * 5
+    assert e.feed(SPEECH) == "speaking" and e.spoke
+    states = [e.feed(QUIET) for _ in range(6)]
+    assert states[-1] == "done" and states.count("done") >= 1
+
+
+def test_endpointer_gives_up_when_nothing_is_said_and_caps_long_speech():
+    e = Endpointer(timeout_s=0.8)
+    assert [e.feed(QUIET) for _ in range(10)][-1] == "nothing"
+    e = Endpointer(max_s=1.0)
+    assert [e.feed(SPEECH) for _ in range(13)][-1] == "done"
+
+
+def test_endpointer_adapts_to_a_noisy_room():
+    e = Endpointer()
+    noisy = frame(900)  # a busy ballroom: louder than the default threshold of 500
+    assert all(e.feed(noisy) == "listening" for _ in range(20))  # the floor rises; noise isn't speech
+    assert e.feed(frame(9000)) == "speaking"
+
+
+def test_voice_capture_returns_speech_with_a_little_preroll():
+    v = VoiceCapture()
+    result = {}
+    t = _threading.Thread(target=lambda: result.setdefault("pcm", v.listen(Endpointer(silence_s=0.4), 5)))
+    t.start()
+    while not v.listening:
+        pass
+    for f in [QUIET] * 4 + [SPEECH] * 3 + [QUIET] * 6:
+        v.add(f)
+    t.join(2)
+    pcm = result["pcm"]
+    assert pcm.startswith(QUIET * 3 + SPEECH * 3)  # 240 ms before the first loud frame is kept
+
+
+def test_voice_capture_none_when_nothing_said():
+    v = VoiceCapture()
+    result = {}
+    t = _threading.Thread(target=lambda: result.setdefault("pcm", v.listen(Endpointer(timeout_s=0.5), 5)))
+    t.start()
+    while not v.listening:
+        pass
+    for _ in range(8):
+        v.add(QUIET)
+    t.join(2)
+    assert result["pcm"] is None
+
+
+def test_stream_recorder_caps_length():
+    r = StreamRecorder(max_seconds=1)
+    r.start()
+    for _ in range(30):
+        r.add(QUIET)
+    with _wave.open(_io.BytesIO(r.stop())) as w:
+        assert w.getnframes() == FRAME_SAMPLES * 12  # 1 s of 80 ms frames, no more
+    r.add(QUIET)  # not recording any more
+    assert len(r.frames) == 12
+
+
+def test_wake_listener_threshold_cooldown_and_reset():
+    pytest.importorskip("numpy")
+
+    class Model:
+        def __init__(self):
+            self.score, self.resets = 0.0, 0
+
+        def predict(self, x):
+            assert len(x) == FRAME_SAMPLES
+            return {"hey_jarvis": self.score}
+
+        def reset(self):
+            self.resets += 1
+
+    now = [100.0]
+    m = Model()
+    w = WakeListener("hey_jarvis", threshold=0.5, cooldown_s=2.0, model=m, clock=lambda: now[0])
+    assert not w.heard(QUIET)
+    m.score = 0.9
+    assert w.heard(QUIET) and m.resets == 1
+    now[0] += 1.0
+    assert not w.heard(QUIET)  # cooldown
+    now[0] += 1.5
+    assert w.heard(QUIET)
+
+
+def test_voice_route_answer_or_saved():
+    def handler(request):
+        if request.url.host == "tenant.auth0.test":
+            return httpx.Response(200, json={"access_token": "t", "expires_in": 86400})
+        assert request.url.path == "/api/v1/memory/voice"
+        body = request.read()
+        if b"where" in body:
+            return httpx.Response(200, content=b"RIFFanswer", headers={"content-type": "audio/wav", "x-intent": "ask"})
+        return httpx.Response(200, json={"id": "m1", "transcript": "keys on the counter", "intent": "remember"})
+
+    api = make_client(handler)
+    assert api.voice(b"where are my keys", None) == ("ask", b"RIFFanswer")
+    intent, saved = api.voice(b"keys on the counter", b"\xff\xd8")
+    assert intent == "remember" and saved["transcript"] == "keys on the counter"
+
+
+def test_spooled_voice_clip_goes_to_the_voice_route(tmp_path):
+    server = FakeServer()
+    api = make_client(server, tmp_path)
+    spool = Spool(tmp_path)
+    spool.add(b"wav", b"jpg", None, kind="voice")
+    spool.add(b"wav", b"jpg", None)  # a REMEMBER press
+    assert spool.flush(api) == 2
+    assert sorted(server.uploads) == ["/api/v1/memory/log", "/api/v1/memory/voice"]

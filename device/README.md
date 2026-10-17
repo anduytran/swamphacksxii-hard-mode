@@ -57,10 +57,15 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
    dtoverlay=googlevoicehat-soundcard
    ```
    This overlay drives an I2S mic on GPIO20 and an I2S amp on GPIO21 at the same time. Check with `arecord -l` and `aplay -l`. (Skip this step if you're using USB audio.)
-3. Install system packages:
+3. Install system packages, and a small virtual environment for the wake phrase (openWakeWord isn't in apt):
    ```bash
-   sudo apt update && sudo apt install -y python3-picamera2 python3-gpiozero python3-httpx alsa-utils
+   sudo apt update && sudo apt install -y python3-picamera2 python3-gpiozero python3-httpx python3-numpy python3-venv alsa-utils
+   sudo python3 -m venv --system-site-packages /opt/lastscene/venv
+   sudo /opt/lastscene/venv/bin/pip install openwakeword
+   sudo /opt/lastscene/venv/bin/python -c "from openwakeword.utils import download_models; download_models(['hey_jarvis'])"
+   sudo mkdir -p /opt/lastscene/models   # put last_scene.onnx here once it's trained (wake/README.md)
    ```
+   The service runs from this venv. With `WAKE_WORD` empty, or its model missing, only the buttons work.
 4. Copy this folder to the Pi and set up config:
    ```bash
    sudo useradd --system --groups gpio,video,audio lastscene
@@ -89,6 +94,7 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
 
 ## Using it
 
+- **Say "Last Scene"**, wait for the beep, then speak: "I'm putting my keys on the counter" is saved with a photo (high beep), "Where are my keys?" is answered out loud. It records until you stop talking (up to `WAKE_MAX_SECONDS`). Audio stays on the Pi until the phrase is heard; only the words after the beep are sent. If it triggers by mistake, raise `WAKE_THRESHOLD`; if it misses you, lower it. `WAKE_WORD` points at the "Last Scene" model (training: [wake/README.md](wake/README.md)); `WAKE_WORD=hey_jarvis` works right away for testing, with "Hey Jarvis" as the phrase.
 - **Hold REMEMBER**, say where you're putting something ("I'm putting my keys on the counter"), release. It takes a photo when you press, records while held, and uploads when you let go. The LED is solid while recording and blinks while sending.
 - **Hold ASK**, ask ("Where are my keys?"), release. The answer plays through the speaker.
 - With no Wi-Fi, memories are kept in `/var/lib/lastscene/spool` and uploaded automatically once it's back. Questions need a connection.

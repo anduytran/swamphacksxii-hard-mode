@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 EnvironmentFile=/etc/lastscene/device.env
-ExecStart=/usr/bin/python3 /opt/lastscene/lastscene_device.py
+# The venv sees apt packages (picamera2, gpiozero, httpx) and adds openwakeword (README step 3)
+ExecStart=/opt/lastscene/venv/bin/python /opt/lastscene/lastscene_device.py
 Restart=always
 RestartSec=5
 # Dedicated user with just GPIO, camera and audio access
