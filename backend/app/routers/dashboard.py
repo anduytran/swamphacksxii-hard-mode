@@ -248,7 +248,10 @@ async def search(
 ):
     """The wearable's retrieval step, shown in full: which memories a question finds and
     which chunks matched, by meaning (vector) and by words (keyword). Embeds the query,
-    so each search makes one embedding call."""
+    so each search makes one embedding call: only for households with a wearable (an
+    account with nothing to search can't spend embedding calls)."""
+    if not devices:
+        return {"query": q, "results": []}
     memories = await retrieve(db, ai, q, devices, settings.retention_hours, limit)
     results = []
     for m in memories:

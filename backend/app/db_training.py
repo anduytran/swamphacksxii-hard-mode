@@ -14,6 +14,7 @@ from datetime import datetime
 
 MAX_TRAINING_ITEMS = 50  # per household
 MAX_SAMPLES_PER_ITEM = 30
+MAX_TRAINING_BYTES = 100 * 1024 * 1024  # per household, all photos together
 
 
 @dataclass
@@ -154,6 +155,13 @@ class TrainingMixin:
             sample_id,
         )
         return status.endswith(" 1")
+
+    async def training_bytes(self, household_id: str) -> int:
+        return await self.pool.fetchval(
+            "SELECT coalesce(sum(octet_length(s.image)), 0) FROM training_samples s "
+            "JOIN training_items i ON i.id = s.item_id WHERE i.household_id = $1::uuid",
+            household_id,
+        )
 
     async def training_sample_image(self, sample_id: str) -> tuple[bytes, str] | None:
         row = await self.pool.fetchrow("SELECT image, image_type FROM training_samples WHERE id = $1::uuid", sample_id)

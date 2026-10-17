@@ -52,6 +52,12 @@ export default function TeachPage() {
 
       {households && !households.length ? (
         <EmptyState title="Set up a household first" text="Items you teach belong to a household, so everyone in it shares them." cta={{ label: "Set up a household", href: "#/household" }} />
+      ) : household && !household.devices.length ? (
+        <EmptyState
+          title="Add the wearable first"
+          text="Items are taught for the wearable's camera, so a household needs its wearable paired before you add photos."
+          cta={{ label: "Add the wearable", href: "#/household" }}
+        />
       ) : !list.data || !base ? (
         <div className="teach-grid" aria-hidden="true">
           {repeat(2, (i) => (

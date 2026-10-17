@@ -17,6 +17,8 @@ from ..db import MemoryDB
 from ..deps import get_db
 from ..geo import home_place_id, place_label, place_unplaced
 
+MAX_HOUSEHOLDS_PER_USER = 5
+
 router = APIRouter(prefix="/api/v1", tags=["households"])
 
 
@@ -108,6 +110,9 @@ async def my_households(user: Principal = Depends(require_caregiver), db: Memory
 
 @router.post("/households", status_code=status.HTTP_201_CREATED)
 async def create_household(body: NewHousehold, user: Principal = Depends(require_caregiver), db: MemoryDB = Depends(get_db)):
+    # Anyone with a Google account can sign up, so cap what one account can create.
+    if len(await db.households_for(user.sub)) >= MAX_HOUSEHOLDS_PER_USER:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"An account can belong to up to {MAX_HOUSEHOLDS_PER_USER} households")
     return {"id": await db.create_household(user.sub, body.name.strip(), body.display_name)}
 
 

@@ -496,3 +496,11 @@ def test_missing_times_counts_questions_by_hour(client):
     (hour,) = data["hours"]  # everything happened within this hour
     assert hour["asked"] == 2 and hour["put_down"] == 1
     assert datetime.fromisoformat(hour["at"]).minute == 0
+
+
+def test_search_without_a_wearable_spends_nothing(client):
+    client.app_state.db.household_devices = []
+    calls = []
+    client.app_state.ai.embed = lambda *a, **k: calls.append(a)  # would be a paid call
+    resp = client.get("/api/v1/dashboard/search?q=keys", headers=CAREGIVER)
+    assert resp.json() == {"query": "keys", "results": []} and calls == []
