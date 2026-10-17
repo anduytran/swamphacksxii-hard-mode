@@ -24,7 +24,7 @@ Find that item in the photo.
 
 class BoxSuggestion(BaseModel):
     found: bool
-    box_2d: list[int] = Field(default_factory=list)
+    box_2d: list[float] = Field(default_factory=list)  # usually whole numbers, but 512.5 is fine too
     quality: str = ""
 
 

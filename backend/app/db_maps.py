@@ -133,9 +133,17 @@ class MapsNamesMixin:
         named (maps_names.name_memory_place), so these are shops and parks, never homes."""
         rows = await self.pool.fetch(
             """
-            SELECT DISTINCT ON (cell_lat, cell_lng) cell_lat, cell_lng, name, sources
-            FROM maps_place_names WHERE name IS NOT NULL
-            ORDER BY cell_lat, cell_lng, cached_at DESC
+            SELECT DISTINCT ON (n.cell_lat, n.cell_lng) n.cell_lat, n.cell_lng, n.name, n.sources
+            FROM maps_place_names n
+            WHERE n.name IS NOT NULL
+              -- only while a memory there is still at a public place (a place made private hides its name)
+              AND EXISTS (
+                SELECT 1 FROM memory_maps_places l
+                JOIN memory_logs m ON m.id = l.memory_id
+                JOIN places p ON p.id = m.place_id AND p.kind = 'public'
+                WHERE l.lat4 = n.lat4 AND l.lng4 = n.lng4
+              )
+            ORDER BY n.cell_lat, n.cell_lng, n.cached_at DESC
             """
         )
         return {(r["cell_lat"], r["cell_lng"]): _named(r) for r in rows}

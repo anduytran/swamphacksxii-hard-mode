@@ -62,11 +62,24 @@ class FakeReviewDB(FakeTrainingDB):
         p = self.photos.get(memory_id)
         return (p["image"], p["type"]) if p and p["device"] in device_ids else None
 
-    async def suggest_calls_since(self, household_id, since):
-        return sum(1 for h, at in self.suggest_calls if h == household_id and at > since)
-
-    async def log_suggest_call(self, household_id):
+    async def reserve_suggest_call(self, household_id, per_hour):
+        since = datetime.now(timezone.utc) - timedelta(hours=1)
+        if sum(1 for h, at in self.suggest_calls if h == household_id and at > since) >= per_hour:
+            return False
         self.suggest_calls.append((household_id, datetime.now(timezone.utc)))
+        return True
+
+    async def claim_review(self, item_id, memory_id, decision):
+        old = self.answers.get((item_id, memory_id))
+        if old and old.decision:
+            return False
+        await self.decide_review(item_id, memory_id, decision, None, None)
+        return True
+
+    async def release_review(self, item_id, memory_id):
+        old = self.answers.get((item_id, memory_id))
+        if old and self.sample_ids.get((item_id, memory_id)) is None:
+            self.answers[(item_id, memory_id)] = Review(item_id, memory_id, None, old.bbox, old.note, old.suggested)
 
 
 class FakeGemini:
@@ -250,7 +263,8 @@ def test_answers_respect_the_photo_caps(api, keys, monkeypatch):
     monkeypatch.setattr("app.routers.training.MAX_TRAINING_BYTES", 10)
     resp = answer(api, keys, a, "yes", bbox=[0.1, 0.1, 0.2, 0.2], width=640, height=480)
     assert resp.status_code == 409 and "full" in resp.json()["detail"]
-    assert db.answers.get((keys, a)) is None  # not answered, so it stays in the queue
+    left = db.answers.get((keys, a))
+    assert left is None or left.decision is None  # claim released: not answered, so it stays in the queue
 
     monkeypatch.setattr("app.routers.training.MAX_TRAINING_BYTES", 10**9)
     db.training[keys][1].samples = [object()] * MAX_SAMPLES_PER_ITEM  # only counted
@@ -265,3 +279,11 @@ def test_answers_are_for_members_and_their_own_photos(api, keys):
     mine = db.photo(names=["keys"])
     assert api.post(review_url(OTHER), headers=CAREGIVER, json={"item_id": keys, "memory_id": mine, "decision": "not"}).status_code == 404
     assert answer(api, str(uuid.uuid4()), mine, "not").status_code == 404
+
+
+def test_a_double_tap_makes_one_sample(api, keys):
+    db = api.app_state.db
+    a = db.photo(names=["keys"])
+    first = answer(api, keys, a, "yes", bbox=[0.1, 0.1, 0.2, 0.2], width=640, height=480)
+    second = answer(api, keys, a, "yes", bbox=[0.1, 0.1, 0.2, 0.2], width=640, height=480)
+    assert first.status_code == 200 and second.status_code == 409

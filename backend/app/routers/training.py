@@ -308,10 +308,8 @@ async def _suggest(db: MemoryDB, ai, settings: Settings, household_id: str, item
             | busy (this household's hourly limit) | failed (Gemini errored, e.g. quota)"""
     if settings.vision_provider != "gemini":
         return {"bbox": None, "note": "", "status": "off"}
-    since = datetime.now(timezone.utc) - timedelta(hours=1)
-    if await db.suggest_calls_since(household_id, since) >= settings.suggest_box_per_hour:
+    if not await db.reserve_suggest_call(household_id, settings.suggest_box_per_hour):
         return {"bbox": None, "note": "", "status": "busy"}
-    await db.log_suggest_call(household_id)
     try:
         bbox, note = await suggest_box(ai, image, content_type, item.name, item.aliases)
     except Exception as exc:  # quota (429), network, a malformed answer: fall back to drawing
@@ -423,7 +421,8 @@ async def answer_review(
     if body.decision == "not":
         if await db.training_item_sample_count(hid, item_id) is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found")
-        await db.decide_review(item_id, memory_id, "not", None, None)
+        if not await db.claim_review(item_id, memory_id, "not"):
+            raise HTTPException(status.HTTP_409_CONFLICT, "This photo was already answered")
         return {"decision": "not", "sample": None}
     if body.bbox is None or body.width is None or body.height is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Yes and Fix need the box and the photo's width and height")
@@ -432,8 +431,15 @@ async def answer_review(
     await _require_room(db, hid, item_id)
     if content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "This photo's format can't be used for teaching")
-    sample = await _store_sample(db, hid, item_id, data, content_type, body.width, body.height, box)
     decision = "yes" if body.decision == "yes" else "fixed"
+    # Claim first: of two quick taps only one gets here, so the photo becomes one sample.
+    if not await db.claim_review(item_id, memory_id, decision):
+        raise HTTPException(status.HTTP_409_CONFLICT, "This photo was already answered")
+    try:
+        sample = await _store_sample(db, hid, item_id, data, content_type, body.width, body.height, box)
+    except BaseException:
+        await db.release_review(item_id, memory_id)
+        raise
     await db.decide_review(item_id, memory_id, decision, box, sample.id)
     return {"decision": decision, "sample": _sample_json(request, settings, sample)}
 

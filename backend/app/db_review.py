@@ -170,16 +170,43 @@ class ReviewMixin:
         )
         return (bytes(row["image"]), row["image_type"] or "image/jpeg") if row else None
 
-    async def suggest_calls_since(self, household_id: str, since: datetime) -> int:
-        return await self.pool.fetchval(
-            "SELECT count(*) FROM training_suggest_calls WHERE household_id = $1::uuid AND called_at > $2",
-            household_id,
-            since,
-        )
+    async def reserve_suggest_call(self, household_id: str, per_hour: int) -> bool:
+        """Take one of the household's hourly Gemini box suggestions, or False if none are left.
+        Count and insert happen under one lock, so parallel requests can't overshoot the limit."""
+        async with self.pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"suggest:{household_id}")
+            await conn.execute(
+                "DELETE FROM training_suggest_calls WHERE household_id = $1::uuid AND called_at < now() - interval '1 day'",
+                household_id,
+            )
+            used = await conn.fetchval(
+                "SELECT count(*) FROM training_suggest_calls WHERE household_id = $1::uuid AND called_at > now() - interval '1 hour'",
+                household_id,
+            )
+            if used >= per_hour:
+                return False
+            await conn.execute("INSERT INTO training_suggest_calls (household_id) VALUES ($1::uuid)", household_id)
+            return True
 
-    async def log_suggest_call(self, household_id: str) -> None:
+    async def claim_review(self, item_id: str, memory_id: str, decision: str) -> bool:
+        """Record the answer only if the photo hasn't been answered yet; False if it has (e.g. a
+        double tap), so a photo can't become two training samples."""
+        return bool(await self.pool.fetchval(
+            """
+            INSERT INTO training_reviews (item_id, memory_id, decision) VALUES ($1::uuid, $2::uuid, $3)
+            ON CONFLICT (item_id, memory_id) DO UPDATE SET decision = EXCLUDED.decision, updated_at = now()
+            WHERE training_reviews.decision IS NULL
+            RETURNING true
+            """,
+            item_id,
+            memory_id,
+            decision,
+        ))
+
+    async def release_review(self, item_id: str, memory_id: str) -> None:
+        """Undo a claim whose training sample couldn't be saved, so the photo can be answered again."""
         await self.pool.execute(
-            "DELETE FROM training_suggest_calls WHERE household_id = $1::uuid AND called_at < now() - interval '1 day'",
-            household_id,
+            "UPDATE training_reviews SET decision = NULL WHERE item_id = $1::uuid AND memory_id = $2::uuid AND sample_id IS NULL",
+            item_id,
+            memory_id,
         )
-        await self.pool.execute("INSERT INTO training_suggest_calls (household_id) VALUES ($1::uuid)", household_id)
