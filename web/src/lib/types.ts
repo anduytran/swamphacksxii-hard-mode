@@ -29,6 +29,12 @@ export interface ItemsResponse {
   items: Item[];
 }
 
+/** A public place named by Grounding with Google Maps; always shown with its sources (MapsPlace). */
+export interface PlaceName {
+  name: string;
+  sources: { title: string; url: string }[];
+}
+
 export interface HistoryEntry {
   id: string;
   device_id: string;
@@ -40,6 +46,7 @@ export interface HistoryEntry {
   detections: Detection[];
   image_url: string | null;
   items: { name: string; location: string | null }[];
+  place_name?: PlaceName | null;
 }
 
 export interface Question {
@@ -132,7 +139,16 @@ export interface Place {
 
 export interface PlacesResponse {
   households: { id: string; name: string; places: Place[] }[];
-  memories: { lat: number; lng: number; accuracy_m: number | null; place_id: string | null; items: string; transcript: string; timestamp: string }[];
+  memories: {
+    lat: number;
+    lng: number;
+    accuracy_m: number | null;
+    place_id: string | null;
+    items: string;
+    transcript: string;
+    timestamp: string;
+    place_name?: PlaceName | null;
+  }[];
 }
 
 export interface Household {
@@ -158,6 +174,7 @@ export interface LostCell {
   left: number;
   asked: number;
   items: LostItem[];
+  place_name?: PlaceName | null;
 }
 
 export interface LostMap {

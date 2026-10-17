@@ -1653,3 +1653,16 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
 .segmented.small button { font-size: 0.875rem; }
 .model-line { display: flex; align-items: center; gap: 8px; margin: -8px 0 20px; padding: 10px 14px; border-radius: 10px; background: var(--pending-bg); color: var(--pending-ink); font-size: 0.9375rem; }
 .model-line.good { background: var(--good-bg); color: var(--good-ink); }
+
+/* Public place names from Google Maps (components/MapsPlace.tsx). Google's attribution rules:
+   "Google Maps" stays on one line, untranslated, and the sources sit right after the name. */
+.google-maps { white-space: nowrap; font-family: Roboto, "Helvetica Neue", Arial, sans-serif; }
+.maps-place-name { font-weight: 600; color: var(--text); }
+.maps-sources { color: var(--muted); font-size: 0.8125rem; }
+.maps-sources a { color: var(--muted); }
+.maps-line { margin: 4px 0 0; font-size: 0.875rem; color: var(--muted); }
+.maps-note { margin: 8px 0 0; font-size: 0.75rem; }
+.named-places { padding: 12px 24px 0; }
+.named-places h3 { margin: 0 0 6px; font-size: 0.875rem; }
+.named-places ul { margin: 0; padding-left: 18px; font-size: 0.875rem; }
+.public-place { margin: 2px 0 8px; padding: 0 12px; font-size: 0.875rem; }

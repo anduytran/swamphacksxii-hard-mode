@@ -255,6 +255,8 @@ LastScene is usually set up by a family member **for** the person who wears it.
 
 **Staying inside Google's free tier.** Every Geolocation call is counted in the database *before* it is made, against `GEOLOCATION_MONTHLY_LIMIT` (default 5,000 per calendar month, UTC). The counter is atomic, so parallel serverless requests can't overshoot it. Once the month is used up, or if the database can't be checked, no call is made and memories fall back to the device's own position. Answers are cached in the database by access-point set for `GEOLOCATION_CACHE_DAYS` (30), so places the wearer visits often cost nothing after the first lookup. `/healthz` shows `geolocation_budget: {month, limit, used}`. For a second, Google-side limit, cap the Geolocation API's requests per day under *APIs & Services → Geolocation API → Quotas* in Google Cloud.
 
+**Public place names (opt-in).** With `MAPS_GROUNDING=true`, a memory at a place its household marked public gets a name from Gemini's Grounding with Google Maps ("Starbucks, Reitz Union"), in the background after it is located. Home and other private places are never sent. Answers are cached in Postgres by position (~11 m) for `MAPS_CACHE_DAYS` (180), and at most `MAPS_DAILY_LIMIT` (50) calls are made a day, which stays under the 5,000 free requests a month. The Timeline, Map → Our places and the public map show the name followed by its linked Google Maps sources, as Google's terms require. Spoken answers keep the household's own place wording, since a speaker can't show the sources.
+
 **Places** are built automatically: each position joins the household's nearest place (within its radius or the fix's accuracy) or starts a new one. The most-visited place is labelled Home until someone names places. Indoors, rooms still come from the spoken words and the photo (the **House** floor plan); GPS-level places drive **Map → Our places**.
 
 **Privacy model.**
@@ -325,6 +327,7 @@ Data flows `TigerData → routers/dashboard.py (insights) → web/src/pages/Insi
 - **Turn on the secret check once per clone:** `git config core.hooksPath .githooks`. The pre-commit hook blocks secret files, the real values in your local `backend/.env` / `device/device.env`, and common key formats (Google, OpenAI, Anthropic, AWS, GitHub, Slack, private keys, database URLs with a password). It never prints a value.
 - **Who can spend money:** every paid AI call (Gemini) and Google geolocation call is made for a paired wearable, which needs the household's own Auth0 device credentials. Anyone can sign up for the dashboard, so for an account without a wearable: search returns nothing without calling Gemini, Teach items is off, and one account can belong to at most 5 households. Teach-items photos are capped at 100 MB per household.
 - **Google geolocation** stops at `GEOLOCATION_MONTHLY_LIMIT` (5000) calls a month, inside Google's free allowance; `/healthz` shows the month's count.
+- **Google Maps place names** are off unless `MAPS_GROUNDING=true`, then capped at `MAPS_DAILY_LIMIT` (50) calls a day across the app and cached by position.
 
 ## Privacy
 The daily purge (Vercel Cron → `/api/v1/admin/purge`, or `python -m app.retention` from cron on a VPS) deletes every `memory_logs` row older than `RETENTION_HOURS` (72), photo included. Photos are only reachable through signed links that expire after 15 minutes.

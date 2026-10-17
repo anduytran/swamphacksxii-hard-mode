@@ -7,6 +7,7 @@ import DeckGL from "@deck.gl/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EmptyState, repeat, Sk } from "../components/bits";
 import { Icon } from "../components/Icons";
+import { MapsNote, MapsPlace } from "../components/MapsPlace";
 import { publicGet } from "../lib/api";
 import { useLoadStatus } from "../lib/app";
 import { capitalize, prefersReducedMotion } from "../lib/format";
@@ -228,10 +229,16 @@ export default function PublicMapPage() {
                     </span>
                     <span className="mono public-total">{c.left + c.asked}×</span>
                   </button>
+                  {c.place_name && (
+                    <p className="public-place">
+                      <MapsPlace place={c.place_name} />
+                    </p>
+                  )}
                 </li>
               ))
             )}
           </ol>
+          {cells?.slice(0, 10).some((c) => c.place_name) && <MapsNote />}
         </div>
       </div>
     </section>
