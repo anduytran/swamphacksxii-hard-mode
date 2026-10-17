@@ -25,9 +25,9 @@ class LimitsMixin:
         )
 
     async def take_slots(
-        self, slots: list[tuple[str, datetime, int]], cooldown_buckets: list[str], now: datetime
+        self, slots: list[tuple[str, datetime, int, int]], cooldown_buckets: list[str], now: datetime
     ) -> tuple[str, str, datetime | None] | None:
-        """Take one from each (key, window start, limit), all or none, in one transaction.
+        """Take `cost` from each (key, window start, limit, cost), all or none, in one transaction.
         None when taken; ("cooldown", bucket, until) or ("full", key, None) when not."""
         try:
             return await self._take_slots(slots, cooldown_buckets, now)
@@ -44,17 +44,18 @@ class LimitsMixin:
             )
             if row:
                 return "cooldown", row["bucket"], row["until"]
-            for key, start, limit in slots:
+            for key, start, limit, cost in slots:
                 used = await conn.fetchval(
                     """
-                    INSERT INTO rate_slots (bucket, window_start, used) VALUES ($1, $2, 1)
-                    ON CONFLICT (bucket, window_start) DO UPDATE SET used = rate_slots.used + 1
-                    WHERE rate_slots.used < $3
+                    INSERT INTO rate_slots (bucket, window_start, used) VALUES ($1, $2, $4)
+                    ON CONFLICT (bucket, window_start) DO UPDATE SET used = rate_slots.used + $4
+                    WHERE rate_slots.used + $4 <= $3
                     RETURNING used
                     """,
                     key,
                     start,
                     limit,
+                    cost,
                 )
                 if used is None or used > limit:
                     raise _Full(key)

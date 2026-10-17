@@ -47,6 +47,9 @@ def missing_settings(s: Settings) -> list[str]:
         required["OPENAI_API_KEY"] = s.openai_api_key
     if "claude" in providers:
         required["ANTHROPIC_API_KEY"] = s.anthropic_api_key
+    if "elevenlabs" in providers:
+        required["ELEVENLABS_API_KEY"] = s.elevenlabs_api_key
+        required["GEMINI_API_KEY"] = s.gemini_api_key  # the fallback voice
     return [name for name, value in required.items() if not value]
 
 
@@ -126,6 +129,20 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
             return None
         return {b: {"used_today": used.get(f"{b}:day", 0), "limit_per_day": cap} for b, cap in caps.items()}
 
+    async def speech_usage(settings) -> dict:
+        """Which voice answers, and for ElevenLabs the characters used this month against the cap."""
+        if settings.tts_provider != "elevenlabs":
+            return {"provider": settings.tts_provider}
+        info = {"provider": "elevenlabs" if settings.elevenlabs_api_key else "gemini (no ELEVENLABS_API_KEY)",
+                "monthly_character_cap": settings.elevenlabs_monthly_chars, "characters_this_month": None}
+        start = Rule("x", 1, "month").span(datetime.now(timezone.utc))[0]
+        try:
+            used = await asyncio.wait_for(app.state.db.slot_usage(["elevenlabs:characters:month"], start), 5)
+            info["characters_this_month"] = used.get("elevenlabs:characters:month", 0)
+        except Exception:
+            pass
+        return info
+
     @app.get("/healthz")
     async def healthz():
         settings = get_settings()
@@ -137,6 +154,7 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
             "wifi_positioning": bool(settings.google_geolocation_api_key),
             "geolocation_budget": await geolocation_budget(settings),
             "model_usage": await model_usage(settings),
+            "speech": await speech_usage(settings),
         }
 
     @app.get("/config.json")

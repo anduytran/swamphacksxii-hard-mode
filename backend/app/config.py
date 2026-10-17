@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     stt_provider: str = "gemini"  # gemini | openai
     embedding_provider: str = "gemini"  # gemini | openai  (changing it invalidates stored vectors)
     llm_provider: str = "gemini"  # gemini | claude      (answers, item extraction, summaries)
-    tts_provider: str = "gemini"  # gemini | openai
+    tts_provider: str = "gemini"  # gemini | openai | elevenlabs (falls back to Gemini speech)
     vision_provider: str = "gemini"  # gemini | none     (describe each photo)
 
     gemini_api_key: str = ""
@@ -57,6 +57,16 @@ class Settings(BaseSettings):
     tts_format: str = "wav"  # wav is easiest for the ESP32 I2S speaker to play
 
     anthropic_api_key: str = ""
+
+    # ElevenLabs speech for the wearable (TTS_PROVIDER=elevenlabs). Billed in characters: capped per
+    # month here, and never past what the plan has left (checked with ElevenLabs, keeping a reserve).
+    elevenlabs_api_key: str = ""
+    elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # a premade voice; any voice id from your account
+    elevenlabs_model: str = "eleven_flash_v2_5"  # ~75 ms, 32 languages, half price per character
+    elevenlabs_speed: float = 0.9  # 0.7-1.2; a little slower is easier to follow
+    elevenlabs_monthly_chars: int = 9000
+    elevenlabs_reserve_chars: int = 500
+    elevenlabs_rpm: int = 20
     llm_model: str = "claude-opus-5-5"
     llm_effort: str = "low"
 

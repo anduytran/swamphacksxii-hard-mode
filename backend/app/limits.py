@@ -73,12 +73,13 @@ class Limiter:
     def __init__(self, store, clock=lambda: datetime.now(timezone.utc)):
         self.store, self.clock = store, clock
 
-    async def take(self, rules: list[Rule]) -> None:
-        """One slot from every rule, all or none; RateLimited if any is full or cooling down."""
+    async def take(self, rules: list[Rule], cost: int = 1) -> None:
+        """`cost` units (requests, or e.g. characters) from every rule, all or none; RateLimited
+        if any would go over or is cooling down."""
         if not rules:
             return
         now = self.clock()
-        slots = [(r.bucket + ":" + r.window, r.span(now)[0], r.limit) for r in rules]
+        slots = [(r.bucket + ":" + r.window, r.span(now)[0], r.limit, cost) for r in rules]
         result = await self.store.take_slots(slots, sorted({r.bucket for r in rules}), now)
         if result is None:
             return
@@ -122,11 +123,11 @@ class MemorySlots:
         if hot:
             until, bucket = max(hot)
             return "cooldown", bucket, until
-        for key, start, limit in slots:
-            if used.get((key, start), 0) >= limit:
+        for key, start, limit, cost in slots:
+            if used.get((key, start), 0) + cost > limit:
                 return "full", key, None
-        for key, start, _ in slots:
-            used[(key, start)] = used.get((key, start), 0) + 1
+        for key, start, _, cost in slots:
+            used[(key, start)] = used.get((key, start), 0) + cost
         return None
 
     async def set_cooldown(self, bucket, until):

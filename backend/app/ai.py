@@ -20,6 +20,7 @@ from pydantic import BaseModel, create_model
 from .config import Settings
 from .home_map import FloorPlan, floor_plan
 from .rag import ITEM, TEXT, RetrievedMemory
+from .elevenlabs import ElevenLabs
 from .gemini import GeminiAI, using
 from .limits import Limiter, RateLimited, Rule, per, provider_busy
 
@@ -310,7 +311,9 @@ class AIServices:
 
     def _provider(self, stage: str) -> str:
         s = self.s
-        return {"stt": s.stt_provider, "tts": s.tts_provider, "embed": s.embedding_provider,
+        # ElevenLabs speech is limited on its own (_speak_elevenlabs); the "tts" stage is its Gemini fallback.
+        tts = "gemini" if s.tts_provider == "elevenlabs" else s.tts_provider
+        return {"stt": s.stt_provider, "tts": tts, "embed": s.embedding_provider,
                 "text": s.llm_provider, "vision": s.vision_provider, "maps": "gemini"}[stage]
 
     def models(self, stage: str) -> list[str]:
@@ -358,9 +361,13 @@ class AIServices:
     def claude(self) -> anthropic.AsyncAnthropic:
         return anthropic.AsyncAnthropic(api_key=self.s.anthropic_api_key or None)
 
+    @cached_property
+    def elevenlabs(self) -> ElevenLabs:
+        return ElevenLabs(self.s)
+
     @property
     def speech_media_type(self) -> str:
-        if self.s.tts_provider == "gemini":
+        if self.s.tts_provider in ("gemini", "elevenlabs"):
             return "audio/wav"
         return {"wav": "audio/wav", "mp3": "audio/mpeg", "pcm": "audio/L16"}.get(
             self.s.tts_format, "application/octet-stream"
@@ -382,14 +389,35 @@ class AIServices:
         if text not in FIXED_PHRASES:
             return await self._speak(text)
         key = (self.s.tts_provider, self.s.gemini_tts_model, self.s.gemini_tts_voice, self.s.tts_model,
-               self.s.tts_voice, self.s.tts_format, text)
+               self.s.tts_voice, self.s.tts_format, self.s.elevenlabs_voice_id, text)
         if key not in self._speech_cache:
             self._speech_cache[key] = await self._speak(text)
         return self._speech_cache[key]
 
-    @limited("tts")
     async def _speak(self, text: str) -> bytes:
-        if self.s.tts_provider == "gemini":
+        """ElevenLabs when chosen and configured, else (or when it fails) Gemini / OpenAI."""
+        if self.s.tts_provider == "elevenlabs" and self.s.elevenlabs_api_key:
+            try:
+                return await self._speak_elevenlabs(text)
+            except Exception as exc:  # its limit, its quota, an outage: the wearer still hears an answer
+                log.warning("ElevenLabs speech unavailable (%s); using Gemini speech", type(exc).__name__)
+        return await self._speak_fallback(text)
+
+    async def _speak_elevenlabs(self, text: str) -> bytes:
+        s = self.s
+        if self.limiter:
+            await self.limiter.take(per("elevenlabs", s.elevenlabs_rpm))
+            await self.limiter.take([Rule("elevenlabs:characters", s.elevenlabs_monthly_chars, "month")], cost=len(text))
+        try:
+            return await self.elevenlabs.speak(text)
+        except Exception as exc:
+            if self.limiter and (wait := provider_busy(exc)) is not None:
+                await self.limiter.cool_down("elevenlabs", wait)
+            raise
+
+    @limited("tts")
+    async def _speak_fallback(self, text: str) -> bytes:
+        if self.s.tts_provider in ("gemini", "elevenlabs"):
             return await self.gemini.speak(text)
         result = await self.openai.audio.speech.create(
             model=self.s.tts_model,
