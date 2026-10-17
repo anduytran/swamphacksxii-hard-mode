@@ -11,6 +11,7 @@ import { useResource } from "../lib/resource";
 import type { Household, ModelStatus, TrainingItem, TrainingList, TrainingSample } from "../lib/types";
 import { timeAgo } from "../lib/format";
 import { RANGES, rangeOf, spread, type Box } from "../lib/distance";
+import { openPhoto, PHOTO_ACCEPT } from "../lib/photo";
 
 const GOOD_ENOUGH = 10; // photos per item before it's "ready"
 const MAX_SIDE = 1024; // photos are shrunk to this before upload (the pipeline trains at 640)
@@ -167,7 +168,7 @@ function ItemCard({ item, base, api, maxPhotos, onChange }: { item: TrainingItem
         <input
           ref={fileRef}
           type="file"
-          accept="image/*"
+          accept={PHOTO_ACCEPT}
           capture="environment"
           multiple
           hidden
@@ -237,9 +238,10 @@ interface Prepared {
   height: number;
 }
 
-/** Shrink to MAX_SIDE, upright (EXIF), as JPEG: smaller uploads, and the box matches the pixels sent. */
+/** Shrink to MAX_SIDE, upright, as JPEG (HEIC included): smaller uploads, a format the server and the
+ * training pipeline both read, and the box matches the pixels sent. */
 async function prepare(file: File): Promise<Prepared> {
-  const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+  const bitmap = await openPhoto(file);
   const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(bitmap.width * scale);
@@ -273,7 +275,7 @@ function BoxEditor({ item, files, upload, onClose }: { item: string; files: File
         url = p.url;
         setPhoto(p);
       },
-      () => setError("Couldn't open that photo. Try a JPEG or PNG, or skip it."),
+      () => setError("Couldn't open that photo. JPEG, PNG, WebP and iPhone HEIC photos work; skip this one or try another."),
     );
     return () => {
       if (url) URL.revokeObjectURL(url);
@@ -358,7 +360,12 @@ function BoxEditor({ item, files, upload, onClose }: { item: string; files: File
             )}
           </div>
         ) : (
-          !error && <Sk cls="block h200" />
+          !error && (
+            <div className="box-loading" role="status">
+              <Sk cls="block h200" />
+              <span className="hint">Opening photo…</span>
+            </div>
+          )
         )}
       </div>
       {error && <p className="form-msg error">{error}</p>}
