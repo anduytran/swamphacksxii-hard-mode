@@ -26,7 +26,7 @@ from .. import signing
 from ..auth import Principal, require_caregiver, require_device
 from ..config import Settings, get_settings
 from ..db import MemoryDB
-from ..db_training import MAX_SAMPLES_PER_ITEM, MAX_TRAINING_ITEMS, TrainingItem
+from ..db_training import MAX_SAMPLES_PER_ITEM, MAX_TRAINING_BYTES, MAX_TRAINING_ITEMS, TrainingItem
 from ..deps import get_db
 from .households import _require_member
 from .memory import ALLOWED_IMAGE_TYPES, MAX_IMAGE_BYTES, _read
@@ -105,6 +105,13 @@ def _item_json(request: Request, settings: Settings, item: TrainingItem) -> dict
 # ---------------------------------------------------------------- dashboard
 
 
+async def _require_wearable(db: MemoryDB, household_id: str) -> None:
+    """Teaching needs a paired wearable: photos are for the pipeline that serves it, and a
+    stranger who signs up can't pair one, so they can't fill the database with photos."""
+    if not await db.household_device_ids(household_id):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Add the wearable to this household first")
+
+
 @router.get("/households/{household_id}/training/items")
 async def list_items(
     household_id: UUID,
@@ -132,6 +139,7 @@ async def create_item(
 ):
     hid = str(household_id)
     await _require_member(db, hid, user)
+    await _require_wearable(db, hid)
     if await db.count_training_items(hid) >= MAX_TRAINING_ITEMS:
         raise HTTPException(status.HTTP_409_CONFLICT, f"A household can teach up to {MAX_TRAINING_ITEMS} items")
     try:
@@ -200,6 +208,7 @@ async def add_sample(
 ):
     hid = str(household_id)
     await _require_member(db, hid, user)
+    await _require_wearable(db, hid)
     box = _parse_bbox(bbox)
     count = await db.training_item_sample_count(hid, str(item_id))
     if count is None:
@@ -209,6 +218,8 @@ async def add_sample(
     if image.content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Photos must be JPEG, PNG or WebP")
     data = await _read(image, MAX_IMAGE_BYTES, "image")
+    if await db.training_bytes(hid) + len(data) > MAX_TRAINING_BYTES:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This household's photos are full (100 MB); delete some first")
     sample = await db.add_training_sample(str(item_id), data, image.content_type, width, height, box)
     return {
         "id": sample.id,

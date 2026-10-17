@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Blocks a commit that would publish a secret. Turn it on once per clone:
+#     git config core.hooksPath .githooks
+# It checks the staged changes only (never prints a secret's value):
+#   1. files that hold secrets: .env files, device.env, keys, printed device labels
+#   2. the real secret values in your local backend/.env and device/device.env
+#   3. common key formats (Google, OpenAI, Anthropic, AWS, GitHub, Slack, private keys,
+#      database URLs with a password)
+set -u
+cd "$(git rev-parse --show-toplevel)" || exit 1
+fail=0
+block() { echo "pre-commit: BLOCKED: $1" >&2; fail=1; }
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+# 1. Secret-bearing files, by name (the .example templates are fine).
+while IFS= read -r f; do
+  case "$f" in
+    *.example) ;;
+    .env|*/.env|.env.*|*/.env.*|*.env|labels/*|*.pem|*.key|*.p12|*credentials*.json|*service-account*.json|*.lastscene-token.json)
+      block "$f looks like a secrets file; keep it out of git (it's in .gitignore)" ;;
+  esac
+done <<< "$staged"
+
+# Only lines being added, from text files.
+added=$(git diff --cached -U0 --no-color --diff-filter=ACMR | grep -E '^\+[^+]' || true)
+
+# 2. Your real secret values, from the local env files (names that hold secrets).
+for envfile in backend/.env device/device.env; do
+  [ -f "$envfile" ] || continue
+  while IFS='=' read -r key value; do
+    case "$key" in ''|\#*) continue ;; esac
+    echo "$key" | grep -qE 'SECRET|KEY|PASSWORD|TOKEN|DATABASE_URL|PAIRING_CODE' || continue
+    value="${value%\"}"; value="${value#\"}"; value="${value%\'}"; value="${value#\'}"
+    [ ${#value} -ge 8 ] || continue
+    if printf '%s' "$added" | grep -qF -- "$value"; then
+      block "the value of $key from $envfile is in the staged changes"
+    fi
+  done < "$envfile"
+done
+
+# 3. Well-known key formats.
+patterns='AIza[0-9A-Za-z_-]{35}|sk-ant-[A-Za-z0-9_-]{20,}|sk-(proj-)?[A-Za-z0-9_-]{32,}|AKIA[0-9A-Z]{16}|-----BEGIN ([A-Z]+ )?PRIVATE KEY-----|ghp_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{40,}|xox[baprs]-[0-9A-Za-z-]{10,}|postgres(ql)?://[^:/[:space:]]+:[^@[:space:]]{6,}@'
+hits=$(printf '%s' "$added" | grep -oE "$patterns" | grep -vE '://[^:]+:(password|pass|PASSWORD)@' | wc -l | tr -d ' ')
+if [ "$hits" != "0" ]; then
+  block "$hits line(s) look like an API key, private key or database password"
+fi
+
+if [ "$fail" != 0 ]; then
+  echo "pre-commit: unstage it (git restore --staged <file>) or move the value to an env file." >&2
+  echo "pre-commit: only if you're certain it's not a secret: git commit --no-verify" >&2
+  exit 1
+fi
+exit 0

@@ -29,6 +29,14 @@ class FakeTrainingDB(FakeDB):
     async def household_of_device(self, device_id):
         return (HOUSEHOLD, False) if device_id == "dev1@clients" else None
 
+    paired = True  # whether HOUSEHOLD has a wearable
+
+    async def household_device_ids(self, household_id):
+        return ["dev1@clients"] if household_id == HOUSEHOLD and self.paired else []
+
+    async def training_bytes(self, household_id):
+        return sum(len(img) for img, _ in self.sample_images.values())
+
     async def training_items(self, household_id):
         return sorted((i for h, i in self.training.values() if h == household_id), key=lambda i: i.name)
 
@@ -212,3 +220,19 @@ def test_fetch_script_writes_a_yolo_folder(tmp_path, monkeypatch):
     yaml = (tmp_path / "data.yaml").read_text()
     assert 'names:\n  0: "glasses"\n  1: "keys"\n' in yaml and "train: images/train" in yaml
     assert json.loads((tmp_path / "prompts.json").read_text())[0]["bbox_xyxy"] == [160, 240, 480, 360]
+
+
+def test_teaching_needs_a_wearable(api):
+    item = api.post(items_url(), headers=CAREGIVER, json={"name": "keys"}).json()
+    api.app_state.db.paired = False
+    assert api.post(items_url(), headers=CAREGIVER, json={"name": "glasses"}).status_code == 409
+    assert add_photo(api, item["id"]).status_code == 409
+
+
+def test_household_photo_storage_is_capped(api, monkeypatch):
+    import app.routers.training as training
+
+    monkeypatch.setattr(training, "MAX_TRAINING_BYTES", 10)
+    item = api.post(items_url(), headers=CAREGIVER, json={"name": "keys"}).json()
+    assert add_photo(api, item["id"]).status_code == 201  # 6 bytes
+    assert add_photo(api, item["id"]).status_code == 409  # 12 > 10

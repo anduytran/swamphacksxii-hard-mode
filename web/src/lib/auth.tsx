@@ -7,7 +7,7 @@ interface Client {
   isAuthenticated(): Promise<boolean>;
   getUser(): Promise<User | undefined>;
   getTokenSilently(): Promise<string>;
-  loginWithRedirect(opts: { appState: { hash: string } }): Promise<void>;
+  loginWithRedirect(opts: { appState: { hash: string }; authorizationParams?: { screen_hint?: "signup" } }): Promise<void>;
   logout(opts: { logoutParams: { returnTo: string } }): Promise<void>;
   handleRedirectCallback(): Promise<{ appState?: { hash?: string } }>;
 }
@@ -18,6 +18,8 @@ export interface Auth {
   user: User | null;
   error: string | null;
   login(): void;
+  /** Universal Login opened on its sign-up screen; new accounts land on setup. */
+  signup(): void;
   logout(): void;
   getToken(): Promise<string>;
 }
@@ -122,6 +124,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       ...state,
       login: () => void client?.loginWithRedirect({ appState: { hash: window.location.hash } }),
+      signup: () => void client?.loginWithRedirect({ appState: { hash: "#/household" }, authorizationParams: { screen_hint: "signup" } }),
       logout: () => void client?.logout({ logoutParams: { returnTo: window.location.origin } }),
       getToken: async () => {
         if (!client) throw new Error("Not signed in yet");

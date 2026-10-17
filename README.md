@@ -88,6 +88,7 @@ Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, 
 | `GET /api/v1/dashboard/history` | `[{id, device_id, timestamp, source, transcript, scene, summary, detections, image_url, items}]`, newest first |
 | `GET /api/v1/dashboard/items` | `{window_hours, items}`: per item its last location, photo + `detection` box, earlier spots, mentions, times asked |
 | `GET /api/v1/dashboard/insights?hours=` | counts, most-asked / most-logged items, unanswered questions, recent Q&A, activity; `hours` narrows the window (default and maximum 72) |
+| `GET /api/v1/dashboard/missing-times?days=` | questions asked and things put down per hour (UTC instants) for the "When things go missing" grid; `days` 7–90, default 28. Older than 72 h these come from `activity_hourly`: anonymous per-device hourly counts the purge keeps for 90 days (no words, photos or item names) |
 | `GET /api/v1/dashboard/summary` | `{summary}`: 2–3 sentences from Gemini (cached 10 min) |
 | `GET /api/v1/dashboard/search?q=` | `{query, results}`: hybrid vector + keyword retrieval with per-chunk match explanations |
 | `GET /api/v1/dashboard/map` | house floor plan: rooms, item spots, movement trips |
@@ -313,6 +314,13 @@ Data flows `TigerData → routers/dashboard.py (insights) → web/src/pages/Insi
    - `bucketByHour(events, buckets)` (`lib/format.ts`) to count timestamped events into local-time buckets
    - `<DataTable headers rows />` inside `<details>` for the text view every chart should have
 3. **Colors.** Use only `--series-1` / `--series-2` for data; status colors are reserved for good/warning badges. A third series needs a validated color first (see the comment at the top of `Charts.tsx`).
+
+## Security and costs
+
+- **Secrets live only in env files and Vercel.** `backend/.env`, `device/device.env` and printed `labels/` are git-ignored; only the `.example` templates are committed.
+- **Turn on the secret check once per clone:** `git config core.hooksPath .githooks`. The pre-commit hook blocks secret files, the real values in your local `backend/.env` / `device/device.env`, and common key formats (Google, OpenAI, Anthropic, AWS, GitHub, Slack, private keys, database URLs with a password). It never prints a value.
+- **Who can spend money:** every paid AI call (Gemini) and Google geolocation call is made for a paired wearable, which needs the household's own Auth0 device credentials. Anyone can sign up for the dashboard, so for an account without a wearable: search returns nothing without calling Gemini, Teach items is off, and one account can belong to at most 5 households. Teach-items photos are capped at 100 MB per household.
+- **Google geolocation** stops at `GEOLOCATION_MONTHLY_LIMIT` (5000) calls a month, inside Google's free allowance; `/healthz` shows the month's count.
 
 ## Privacy
 The daily purge (Vercel Cron → `/api/v1/admin/purge`, or `python -m app.retention` from cron on a VPS) deletes every `memory_logs` row older than `RETENTION_HOURS` (72), photo included. Photos are only reachable through signed links that expire after 15 minutes.

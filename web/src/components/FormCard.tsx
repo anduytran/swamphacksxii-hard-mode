@@ -1,7 +1,9 @@
-// A setup form card. Submit stays disabled until every field is valid; a field explains
-// what's wrong once the person has typed in it and moved on; Submit shows a spinner while
-// saving. Inputs are uncontrolled and validated with the browser's constraint API.
-import { useId, useRef, useState, type FormEvent } from "react";
+// A setup form card. A field explains what's wrong once the person has typed in it and moved
+// on. Submit is never disabled (people can't find out why a greyed-out button won't work):
+// submitting with problems shows the GOV.UK-style error summary at the top, focused, with a
+// link to each field, and "Error: " at the start of the page title. Submit shows a spinner
+// while saving. Inputs are uncontrolled and validated with the browser's constraint API.
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { ApiError } from "../lib/api";
 
 export interface FieldSpec {
@@ -38,7 +40,8 @@ function message(input: HTMLInputElement, label: string): string {
 export function FormCard({ title, hint, fields, submitLabel, resetOnSuccess, onSubmit }: Props) {
   const formRef = useRef<HTMLFormElement>(null);
   const id = useId();
-  const [valid, setValid] = useState(() => fields.every((f) => !f.required || (f.defaultValue ?? "").length >= (f.minLength ?? 1)));
+  const summaryRef = useRef<HTMLDivElement>(null);
+  const [summary, setSummary] = useState<{ inputId: string; text: string }[]>([]);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
@@ -53,9 +56,18 @@ export function FormCard({ title, hint, fields, submitLabel, resetOnSuccess, onS
     e.preventDefault();
     const form = e.currentTarget;
     if (!form.checkValidity()) {
-      for (const input of form.querySelectorAll("input")) validate(input);
+      const problems: { inputId: string; text: string }[] = [];
+      for (const input of form.querySelectorAll("input")) {
+        validate(input);
+        const label = fields.find((f) => f.name === input.name)?.label ?? "This field";
+        if (!input.validity.valid) problems.push({ inputId: input.id, text: message(input, label) });
+      }
+      setTouched(Object.fromEntries(fields.map((f) => [f.name, true])));
+      setSummary(problems);
+      requestAnimationFrame(() => summaryRef.current?.focus());
       return;
     }
+    setSummary([]);
     setMsg({ text: "", error: false });
     setBusy(true);
     try {
@@ -69,9 +81,18 @@ export function FormCard({ title, hint, fields, submitLabel, resetOnSuccess, onS
       setMsg({ text: err instanceof ApiError ? err.detail : (err as Error).message, error: true });
     } finally {
       setBusy(false);
-      setValid(formRef.current?.checkValidity() ?? false);
     }
   };
+
+  // "Error: " in the page title while the summary shows, so screen readers hear it first.
+  useEffect(() => {
+    if (!summary.length) return;
+    const title = document.title.replace(/^Error: /, "");
+    document.title = `Error: ${title}`;
+    return () => {
+      document.title = title;
+    };
+  }, [summary.length]);
 
   return (
     <form
@@ -83,8 +104,8 @@ export function FormCard({ title, hint, fields, submitLabel, resetOnSuccess, onS
         const input = e.target;
         if (!(input instanceof HTMLInputElement)) return;
         setTouched((t) => ({ ...t, [input.name]: true }));
-        setValid(e.currentTarget.checkValidity());
         if (errors[input.name]) validate(input); // clear as soon as it's fixed
+        if (summary.length && e.currentTarget.checkValidity()) setSummary([]);
       }}
       onBlur={(e) => {
         const input = e.target;
@@ -93,6 +114,26 @@ export function FormCard({ title, hint, fields, submitLabel, resetOnSuccess, onS
     >
       <h2>{title}</h2>
       {hint && <p className="hint">{hint}</p>}
+      {summary.length > 0 && (
+        <div ref={summaryRef} className="error-summary" role="alert" tabIndex={-1} aria-labelledby={`${id}-problem`}>
+          <h3 id={`${id}-problem`}>There is a problem</h3>
+          <ul>
+            {summary.map((p) => (
+              <li key={p.inputId}>
+                <a
+                  href={`#${p.inputId}`}
+                  onClick={(e) => {
+                    e.preventDefault(); // the app routes on the hash; just move to the field
+                    document.getElementById(p.inputId)?.focus();
+                  }}
+                >
+                  {p.text}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {fields.map((f) => {
         const inputId = `${id}-${f.name}`;
         const error = errors[f.name] ?? "";
@@ -121,7 +162,7 @@ export function FormCard({ title, hint, fields, submitLabel, resetOnSuccess, onS
           </div>
         );
       })}
-      <button type="submit" className="primary" disabled={!valid || busy} aria-busy={busy}>
+      <button type="submit" className="primary" disabled={busy} aria-busy={busy}>
         {submitLabel}
       </button>
       <p className={msg.error ? "form-msg error" : "form-msg"} role="status">

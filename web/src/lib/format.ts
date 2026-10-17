@@ -39,5 +39,5 @@ export function bucketByHour(events: { timestamp: string }[], buckets = 8): numb
   return counts;
 }
 
-export const prefersReducedMotion = () =>
-  typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+/** Animate? Honours both the device setting and LastScene's own Display > Motion choice. */
+export { reducedMotion as prefersReducedMotion } from "./display";
