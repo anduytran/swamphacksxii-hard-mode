@@ -8,13 +8,15 @@ language tasks.
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import cached_property
+from functools import cache, cached_property
+from typing import Literal
 
 import anthropic
 import openai
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 
 from .config import Settings
+from .home_map import FloorPlan, floor_plan
 from .rag import ITEM, TEXT, RetrievedMemory
 from .gemini import GeminiAI
 
@@ -64,6 +66,13 @@ place they said, else the place the photo shows. Empty if neither tells.
 If the photo is too dark or blurry to tell, say so in the description and give only the \
 items and places the wearer said."""
 
+# Appended to SCENE_SYSTEM_PROMPT; the same room ids are the schema's enum (scene_schema).
+SCENE_ROOM_PROMPT = """
+- room: which room of the {plan} floor plan the photo was taken in, judged from what the \
+camera sees (the wearer's words can help). One of these ids, or "unknown" if the photo \
+doesn't show which:
+{rooms}"""
+
 
 SUMMARY_SYSTEM_PROMPT = """\
 You write a short update for a family caregiver of someone with memory loss who wears \
@@ -85,6 +94,19 @@ class SceneDescription(BaseModel):
     description: str
     items: list[_ExtractedItem]
     visible_text: str
+    room: str = "unknown"  # scene_schema limits it to a floor plan's room ids
+
+
+@cache
+def scene_schema(plan: FloorPlan) -> type[SceneDescription]:
+    """SceneDescription with `room` an enum of the plan's room ids plus "unknown"."""
+    ids = tuple(r.id for r in plan.rooms) + ("unknown",)
+    return create_model(f"SceneDescription_{plan.id}", __base__=SceneDescription, room=(Literal[ids], ...))
+
+
+def scene_room_prompt(plan: FloorPlan) -> str:
+    rooms = "\n".join(f"  - {r.id}: {r.name}" + (f" ({', '.join(r.keywords)})" if r.keywords else "") for r in plan.rooms)
+    return SCENE_ROOM_PROMPT.format(plan=plan.name, rooms=rooms)
 
 
 @dataclass
@@ -94,6 +116,7 @@ class SceneText:
     description: str
     items: list["ItemMention"]
     visible_text: str
+    room: str | None = None  # the floor plan room the photo shows, None if it can't tell
 
 
 @dataclass
@@ -348,19 +371,22 @@ class AIServices:
 
         One call does the photo and the words: the items come from the transcript (with the
         camera filling in places it doesn't say), so extract_items isn't needed as well.
-        None when vision is off."""
+        The same call names the floor plan (FLOOR_PLAN) room the photo was taken in, for
+        the dashboard map. None when vision is off."""
         if self.s.vision_provider != "gemini":
             return None
         from google.genai import types
 
+        plan = floor_plan(self.s.floor_plan)
         parsed = await self.gemini.generate_json(
-            SCENE_SYSTEM_PROMPT.format(transcript=transcript.replace('"', "'")),
+            SCENE_SYSTEM_PROMPT.format(transcript=transcript.replace('"', "'")) + scene_room_prompt(plan),
             [types.Part.from_bytes(data=image, mime_type=content_type), "Describe this scene."],
-            SceneDescription,
+            scene_schema(plan),
         )
         if parsed is None:
             return None
-        return SceneText(parsed.description.strip(), _mentions(parsed.items), parsed.visible_text.strip())
+        room = parsed.room if any(r.id == parsed.room for r in plan.rooms) else None
+        return SceneText(parsed.description.strip(), _mentions(parsed.items), parsed.visible_text.strip(), room)
 
     async def caregiver_summary(self, facts: str) -> str | None:
         return await self._generate(SUMMARY_SYSTEM_PROMPT, facts)

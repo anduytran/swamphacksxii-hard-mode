@@ -65,12 +65,13 @@ export default function MapPage() {
               <i className="dot dot-calm" />
               Not asked about
             </span>
+            <span>📷 Room from the photo, not the words</span>
           </div>
           <details>
             <summary>Show as table</summary>
             <DataTable
               headers={["Room", "Put down here", "Questions about items last here", "Items there now"]}
-              rows={(house.data?.rooms ?? []).map((r) => [r.name, r.putdowns, r.lost, r.items.join(", ") || "–"])}
+              rows={(house.data?.rooms ?? []).map((r) => [r.name, r.putdowns, r.lost, roomItems(r, house.data?.items ?? []) || "–"])}
             />
           </details>
         </div>
@@ -190,7 +191,7 @@ function HouseMapView({ data, onRetry }: { data?: HouseMap; onRetry(): void }) {
               initialViewState={initialViewState}
               controller
               layers={layers}
-              getTooltip={houseTooltip}
+              getTooltip={(info) => houseTooltip(data?.items ?? [], info)}
               onViewStateChange={({ viewState }) => {
                 const z = Math.round((viewState as { zoom: number }).zoom * 4) / 4; // re-label in quarter steps
                 if (z !== zoom) setZoom(z);
@@ -292,18 +293,24 @@ function houseLayers(data: HouseMap, zoom: number) {
   ];
 }
 
-function houseTooltip({ object, layer }: { object?: unknown; layer?: { id: string } | null }) {
+// A room's items, a camera on those placed by what the photo showed rather than the words.
+function roomItems(room: Room, items: MapItem[]): string {
+  const byPhoto = new Set(items.filter((i) => i.room_source === "photo").map((i) => i.name));
+  return room.items.map((name) => (byPhoto.has(name) ? `📷 ${name}` : name)).join(", ");
+}
+
+function houseTooltip(items: MapItem[], { object, layer }: { object?: unknown; layer?: { id: string } | null }) {
   if (!object || !layer) return null;
   if (layer.id === "items") {
     const i = object as MapItem;
     return {
-      text: `${capitalize(i.name)} — ${i.room_name}\n“${i.location || "no place said"}”, ${timeAgo(i.last_seen)}\nPut down ${i.mentions}×, asked about ${i.times_asked}×`,
+      text: `${capitalize(i.name)} — ${i.room_name}${i.room_source === "photo" ? " 📷 (room from the photo)" : ""}\n“${i.location || "no place said"}”, ${timeAgo(i.last_seen)}\nPut down ${i.mentions}×, asked about ${i.times_asked}×`,
       style: GEO_TOOLTIP_STYLE,
     };
   }
   if (layer.id === "rooms") {
     const r = object as Room;
-    return { text: `${r.name}\n${r.putdowns} put down here · ${r.lost} questions\nNow here: ${r.items.length ? r.items.join(", ") : "nothing now"}`, style: GEO_TOOLTIP_STYLE };
+    return { text: `${r.name}\n${r.putdowns} put down here · ${r.lost} questions\nNow here: ${roomItems(r, items) || "nothing now"}`, style: GEO_TOOLTIP_STYLE };
   }
   return null;
 }

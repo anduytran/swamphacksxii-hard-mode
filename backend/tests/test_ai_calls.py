@@ -183,3 +183,37 @@ def test_template_answer_wording(item, said):
 )
 def test_no_template_answer_when_unsure(question, memories):
     assert template_answer(question, memories, NOW) is None
+
+
+def test_the_scene_call_asks_for_a_room_of_the_active_floor_plan():
+    from app.ai import scene_schema
+    from app.home_map import floor_plan
+
+    plan = floor_plan("home")
+    enum = scene_schema(plan).model_json_schema()["properties"]["room"]["enum"]
+    assert enum == [r.id for r in plan.rooms] + ["unknown"]
+    assert "grand_ballroom" in scene_schema(floor_plan("reitz_union")).model_json_schema()["properties"]["room"]["enum"]
+
+    ai, models = make_ai(floor_plan="home")
+    schema = scene_schema(plan)
+    models.parsed = schema(description="Keys on a counter.", items=[], visible_text="", room="kitchen")
+    db = FakeDB()
+    record = asyncio.run(db.insert("dev1", "my keys", b"jpeg", "image/jpeg"))
+    asyncio.run(ingest_image(db, ai, record.id, "my keys", b"jpeg", "image/jpeg"))
+
+    (scene_call,) = models.generated  # still one call
+    assert scene_call["config"].response_schema is schema
+    assert "- kitchen: Kitchen (kitchen, counter" in scene_call["config"].system_instruction
+    assert db.room_ids[record.id] == "kitchen"
+
+    models.parsed = schema(description="Too dark.", items=[], visible_text="", room="unknown")
+    assert asyncio.run(ai.describe_scene(b"jpeg", "image/jpeg", "keys")).room is None
+
+
+def test_without_vision_no_room_is_stored():
+    ai, models = make_ai(vision_provider="none")
+    models.parsed = SimpleNamespace(items=[])
+    db = FakeDB()
+    record = asyncio.run(db.insert("dev1", "my keys", b"jpeg", "image/jpeg"))
+    asyncio.run(ingest_image(db, ai, record.id, "my keys", b"jpeg", "image/jpeg"))
+    assert record.id not in db.room_ids

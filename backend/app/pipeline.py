@@ -52,7 +52,7 @@ async def ingest_image(
         log.exception("Indexing image text failed for memory %s", memory_id)
     try:
         if scene:
-            await db.set_scene(memory_id, scene.description)
+            await db.set_scene(memory_id, scene.description, room_id=scene.room)
         await db.add_items(memory_id, [(i.name, i.location) for i in items])
     except Exception:
         log.exception("Saving scene/items failed for memory %s", memory_id)
