@@ -17,8 +17,8 @@ import requests
 from lastscene_bridge.auth import Auth0ClientCredentials, token_provider_from_env
 from lastscene_bridge.bridge import LastSceneBridge
 from lastscene_bridge.capture_time import recording_time_ms
-from lastscene_bridge.observation import (NoCaptureTime, build_observation, captured_at_iso, item_label,
-                                          normalize_bbox, observation_id, prepare_image)
+from lastscene_bridge.observation import (NoCaptureTime, build_observation, captured_at_iso, event_for, item_label,
+                                          normalize_bbox, observation_id, prepare_image, scene_block)
 from lastscene_bridge.selector import EventSelector
 from lastscene_bridge.uploader import RedirectError, Uploader, normalize_api_base
 from memory_engine.api import LastSeen
@@ -105,8 +105,25 @@ def test_observation_matches_contract_and_is_conservative(tmp_path, bus):
     assert obs["source"] == "auto" and obs["image_size"] == {"width": 810, "height": 1080}
     (o,) = obs["objects"]
     assert o == {"label": "keys", "confidence": 0.148, "bbox": normalize_bbox(BOX, 810, 1080),
-                 "track_id": created["memory_id"], "event": "seen"}
+                 "track_id": created["memory_id"], "event": "placed"}  # first confirmed sighting
     assert mock.validate(obs, jpeg) is None
+    scene = scene_block("Grand Ballroom table")
+    with_scene, _ = build_observation([created], image, obs["pipeline"], scene)
+    assert with_scene["scene"] == {"id": "grand-ballroom-table", "label": "Grand Ballroom table"}
+    assert mock.validate(with_scene, jpeg) is None
+
+
+def test_event_names_follow_what_the_engine_established():
+    assert event_for({"event": "created", "place_status": "first_sighting"}) == "placed"
+    assert event_for({"event": "created", "place_status": None}) == "placed"          # no scene matcher
+    assert event_for({"event": "created", "place_status": "unverified"}) == "placed"  # no proof it moved
+    assert event_for({"event": "created", "place_status": "likely_new_place"}) == "moved"
+    assert event_for({"event": "created", "place_status": "moved_in_scene"}) == "moved"
+    assert event_for({"event": "image_updated", "_reason": "seen"}) == "seen"
+    assert event_for({"event": "image_updated", "_reason": "moved"}) == "moved"
+    assert "picked_up" not in {event_for({"event": k, "place_status": p, "_reason": r})
+                               for k in ("created", "image_updated") for p in (None, "likely_new_place")
+                               for r in ("seen", "moved")}
 
 
 def test_unknown_capture_time_means_no_observation(tmp_path, bus):
@@ -146,10 +163,10 @@ def test_selector_sends_events_not_frames():
     assert s.select([ev("image_updated", t=500)]) == []                        # mid-sighting: clearer frame only
     assert s.select([ev("image_updated", t=900), ev("sighting_ended")]) == []  # end, but barely moved
     moved = s.select([ev("image_updated", t=2000, bbox=(500, 500, 600, 600)), ev("sighting_ended")])
-    assert len(moved) == 1                                                       # end, evidence moved > 10% of frame
+    assert len(moved) == 1 and moved[0][0]["_reason"] == "moved"                # end, evidence moved > 10% of frame
     assert s.select([ev("resighted", t=5000)]) == []                           # old evidence frame: never sent
     later = s.select([ev("image_updated", t=11 * 60 * 1000, bbox=(500, 500, 600, 600)), ev("sighting_ended")])
-    assert len(later) == 1                                                       # seen again after > 10 minutes
+    assert len(later) == 1 and later[0][0]["_reason"] == "seen"                 # seen again after > 10 minutes
 
 
 def test_selector_batches_objects_from_one_frame():

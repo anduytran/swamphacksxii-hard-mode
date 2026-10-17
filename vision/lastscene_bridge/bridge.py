@@ -22,15 +22,21 @@ from memory_engine.presets import PRESETS
 
 class LastSceneBridge:
     def __init__(self, ls, uploader=None, preset_name="efficient", outbox_dir=None,
-                 enforce_contract_min_confidence=False, selector: EventSelector | None = None):
-        """uploader=None and outbox_dir set -> dry run: observations are written to disk, nothing is sent."""
+                 enforce_contract_min_confidence=False, selector: EventSelector | None = None,
+                 min_confidence: float | None = None, scene: dict | None = None, pipeline: dict | None = None):
+        """uploader=None and outbox_dir set -> dry run: observations are written to disk, nothing is sent.
+        min_confidence: objects below it are not sent (enforce_contract_min_confidence = the contract's 0.35).
+        scene: optional {"id", "label"} for where this camera is (observation.scene_block).
+        pipeline: overrides the preset-derived pipeline metadata (e.g. a trained model's name)."""
         self.ls = ls
         self.uploader = uploader
         self.outbox = Path(outbox_dir) if outbox_dir else None
         if self.outbox:
             self.outbox.mkdir(parents=True, exist_ok=True)
-        self.pipeline = pipeline_info(preset_name, PRESETS[preset_name], ls.maker.scene is not None)
-        self.enforce = enforce_contract_min_confidence
+        self.pipeline = pipeline or pipeline_info(preset_name, PRESETS[preset_name], ls.maker.scene is not None)
+        self.min_confidence = min_confidence if min_confidence is not None else \
+            CONTRACT_MIN_CONFIDENCE if enforce_contract_min_confidence else None
+        self.scene = scene
         self.selector = selector or EventSelector()
         self.stats = {"events": 0, "observations": 0, "skipped_no_capture_time": 0,
                       "below_contract_min_confidence": 0, "dropped_by_contract_min_confidence": 0}
@@ -46,15 +52,15 @@ class LastSceneBridge:
                     e["_image_size"] = (img.shape[1], img.shape[0])
         ids = []
         for group in self.selector.select(events):
-            if self.enforce:
-                kept = [r for r in group if r["confidence"] >= CONTRACT_MIN_CONFIDENCE]
+            if self.min_confidence is not None:
+                kept = [r for r in group if r["confidence"] >= self.min_confidence]
                 self.stats["dropped_by_contract_min_confidence"] += len(group) - len(kept)
                 group = kept
                 if not group:
                     continue
             image_bytes = (Path(self.ls.store.out) / group[0]["image_path"]).read_bytes()  # snapshot now
             try:
-                obs, jpeg = build_observation(group, image_bytes, self.pipeline)
+                obs, jpeg = build_observation(group, image_bytes, self.pipeline, self.scene)
             except NoCaptureTime:
                 self.stats["skipped_no_capture_time"] += 1
                 continue

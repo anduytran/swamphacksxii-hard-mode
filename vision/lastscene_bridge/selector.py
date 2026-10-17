@@ -45,7 +45,9 @@ class EventSelector:
             if kind == "created":
                 chosen.append(e)
             elif kind == "image_updated" and self._ends_sighting(events, i):
-                if self._worth_resending(e):
+                reason = self._worth_resending(e)
+                if reason:
+                    e["_reason"] = reason  # observation.event_for: "moved" or "seen"
                     chosen.append(e)
         groups = OrderedDict()
         for e in chosen:
@@ -61,14 +63,16 @@ class EventSelector:
         mid = events[i]["memory_id"]
         return any(e["event"] == "sighting_ended" and e["memory_id"] == mid for e in events[i + 1:])
 
-    def _worth_resending(self, e):
+    def _worth_resending(self, e) -> str | None:
+        """"moved" (box shifted > move_threshold), "seen" (> 10 min since the last send), or None (skip)."""
         last = self.sent.get(e["memory_id"])
         if last is None:
-            return True
+            return "seen"
         last_t, last_c = last
-        if _time_ms(e) - last_t > self.resend_after_ms:
-            return True
         c = _center_norm(e)
-        if c is None or last_c is None:
-            return False
-        return ((c[0] - last_c[0]) ** 2 + (c[1] - last_c[1]) ** 2) ** 0.5 > self.move_threshold
+        if c is not None and last_c is not None and \
+                ((c[0] - last_c[0]) ** 2 + (c[1] - last_c[1]) ** 2) ** 0.5 > self.move_threshold:
+            return "moved"
+        if _time_ms(e) - last_t > self.resend_after_ms:
+            return "seen"
+        return None

@@ -95,8 +95,10 @@ def validate(obs, image_bytes):
         return _bad("image_size", f"must match the uploaded image ({img.shape[1]}x{img.shape[0]})")
     if "scene" in obs:
         s = obs["scene"]
-        if not isinstance(s, dict) or not isinstance(s.get("id"), str) or not (0 <= s.get("match_score", -1) <= 1):
-            return _bad("scene", "needs id and match_score 0-1")
+        score = s.get("match_score") if isinstance(s, dict) else None  # backend Scene: label/match_score optional
+        if not isinstance(s, dict) or not isinstance(s.get("id"), str) or len(s["id"]) > 80 \
+                or len(s.get("label") or "") > 120 or (score is not None and not 0 <= score <= 1):
+            return _bad("scene", "needs id (<= 80 chars); label <= 120 chars; match_score 0-1 if present")
     objs = obs["objects"]
     if not isinstance(objs, list) or not objs:
         return _bad("objects", "list with at least one entry")

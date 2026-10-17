@@ -1,0 +1,130 @@
+--- a/backend/app/db_observations.py
++++ b/backend/app/db_observations.py
+@@ -178,7 +178,14 @@
+             labels = [r["label"] for r in await conn.fetch(
+                 "SELECT DISTINCT label FROM memory_detections WHERE memory_id = $1", memory_id
+             )]
+-            await conn.execute("DELETE FROM item_last_seen WHERE memory_id = $1", memory_id)
++            # The caller's rebuild_last_seen replaces the row in the device's current scope, keeping
++            # found_at; a row left in an older scope (sent before the device joined a household) goes now.
++            await conn.execute(
++                "DELETE FROM item_last_seen WHERE memory_id = $1 AND scope <> COALESCE("
++                "(SELECT household_id::text FROM household_devices WHERE device_id = $2), $2)",
++                memory_id,
++                device_id,
++            )
+             await conn.execute("DELETE FROM memory_logs WHERE id = $1", memory_id)
+         return labels
+ 
+@@ -189,7 +196,11 @@
+         scene_id: str | None, scene_label: str | None, bbox: list[float], confidence: float,
+         image: bytes, image_type: str, width: int, height: int,
+     ) -> None:
+-        """Record a sighting unless a newer one is already stored (late or replayed uploads)."""
++        """Record a sighting unless a newer one is already stored (late or replayed uploads).
++
++        Only a sighting captured after found_at reopens a found item: one taken before "found it"
++        but uploaded after it (an offline queue) moves the record but leaves it found.
++        """
+         await self.pool.execute(
+             """
+             INSERT INTO item_last_seen (scope, item, memory_id, observation_id, source, captured_at, scene_id,
+@@ -200,7 +211,9 @@
+                 captured_at = EXCLUDED.captured_at, scene_id = EXCLUDED.scene_id, scene_label = EXCLUDED.scene_label,
+                 bbox = EXCLUDED.bbox, confidence = EXCLUDED.confidence, image = EXCLUDED.image,
+                 image_type = EXCLUDED.image_type, image_width = EXCLUDED.image_width,
+-                image_height = EXCLUDED.image_height, found_at = NULL
++                image_height = EXCLUDED.image_height,
++                found_at = CASE WHEN EXCLUDED.captured_at > item_last_seen.found_at THEN NULL
++                                ELSE item_last_seen.found_at END
+             WHERE item_last_seen.captured_at <= EXCLUDED.captured_at
+             """,
+             scope, item, memory_id, observation_id, source, captured_at, scene_id, scene_label,
+@@ -208,7 +221,13 @@
+         )
+ 
+     async def rebuild_last_seen(self, scope: str, item: str, device_ids: list[str]) -> None:
+-        """After a deletion: the latest remaining sighting of the item becomes last-seen."""
++        """After a deletion: the latest remaining sighting of the item becomes last-seen.
++
++        It stays found if it was found after that sighting (same rule as upsert_last_seen).
++        """
++        found_at = await self.pool.fetchval(
++            "SELECT found_at FROM item_last_seen WHERE scope = $1 AND item = $2", scope, item
++        )
+         row = await self.pool.fetchrow(
+             """
+             SELECT m.id, m.observation_id, m.created_at, m.image, m.image_type,
+@@ -230,6 +249,11 @@
+             row["created_at"], row["scene_id"], row["scene_label"], list(row["bbox"]), row["confidence"],
+             row["image"], row["image_type"], row["image_width"], row["image_height"],
+         )
++        if found_at is not None:
++            await self.pool.execute(
++                "UPDATE item_last_seen SET found_at = $3 WHERE scope = $1 AND item = $2 AND captured_at <= $3",
++                scope, item, found_at,
++            )
+ 
+     async def last_seen(self, scope: str, item: str | None = None) -> list[LastSeen]:
+         rows = await self.pool.fetch(
+--- a/backend/tests/test_observations_integration.py
++++ b/backend/tests/test_observations_integration.py
+@@ -151,3 +151,58 @@
+     history = c.get("/api/v1/dashboard/history").json()
+     auto = [e for e in history if e["source"] == "auto"]
+     assert auto and auto[0]["detections"][0]["bbox"] and auto[0]["summary"].startswith("wallet")
++
++
++def ago(minutes):
++    return datetime.now(timezone.utc) - timedelta(minutes=minutes)
++
++
++def last_seen_keys(c):
++    return c.get("/api/v1/items/keys/last-seen").json()
++
++
++def test_late_upload_from_before_found_does_not_reopen(c):
++    # Sighting A (t0); "found it" at t2; a queued sighting B captured at t1 (t0 < t1 < t2) arrives late.
++    assert post(c, obs(minutes_ago=30)).status_code == 201
++    found_at = ago(10)
++    assert c.post("/api/v1/items/keys/found", json={"found_at": found_at.isoformat()}).status_code == 200
++    assert post(c, obs(minutes_ago=20, scene="hallway table")).status_code == 201
++    ls = last_seen_keys(c)
++    assert ls["found_at"] is not None, "a sighting from before 'found it' reopened the item"
++    assert datetime.fromisoformat(ls["found_at"]) == found_at
++
++    # A sighting after found_at does reopen it.
++    assert post(c, obs(minutes_ago=1, scene="dining table")).status_code == 201
++    ls = last_seen_keys(c)
++    assert ls["scene"]["label"] == "dining table" and ls["found_at"] is None
++
++
++def test_delete_keeps_found_when_remaining_sighting_is_older(c):
++    z, a, b = obs(minutes_ago=40, scene="garage shelf"), obs(minutes_ago=30), obs(minutes_ago=20, scene="hallway table")
++    for o in (z, a, b):
++        assert post(c, o).status_code == 201
++    found_at = ago(10)
++    assert c.post("/api/v1/items/keys/found", json={"found_at": found_at.isoformat()}).status_code == 200
++
++    # Deleting an older sighting rebuilds last-seen from B, which is still before found_at.
++    assert c.delete(f"/api/v1/observations/{z['observation_id']}").status_code == 200
++    ls = last_seen_keys(c)
++    assert ls["scene"]["label"] == "hallway table" and ls["found_at"] is not None
++    assert datetime.fromisoformat(ls["found_at"]) == found_at
++
++    # Deleting the current last-seen rolls back to A, also before found_at.
++    assert c.delete(f"/api/v1/observations/{b['observation_id']}").status_code == 200
++    ls = last_seen_keys(c)
++    assert ls["scene"]["label"] == "kitchen counter" and ls["found_at"] is not None
++    assert datetime.fromisoformat(ls["found_at"]) == found_at
++
++
++def test_delete_removes_last_seen_left_in_pre_household_scope(c):
++    # Sent before the device was claimed: last-seen stays scoped to the device itself.
++    early = obs(minutes_ago=30, label="wallet")
++    assert post(c, early).status_code == 201
++    hh = c.post("/api/v1/households", json={"name": f"Scope {RUN}"}).json()["id"]
++    assert c.post(f"/api/v1/households/{hh}/devices", json={"client_id": DEVICE, "pairing_code": "CAM-1"}).status_code == 200
++    assert c.delete(f"/api/v1/observations/{early['observation_id']}").status_code == 200
++    left = c.portal.call(c.app.state.db.pool.fetchval, "SELECT count(*) FROM item_last_seen WHERE scope = $1", DEVICE)
++    assert left == 0

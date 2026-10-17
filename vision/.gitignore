@@ -14,3 +14,6 @@ memories_out/
 *.npy
 *.npz
 enrollment/
+
+# lastscene_pipeline working folder: household photos, models, queues
+lastscene-data/

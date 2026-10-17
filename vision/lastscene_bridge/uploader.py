@@ -38,6 +38,7 @@ import requests
 
 log = logging.getLogger(__name__)
 FOUND_NAMESPACE = uuid.UUID("5b0b6f0e-4d0e-4a34-9d7c-1f0c3a4e2f10")  # found-<uuid5(label, found ms)>
+CONFLICT_NAMESPACE = uuid.UUID("9a4c2d7e-61f3-4b8a-8e2d-3c5f7a9b1d04")  # new id after a 409
 
 
 class RedirectError(RuntimeError):
@@ -79,6 +80,7 @@ class Uploader:
         self._found_ms = {}       # label -> latest found_at (ms) this process queued; in memory only
         self._token_rejected = False  # a fresh token got 401 too: no refetch per retry (Auth0 M2M quota)
         self.log = []  # (time, item id, status/text) for reporting
+        self.on_result = None  # optional callable(summary, item_id, status, http_status) after each send
 
     # --- queue -----------------------------------------------------------------------
     def enqueue(self, observation: dict, image_bytes: bytes) -> str:
@@ -164,8 +166,12 @@ class Uploader:
                 head = self.pending()[:1]
                 if not head:
                     break
+                summary = _summary(head[0])
+                self._sent_id = _item_id(head[0])
                 status = self._send(head[0])
             results.append((_item_id(head[0]), status))
+            if self.on_result:
+                self.on_result(summary, self._sent_id, status, self.http_status.get(self._sent_id))
             if status in ("retry", "auth", "config"):
                 break
         return results
@@ -203,7 +209,7 @@ class Uploader:
         oid = _item_id(item)
         found = _is_found(item)
         image = None if found else (item / "image.jpg").read_bytes()
-        refreshed = False
+        refreshed = reassigned = False
         shrinks = rate_limited = 0
         while True:
             try:
@@ -254,6 +260,11 @@ class Uploader:
                 _update_image_size(item, image)
                 shrinks += 1
                 continue
+            if r.status_code == 409 and not found and not reassigned:  # id taken by another device: new id, once
+                item, oid = self._reassign_id(item, oid)
+                self._sent_id = oid
+                reassigned = True
+                continue
             if found and r.status_code == 404:  # no last-seen row for that label: nothing to mark, don't retry
                 (item / "error.json").write_text(json.dumps({"status": 404, "body": r.text}), encoding="utf-8")
                 shutil.move(str(item), str(self.queue / "failed" / item.name))
@@ -266,6 +277,19 @@ class Uploader:
                 self.log.append((time.time(), oid, f"{r.status_code} failed: {r.text[:200]}"))
                 return "failed"
             return self._transient(oid, f"server {r.status_code}")
+
+    def _reassign_id(self, item: Path, oid: str) -> tuple[Path, str]:
+        """409: another device already used this observation_id. Derive a new one (stable across retries
+        and restarts: from the old id + this device's pairing code), rewrite the item, log it."""
+        new = str(uuid.uuid5(CONFLICT_NAMESPACE, f"{oid}|{self.pairing_code}"))
+        obs = json.loads((item / "observation.json").read_text(encoding="utf-8"))
+        obs["observation_id"] = new
+        (item / "observation.json").write_text(json.dumps(obs, indent=2), encoding="utf-8")
+        target = item.with_name(f"{item.name.split('_', 1)[0]}_{new}")
+        item.rename(target)
+        self.log.append((time.time(), oid, f"409 observation_id used by another device; resending as {new}"))
+        log.warning("observation %s: id used by another device (409); resending as %s", oid, new)
+        return target, new
 
     def _transient(self, oid, why):
         self.log.append((time.time(), oid, f"retry later ({why}), backoff {self._backoff:.0f}s"))
@@ -310,6 +334,17 @@ class Uploader:
 
 def _item_id(item: Path) -> str:
     return item.name.split("_", 1)[1]
+
+
+def _summary(item: Path) -> str:
+    """For per-post log lines: "keys:placed, wallet:seen" or "found keys"."""
+    try:
+        if _is_found(item):
+            return "found " + json.loads((item / "found.json").read_text(encoding="utf-8"))["label"]
+        obs = json.loads((item / "observation.json").read_text(encoding="utf-8"))
+        return ", ".join(f"{o['label']}:{o['event']}" for o in obs["objects"])
+    except (OSError, ValueError, KeyError):
+        return "?"
 
 
 def _is_found(item: Path) -> bool:

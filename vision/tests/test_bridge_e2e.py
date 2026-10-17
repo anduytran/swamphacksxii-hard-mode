@@ -45,7 +45,7 @@ def test_real_placement_reaches_the_backend(tmp_path):
         assert [s for _, s in results] == ["sent"]
         (stored,) = state.observations.values()
         obs = stored["obs"]
-        assert obs["objects"][0]["label"] == "keys" and obs["objects"][0]["event"] == "seen"
+        assert obs["objects"][0]["label"] == "keys" and obs["objects"][0]["event"] == "placed"
         # captured_at = real recording time + where in the clip the keys were confirmed (placed ~4.9 s)
         assert captured_at_iso(rec + 5000) <= obs["captured_at"] <= captured_at_iso(rec + 8000)
         assert state.last_seen["keys"]["observation_id"] == obs["observation_id"]

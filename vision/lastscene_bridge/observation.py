@@ -5,12 +5,15 @@ Contract fields (POST /api/v1/observations, multipart):
     observation  JSON: observation_id, captured_at, source="auto", pipeline{name,version,detector,matcher},
                  image_size{width,height}, scene (optional), objects[{label, confidence, bbox[x,y,w,h], track_id, event}]
 
-Conservative choices (see README_HANDOFF "Decisions for Dylan"):
-- event is always "seen": we confirm an object is there, but never prove placed/moved/picked_up.
-- scene is omitted: ORB gives "same/different as that memory", not a stable room id or human label.
+Choices (Dylan's script spec, Oct 17, "where provable"; see event_for):
+- event follows what the memory engine established: "placed" when a memory is first confirmed (seen in
+  >= 2 frames over >= 0.5 s), "moved" when ORB places it somewhere other than its last memory, "seen" for
+  the end-of-sighting resend after 10 minutes. Never "picked_up": there is no hand tracking.
+- scene is only sent when the operator names where the camera is (detect --scene-label): ORB gives
+  "same/different as that memory", not a room id or a human label.
 - captured_at comes from observed_ms (real-world time). If it's unknown, there is no observation:
   NoCaptureTime is raised instead of guessing.
-- confidence is the raw detector confidence, even below the contract's 0.35 (flagged, not dropped).
+- confidence is the raw detector confidence; the bridge's min_confidence decides what is sent.
 """
 
 import datetime
@@ -86,7 +89,29 @@ def pipeline_info(preset_name: str, preset: dict, scene_matching: bool = True) -
             "matcher": "orb" if scene_matching else "none"}
 
 
-def build_observation(records: list[dict], image_bytes: bytes, pipeline: dict) -> tuple[dict, bytes]:
+MOVED_PLACES = {"likely_new_place", "moved_in_scene"}  # memory.py place_status: elsewhere than its last memory
+
+
+def event_for(record: dict) -> str:
+    """created -> placed (or moved, when the scene matcher put it somewhere new); a resend -> seen
+    (or moved, when the selector resent it because the box moved). "unverified" stays placed: no proof."""
+    if record["event"] == "created":
+        return "moved" if record.get("place_status") in MOVED_PLACES else "placed"
+    return "moved" if record.get("_reason") == "moved" else "seen"
+
+
+def scene_block(label: str | None, scene_id: str | None = None) -> dict | None:
+    """Operator-declared camera location, in the room's words ("grand ballroom table")."""
+    if not label:
+        return None
+    import re
+
+    sid = scene_id or re.sub(r"[^a-z0-9]+", "-", label.strip().lower()).strip("-")
+    return {"id": sid[:80], "label": label.strip()[:120]}
+
+
+def build_observation(records: list[dict], image_bytes: bytes, pipeline: dict,
+                      scene: dict | None = None) -> tuple[dict, bytes]:
     """records: memory events/records that share one evidence frame (same source + observed_ms).
 
     Returns (observation_dict, jpeg_bytes_to_upload).
@@ -103,7 +128,7 @@ def build_observation(records: list[dict], image_bytes: bytes, pipeline: dict) -
         "confidence": round(float(r["confidence"]), 4),
         "bbox": normalize_bbox([v * scale for v in r["bbox"]], w, h),  # box on the uploaded image, / its size
         "track_id": r["memory_id"],
-        "event": "seen",
+        "event": event_for(r),
     } for r in records]
     obs = {
         "observation_id": observation_id(first.get("source", ""), observed),
@@ -113,6 +138,8 @@ def build_observation(records: list[dict], image_bytes: bytes, pipeline: dict) -
         "image_size": {"width": w, "height": h},
         "objects": objects,
     }
+    if scene:
+        obs["scene"] = scene
     return obs, jpeg
 
 

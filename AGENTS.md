@@ -1,15 +1,17 @@
 # AGENTS.md: context for coding agents (Codex)
 
-Read this before changing anything.
-- `backend/` (FastAPI, TigerData), `frontend/` (dashboard) and `device/` (Pi client) are Dylan's.
+Read this before changing anything. Latest status, results and next actions: [`docs/HANDOFF.md`](docs/HANDOFF.md).
+- `backend/` (FastAPI, TigerData), `web/` (React dashboard) and `device/` (Pi client) are Dylan's.
 - `vision/` is Adam's vision pipeline ("LastSeen"), copied in from his separate project on Oct 17. **Its source and tests are now in this checkout:** `vision/memory_engine`, `vision/lastscene_bridge`, `vision/tests`.
 
 ## Plan as of now (updated Oct 17, supersedes earlier "no laptop bridge")
 
 - **Demo setup:** the wearable camera streams frames to Adam's RTX 4060 laptop. The laptop runs the vision pipeline and `vision/lastscene_bridge`, and the bridge uploads to Dylan's backend on Vercel (`https://www.lastscene.photo`). This laptop path is also the fallback.
 - `python -m lastscene_bridge.run --source <stream-url|clip> --preset m960d` is the demo entry point.
-- Pi inference is optional. Benchmark it only on the actual Pi, starting with the unquantized small model; INT8 comes only after that.
-- **Caveat from the contract:** YOLO-World probably won't run usefully on a Pi Zero 2 W. Which Pi the team has is unconfirmed.
+- **Pi Zero 2 W (Adam, Oct 17):** `lastscene_pipeline.detect` runs YOLO11s as INT8 ONNX (~10 MB) without torch; sync/train/export stay on the laptop. Train at `--imgsz 320` for the Pi.
+  - Laptop CPU, 320 px: 0.065 s per frame on 1 thread, 135 MB peak.
+  - On the Pi: **unmeasured.** Run `vision/pi/README.md` step 3 before relying on it.
+- YOLO-World itself won't run usefully on a Pi Zero 2 W (its CLIP text encoder alone is ~350 MB).
 
 ## What the vision code does
 
@@ -28,6 +30,9 @@ memory_engine/     ML package. Public API: api.py (LastSeen: process_frame, late
 lastscene_bridge/  observation.py (contract JSON + JPEG, bbox px -> normalized [x,y,w,h] via the UPLOADED image size)
                    selector.py (send "created"; end-of-sighting update only if moved >10% or >10 min later)
                    uploader.py, auth.py, capture_time.py (real recording time from video metadata), bridge.py, run.py
+lastscene_pipeline/ Dylan's script spec: sync (Teach items -> YOLO dataset), train (YOLO11s fine-tune + INT8 ONNX
+                   for the Pi, ~10 MB), detect (frames -> events -> observations; INT8 runs without torch), bench
+pi/                install.sh + README.md: run detect/bench on a Raspberry Pi (64-bit OS; speed unmeasured)
 tests/             pytest; tests/mock_lastscene.py = strict local mock of the backend + Auth0, from the contract
 scripts/           eval_run.py (labeled-clip evaluation), record_stream.py (record ESP32/Pi stream), contact_sheet.py
 eval/              latest benchmark (summary + per-preset text reports); eval_manifests/ = labels
@@ -39,17 +44,21 @@ docs/              LASTSCENE_INTEGRATION.md (contract audit, decisions), README_
 
 ## Decisions already made (don't silently reverse them)
 
-- `objects[].event` is always `"seen"`. There's no hand tracking, so placed, moved and picked_up are never proven.
-- `scene` is omitted. ORB gives no stable room ids or human labels.
+- **Events (Oct 17, Adam: "Dylan's spec, where provable"):**
+  - `placed`: a memory is first confirmed (≥ 2 frames over ≥ 0.5 s).
+  - `moved`: ORB places it somewhere other than its last memory, or the box shifted > 10% at sighting end.
+  - `seen`: the 10-minute resend.
+  - `picked_up`: never. There's no hand tracking. See `lastscene_bridge/observation.py:event_for`.
+- **Scene:** sent only when the operator names the camera's location (`detect --scene-label "grand ballroom table"`). ORB gives no room ids, so otherwise it's omitted.
 - `captured_at` is real UTC capture time only (device clock, or file metadata for clips). If unknown, don't upload. Never stamp "now" onto old footage.
 - `observation_id` is UUIDv5 of (source, capture ms), so retries and re-runs are server-side duplicates (200).
-- Confidence is the **raw detector confidence**. Real keys score 0.05–0.35. Don't inflate it.
+- Confidence is the **raw detector confidence**; don't inflate it. Untrained YOLO-World scores real keys 0.05–0.35. `lastscene_pipeline.detect` follows the spec's 0.35 floor: only detections ≥ 0.35 form memories, so it relies on a model fine-tuned from the Teach items photos.
 - Only real detector boxes from the captured frame are uploaded. `guide()`'s projected "they were here" box stays local, and the keys are never "visible now" without a live detection.
 - "Found it" deletes **all** local memories of that label, then calls the found endpoint.
 
 ## Known integration gaps (deliberately deferred)
 
-1. **Confidence floor.** The backend's `MIN_DETECTION_CONFIDENCE=0.35` returns 422 for our key memories. Deferred: set it to 0.05 on the deployment before any real upload.
+1. **Confidence floor.** The backend's `MIN_DETECTION_CONFIDENCE=0.35` returns 422 for untrained m960d key memories (0.05–0.35). It matters for the `lastscene_bridge.run` demo (that needs 0.05 on the deployment). It doesn't matter for `lastscene_pipeline.detect` with a trained model.
 2. **Env variable names:** done. The bridge accepts both naming styles (`LASTSCENE_*`/`AUTH0_CLIENT_*` and `API_URL`/`PAIRING_CODE`/`DEVICE_CLIENT_*`).
 3. **Base URL** is `https://www.lastscene.photo`. The apex `lastscene.photo` redirects with a 308, and requests drops the bearer token on that redirect.
 4. **Token caching:** done. The token is cached to a file, `~/.cache/lastscene/auth0.json`, outside the repo.
@@ -67,7 +76,7 @@ pip install -r requirements.txt
 python -m pytest -q
 ```
 
-Expect **`186 passed, 8 skipped`** (Oct 17). The 8 need Adam's local clips and run with `LASTSEEN_E2E=1`. Run tests from inside `vision/`, not the repo root; `backend/tests` is separate. Keep them passing after every change.
+Last full run (Oct 17): **`187 passed, 8 skipped`**. That was before `tests/test_pipeline.py`, whose 12 tests pass on their own; a full run with them is pending. The 8 need Adam's local clips and run with `LASTSEEN_E2E=1`. Run tests from inside `vision/`, not the repo root; `backend/tests` is separate. Keep them passing after every change.
 
 Model weights download on first detector use: `yolov8m-worldv2.pt` (~57 MB) and `weights/clip/ViT-B-32.pt` (~354 MB). They're gitignored.
 
