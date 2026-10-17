@@ -728,7 +728,7 @@ async function setMapMode(mode) {
 // policy), desaturated and tinted down to sit on the dark theme.
 const BASEMAP_URLS = ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"];
 
-function basemap() {
+function basemap(tint = [70, 66, 60]) {
   return new deck.TileLayer({
     id: "basemap",
     data: BASEMAP_URLS,
@@ -742,7 +742,7 @@ function basemap() {
         image: props.data,
         bounds: [west, south, east, north],
         desaturate: 1,
-        tintColor: [70, 66, 60],
+        tintColor: tint,
       });
     },
   });
@@ -844,11 +844,20 @@ async function loadPlacesMap() {
 
 let publicDeck = null;
 
-// Sequential amber ramp for the heat map (one hue, dim → bright on the dark map); the
+// Warm sequential ramp for the 3D grid: dark crimson (few) → bright yellow (many). Lightness
+// rises monotonically (OKLab L 0.38 → 0.88), so it reads as "more" on the dark map; the
 // legend under the map uses the same stops.
 const HEAT_COLORS = [
-  [90, 52, 8], [140, 82, 6], [190, 112, 4], [226, 146, 30], [246, 180, 80], [255, 222, 160],
+  [122, 16, 48], [176, 24, 46], [222, 59, 36], [242, 106, 27], [249, 161, 27], [255, 210, 63],
 ];
+const NAVY_TINT = [46, 56, 72]; // the public map's basemap: desaturated OSM, tinted slate-navy
+
+function rampColor(t) {
+  const x = Math.min(Math.max(t, 0), 1) * (HEAT_COLORS.length - 1);
+  const i = Math.min(Math.floor(x), HEAT_COLORS.length - 2);
+  const f = x - i;
+  return HEAT_COLORS[i].map((v, k) => Math.round(v + (HEAT_COLORS[i + 1][k] - v) * f));
+}
 
 // 3D buildings: OpenFreeMap vector tiles (OpenStreetMap data, free, no key). The tile URL
 // carries a dated version, so it's read from the TileJSON once; no buildings if that fails.
@@ -890,33 +899,26 @@ async function loadPublic() {
   $("public-k").textContent = data.min_households;
   const container = $("public-map");
   const cells = data.cells.map((c) => ({ ...c, total: c.left + c.asked }));
+  const maxTotal = Math.max(1, ...cells.map((c) => c.total));
   const layers = [
-    basemap(),
+    basemap(NAVY_TINT),
     tiles && buildingsLayer(tiles),
-    // Heat map: each ~100 m spot glows by how often things were lost or asked about there.
-    // Drawn over the buildings (no depth test) so rooftops don't hide the glow.
-    new deck.HeatmapLayer({
-      id: "public-heat",
-      data: cells,
-      getPosition: (c) => [c.lng, c.lat],
-      getWeight: (c) => c.total,
-      radiusPixels: 95,
-      intensity: 1.2,
-      threshold: 0.04,
-      colorRange: HEAT_COLORS,
-      parameters: { depthCompare: "always", depthWriteEnabled: false },
-    }),
-    // Invisible hit areas over each spot, so hovering still shows what was lost there.
-    new deck.ScatterplotLayer({
+    // 3D grid: one square column per ~100 m public spot (78 m across, so neighbours keep a
+    // gap); height and colour both encode how often things were lost or asked about there.
+    new deck.ColumnLayer({
       id: "public-cells",
       data: cells,
+      diskResolution: 4,
+      angle: 45,
+      radius: 55,
+      extruded: true,
       getPosition: (c) => [c.lng, c.lat],
-      getRadius: 55,
-      radiusUnits: "meters",
-      radiusMinPixels: 14,
-      getFillColor: [0, 0, 0, 1], // alpha 0 would also hide it from picking
+      getElevation: (c) => 40 + (c.total / maxTotal) * 900,
+      getFillColor: (c) => [...rampColor(c.total / maxTotal), 245],
+      material: { ambient: 0.55, diffuse: 0.65, shininess: 24, specularColor: [60, 50, 40] },
       pickable: true,
-      parameters: { depthCompare: "always", depthWriteEnabled: false },
+      autoHighlight: true,
+      highlightColor: [255, 255, 255, 70],
     }),
   ];
   const getTooltip = ({ object }) =>
@@ -928,9 +930,12 @@ async function loadPublic() {
     container.replaceChildren();
     publicDeck = new deck.Deck({
       parent: container,
-      // Open on the busiest spot (cells come busiest first), close enough for the 3D buildings
-      // to read; "Busiest spots" below flies to the others.
-      initialViewState: cells.length ? spotView(cells[0]) : fitView([], container),
+      // A tilted overview of every spot (fit flat, then step back: a tilted camera shows less
+      // than fitBounds assumes). Buildings appear from zoom 13; "Busiest spots" flies close.
+      initialViewState: (() => {
+        const view = fitView(coreSpots(cells), container, { pitch: 52, bearing: -18 });
+        return { ...view, zoom: Math.min(view.zoom, 14.2) - 0.7 };
+      })(),
       controller: true,
       getTooltip,
       style: { position: "absolute", inset: "0" },
@@ -960,6 +965,19 @@ async function loadPublic() {
         el("span", { class: "mono public-where" }, `${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`),
         el("span", { class: "mono public-total" }, `${c.total}×`))))
   );
+}
+
+// The spots to frame at first: with many spots, the middle 80% by latitude and longitude, so
+// a few far-off ones don't zoom the whole map out until the columns are specks.
+function coreSpots(cells) {
+  const points = cells.map((c) => [c.lng, c.lat]);
+  if (points.length < 10) return points;
+  const range = (k) => {
+    const v = points.map((p) => p[k]).sort((a, b) => a - b);
+    return [v[Math.floor(v.length * 0.1)], v[Math.ceil(v.length * 0.9) - 1]];
+  };
+  const [[lng0, lng1], [lat0, lat1]] = [range(0), range(1)];
+  return points.filter(([lng, lat]) => lng >= lng0 && lng <= lng1 && lat >= lat0 && lat <= lat1);
 }
 
 // A tilted close-up of one public spot, near enough that the buildings around it read.

@@ -710,7 +710,7 @@ input::placeholder { color: var(--faint); }
   height: 10px;
   border-radius: 5px;
   border: 1px solid var(--line-strong);
-  background: linear-gradient(90deg, rgb(90, 52, 8), rgb(140, 82, 6), rgb(190, 112, 4), rgb(226, 146, 30), rgb(246, 180, 80), rgb(255, 222, 160));
+  background: linear-gradient(90deg, rgb(122, 16, 48), rgb(176, 24, 46), rgb(222, 59, 36), rgb(242, 106, 27), rgb(249, 161, 27), rgb(255, 210, 63));
 }
 
 /* ---------- Public map ---------- */
