@@ -89,6 +89,10 @@ class OnnxYoloDetector:
         if low_memory:  # Pi Zero 2 W has 512 MB: no pre-grown arena / cached allocation plans
             options.enable_cpu_mem_arena = False
             options.enable_mem_pattern = False
+            # No spin-waiting between ops: on the Zero 2 W (Oct 17, 2026, Pin model, 4 threads) 0.64 s instead
+            # of 0.615 s per frame, but 1.9 instead of 2.5 CPU-seconds, and with speech-to-text running in the
+            # same process the detector took 1.13 s per frame instead of 1.54 s.
+            options.add_session_config_entry("session.intra_op.allow_spinning", "0")
         self.session = ort.InferenceSession(str(path), sess_options=options, providers=["CPUExecutionProvider"])
         self.input = self.session.get_inputs()[0]
         if list(self.input.shape) != [1, 3, self.size, self.size]:
@@ -164,7 +168,7 @@ def small_ram(limit_mb: int = 1024) -> bool:
 def load_detector(model_dir: Path | None, classes: list[str], confidence: float, runtime: str = "auto",
                   threads: int = 4, world_base: str = "yolov8m-worldv2.pt", low_memory: bool | None = None):
     """runtime: auto (best.pt with Ultralytics if installed, else INT8 ONNX), onnx, onnx-fp32, torch.
-    low_memory (ONNX only): None = on when the machine has < 1 GB RAM."""
+    low_memory (ONNX only): None = on when the machine has < 1 GB RAM (no memory arena, no spin-waiting)."""
     low_memory = small_ram() if low_memory is None else low_memory
     if model_dir is not None:
         best, int8, fp32 = model_dir / "best.pt", model_dir / "model-int8.onnx", model_dir / "model-fp32.onnx"

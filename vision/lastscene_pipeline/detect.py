@@ -188,6 +188,13 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.env_file:
         load_env_file(args.env_file)
+    return run(args)
+
+
+def run(args, frames=None, detector=None):
+    """The detect loop. `frames` (any iterable of memory_engine Frames) replaces --source, and `detector`
+    (anything with detect(image) and name) replaces loading one: the wearable service passes its own
+    motion-gated camera frames and the detector it shares with voice commands (device/lastscene_device.py)."""
     from lastscene_bridge.bridge import LastSceneBridge
     from lastscene_bridge.live_view import FrameDetections, LiveSession
     from lastscene_bridge.observation import scene_block
@@ -202,14 +209,17 @@ def main(argv=None):
         raise PipelineError(EXIT_CONFIG, f"--model {args.model}: not a model folder")
     classes = load_classes(explicit or (resolve_model_dir(pointer) if pointer else None), root)
     started = time.monotonic()
-    try:
-        detector = ReloadingDetector(pointer, explicit, lambda d: load_detector(
-            d, load_classes(d, root), args.min_confidence, args.runtime, args.threads))
-    except (FileNotFoundError, ValueError) as exc:
-        raise PipelineError(EXIT_CONFIG, str(exc)) from None
+    if detector is None:
+        try:
+            detector = ReloadingDetector(pointer, explicit, lambda d: load_detector(
+                d, load_classes(d, root), args.min_confidence, args.runtime, args.threads))
+        except (FileNotFoundError, ValueError) as exc:
+            raise PipelineError(EXIT_CONFIG, str(exc)) from None
+    else:
+        classes = list(getattr(detector, "classes", classes))
     print(f"detector: {detector.name} ({time.monotonic() - started:.1f}s); classes {classes}; "
           f"posting >= {args.min_confidence}", flush=True)
-    if detector.model_dir is None and args.min_confidence >= 0.35:
+    if getattr(detector, "model_dir", True) is None and args.min_confidence >= 0.35:
         print("note: untrained YOLO-World scores real keys about 0.05-0.35, so few sightings reach "
               f"{args.min_confidence}; train a model from the Teach items photos", flush=True)
 
@@ -247,7 +257,8 @@ def main(argv=None):
     session = LiveSession(ls, bridge, show=args.show, uploading=uploader is not None)
     if not args.no_console:
         session.start_console()
-    frames = open_source(args.source, args.fps, args.reconnect_seconds, args.recorded_at)
+    if frames is None:
+        frames = open_source(args.source, args.fps, args.reconnect_seconds, args.recorded_at)
     try:
         if uploader:
             uploader.start()

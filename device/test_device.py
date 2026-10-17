@@ -404,3 +404,156 @@ def test_too_many_requests_is_retried_later_not_dropped():
     assert dev.rejected(status(400)) and dev.rejected(status(422))
     assert not dev.rejected(status(429)) and not dev.rejected(status(503))
     assert not dev.rejected(httpx.ConnectError("offline"))
+
+
+# ---------------------------------------------------------------- statement or question, item photos
+
+import importlib.util as _importlib_util  # noqa: E402
+import threading as _thr  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+from types import SimpleNamespace as _NS  # noqa: E402
+
+SENTENCES = [
+    "I'm putting my keys on the counter", "Where are my keys?", "Last Scene, did I take my pills",
+    "Hey last scene where did I leave my glasses", "My wallet is in the blue backpack by the door.",
+    "Last seen, keys.", "I can't find my phone", "Remind me where I put the remote", "the pin is on my desk",
+    "Is my umbrella by the door", "", "Last Scene", "okay last scene I left the charger in the car",
+]
+
+
+def test_device_intent_matches_the_server():
+    path = _Path(__file__).resolve().parents[1] / "backend" / "app" / "intent.py"
+    if not path.exists():
+        pytest.skip("backend not in this checkout")
+    spec = _importlib_util.spec_from_file_location("server_intent", path)
+    server = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(server)
+    for s in SENTENCES:
+        assert dev.intent_of(s) == server.classify(s), s
+        assert dev.strip_wake_phrase(s) == server.strip_wake_phrase(s), s
+
+
+class FakeCamera:
+    def __init__(self):
+        self.shots = 0
+
+    def frame(self):
+        self.shots += 1
+        return f"frame{self.shots}"
+
+    def capture_jpeg(self):
+        return b"plain-jpeg"
+
+
+class FakeDetector:
+    """Detections per call, in order; classes and aliases like a trained model's."""
+
+    def __init__(self, per_call, classes=("pin", "keys"), model_dir=None):
+        self.per_call, self.calls = list(per_call), 0
+        self.inner = _NS(classes=list(classes))
+        self.model_dir, self.name = model_dir, "fake"
+
+    def detect(self, image):
+        self.calls += 1
+        return self.per_call.pop(0) if self.per_call else []
+
+
+def det(label, conf):
+    return _NS(label=label, conf=conf, bbox=(0, 0, 10, 10))
+
+
+def vision_with(detector, tmp_path=None, aliases=None, retries=3):
+    v = dev.Vision.__new__(dev.Vision)
+    v.cfg = Config(api_url="", auth0_domain="", auth0_audience="", client_id="", client_secret="",
+                   capture_retries=retries, retry_gap_s=1.0)
+    v.camera, v.detector, v.paused, v.stats = FakeCamera(), detector, lambda: False, None
+    if aliases is not None:
+        (tmp_path / "classes.json").write_text(json.dumps({"items": [{"name": n, "aliases": a} for n, a in aliases.items()]}))
+        detector.model_dir = tmp_path
+    v._read_json = lambda p: json.loads(_Path(p).read_text())
+    return v
+
+
+def test_targets_are_the_taught_items_the_words_name(tmp_path):
+    v = vision_with(FakeDetector([]), tmp_path, aliases={"pin": ["swamphacks pin"], "keys": ["car keys", "key ring"]})
+    assert v.targets("I'm putting my pin on the desk") == ["pin"]
+    assert v.targets("Last Scene, the SwampHacks pins are in my bag") == ["pin"]
+    assert v.targets("left the key ring and my car keys by the door") == ["keys"]
+    assert v.targets("my keys and my pin are on the table") == ["pin", "keys"]
+    assert v.targets("my wallet is in the car") == [] and v.targets("spinning") == [] and v.targets(None) == []
+
+
+def test_photo_retries_until_the_named_item_is_seen():
+    sleeps, cues = [], []
+    v = vision_with(FakeDetector([[], [det("keys", 0.9)], [det("pin", 0.2)], [det("pin", 0.71)]]))
+    frame, hit, attempts = v.photo_for("my pin is on the desk", on_retry=cues.append, sleep=sleeps.append)
+    assert (frame, hit.label, hit.conf, attempts) == ("frame4", "pin", 0.71, 4)  # other items and weak boxes don't count
+    assert cues == [1, 2, 3] and sleeps == [1.0, 1.0, 1.0]
+
+
+def test_photo_gives_up_after_three_retries_and_sends_the_last():
+    v = vision_with(FakeDetector([[]] * 10))
+    frame, hit, attempts = v.photo_for("my pin is here", sleep=lambda s: None)
+    assert (frame, hit, attempts, v.detector.calls) == ("frame4", None, 4, 4)
+
+
+def test_one_photo_without_retries_when_no_taught_item_is_named():
+    v = vision_with(FakeDetector([[det("pin", 0.9)]]))
+    frame, hit, attempts = v.photo_for("my wallet is in the car", sleep=lambda s: None)
+    assert (frame, hit, attempts, v.detector.calls) == ("frame1", None, 1, 0)  # no detector run at all
+    assert vision_with(FakeDetector([]), retries=0).photo_for("my pin", sleep=lambda s: None)[2] == 1
+
+
+class RecordingApi:
+    def __init__(self):
+        self.sent = []
+
+    def voice(self, wav, jpeg, where, words):
+        self.sent.append((jpeg, words))
+        return "remember", {"transcript": words}
+
+
+def wake_device(words, vision):
+    d = device_with(FakeSTT(words))
+    d.api, d.camera, d.vision, d.busy = RecordingApi(), FakeCamera(), vision, _thr.Lock()
+    d.led = _NS(on=lambda: None, off=lambda: None, blink=lambda **k: None)
+    d.voice = _NS(listen=lambda endpointer, timeout: b"\0\0" * 1600)
+    d.wake = _NS(reset=lambda: None)
+    d.spool = None
+    return d
+
+
+def test_wake_statement_gets_a_checked_photo_and_a_question_none(monkeypatch):
+    monkeypatch.setattr(dev, "play_wav", lambda *a: None)
+    monkeypatch.setattr(dev, "whereabouts", lambda cfg: {})
+    monkeypatch.setattr(dev, "jpeg_bytes", lambda frame: f"jpeg:{frame}".encode())
+    d = wake_device("I'm putting my pin on the desk", vision_with(FakeDetector([[], [det("pin", 0.8)]])))
+    monkeypatch.setattr(dev.time, "sleep", lambda s: None)
+    d._wake()
+    assert d.api.sent == [(b"jpeg:frame2", "I'm putting my pin on the desk")]  # the photo after one retry
+    q = wake_device("Where is my pin?", vision_with(FakeDetector([])))
+    q._wake()
+    assert q.api.sent == [(None, "Where is my pin?")] and q.vision.camera.shots == 0
+
+
+def test_without_device_speech_to_text_the_photo_is_taken_first(monkeypatch):
+    monkeypatch.setattr(dev, "play_wav", lambda *a: None)
+    monkeypatch.setattr(dev, "whereabouts", lambda cfg: {})
+    d = wake_device("", None)
+    d.stt = None
+    d.cfg.stt_engine = "server"
+    d._wake()
+    assert d.api.sent == [(b"plain-jpeg", None)]  # as before: the server hears the words
+
+
+def test_config_reads_vision_settings(monkeypatch):
+    for k, v in {"CAMERA": "USB", "CAMERA_INDEX": "1", "VISION_DIR": "/opt/lastscene/vision", "CAPTURE_RETRIES": "2",
+                 "RETRY_GAP_SECONDS": "0.5", "VISION_EVERY": "0", "MOTION_THRESHOLD": "6"}.items():
+        monkeypatch.setenv(k, v)
+    for k in ("AUTH0_DOMAIN", "AUTH0_AUDIENCE", "DEVICE_CLIENT_ID", "DEVICE_CLIENT_SECRET"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = Config.local()  # the offline test modes need no Auth0 settings
+    assert (cfg.camera, cfg.camera_index, cfg.vision_dir, cfg.capture_retries, cfg.retry_gap_s, cfg.vision_every,
+            cfg.motion_threshold) == ("usb", 1, "/opt/lastscene/vision", 2, 0.5, 0.0, 6.0)
+    with pytest.raises(KeyError):
+        Config.from_env()  # the service itself still insists on them
