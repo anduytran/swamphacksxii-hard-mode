@@ -17,7 +17,7 @@ Guardrails, all checked before a server is created (any one failing means nothin
   * no other trainer server exists (run cleanup first)
   * backups, IPv6, DDoS protection and activation emails off; no snapshots, block storage or reserved IPs
 Then: the server powers itself off when training ends (or fails), and this tool destroys it as soon as
-it stops, after --max-minutes (default 45), on Ctrl-C, or on any error. Stopped Vultr servers still
+it stops, after --max-minutes (default: sized from the photo count, at least 60), on Ctrl-C, or on any error. Stopped Vultr servers still
 bill; only destroying ends billing.
 """
 
@@ -35,12 +35,15 @@ import requests
 
 from lastscene_pipeline import EXIT_CONFIG, EXIT_NETWORK, EXIT_NOTHING, EXIT_OK
 from lastscene_pipeline.common import Api, PipelineError, load_env_file, run_main
+from lastscene_pipeline.train import BACKGROUNDS
 
 VULTR = "https://api.vultr.com/v2"
 TAG = "lastscene-trainer"
 # Vultr regions by distance from Gainesville, FL: atl Atlanta, mia Miami, dfw Dallas, ord Chicago, ewr New Jersey.
 NEAR_FLORIDA = ("atl", "mia", "dfw", "ord", "ewr", "lax", "sjc", "sea")
 REPO = "https://github.com/anduytran/swamphacksxii-hard-mode.git"
+SETUP_MINUTES = 15  # boot, apt, pip (torch + ultralytics), sync, INT8 export, publish: an estimate
+SECONDS_PER_IMAGE_EPOCH = 0.3  # 0.1 measured on an M2 with 4 threads (10 photos + 40 backgrounds, 100 epochs: 8.5 min); shared vCPUs ~3x slower
 PIPELINE_VARS = ("API_URL", "AUTH0_DOMAIN", "AUTH0_AUDIENCE", "DEVICE_CLIENT_ID", "DEVICE_CLIENT_SECRET", "PAIRING_CODE")
 
 
@@ -155,6 +158,13 @@ def _up(instance: dict | None) -> bool:
     return bool(instance) and instance.get("power_status") == "running" and instance.get("server_status") == "ok"
 
 
+def time_limit(photos: int, epochs: int, backgrounds: int = BACKGROUNDS) -> int:
+    """Minutes before the server is destroyed: the estimated run plus half again, in whole billed hours (min 1).
+    Training time grows with photos x epochs: 10 photos fit in 1 hour, 50 items x 30 photos need about 20."""
+    estimate = SETUP_MINUTES + (photos + backgrounds) * epochs * SECONDS_PER_IMAGE_EPOCH / 60
+    return max(1, math.ceil(estimate * 1.5 / 60)) * 60
+
+
 def hourly_price(plan: dict) -> float:
     """Vultr bills by the hour up to the monthly price; 672 hours (28 days) is the conservative divisor."""
     return float(plan.get("hourly_cost") or plan["monthly_cost"] / 672)
@@ -193,7 +203,8 @@ class Runner:
     def wanted(self, force: bool) -> str | None:
         """The dataset version to train, or None when the published model already matches the photos."""
         vocab = self.api.get_json("/api/v1/training/vocabulary")
-        if not any(i.get("samples") for i in vocab["items"]):
+        self.photos = sum(i.get("samples") or 0 for i in vocab["items"])
+        if not self.photos:
             self.log("no Teach items photos yet: nothing to train")
             return None
         current = self.api.request("GET", "/api/v1/training/models/current", ok=(200, 404))
@@ -206,17 +217,19 @@ class Runner:
         r = self.api.request("GET", "/api/v1/training/models/current", ok=(200, 404))
         return r.status_code == 200 and r.json()["version"] == version
 
-    def run(self, env, gpu=False, region="atl", ref="master", epochs=50, max_minutes=45, force=False, poll=30) -> int:
+    def run(self, env, gpu=False, region="atl", ref="master", epochs=100, max_minutes=None, force=False, poll=30) -> int:
         self.guard.check_date()
         version = self.wanted(force)
         if version is None:
             return EXIT_NOTHING
         if self.vultr.trainers():
             raise PipelineError(EXIT_CONFIG, "refusing: a trainer server already exists; run `cleanup` first")
+        max_minutes = max_minutes or time_limit(self.photos, epochs)
         plan, region = self.vultr.cheapest_plan(gpu, region)
         credit = self.vultr.credit_left()
         worst = self.guard.check_cost(hourly_price(plan), max_minutes, credit)
-        self.log(f"plan {plan['id']} in {region} at ${hourly_price(plan):.3f}/h: worst case ${worst:.2f}, credit ${credit:.2f}")
+        self.log(f"plan {plan['id']} in {region} at ${hourly_price(plan):.3f}/h, {self.photos} photos, limit {max_minutes} min: "
+                 f"worst case ${worst:.2f}, credit ${credit:.2f}")
 
         script = trainer_script(env, gpu, ref, epochs, max_minutes)
         instance = None
@@ -289,8 +302,8 @@ def main():
     p.add_argument("--gpu", action="store_true", help="a GPU plan instead of a 4 vCPU / 8 GB CPU one")
     p.add_argument("--region", default="atl", help="Vultr region id (atl = Atlanta); with --gpu, the nearest region offering one")
     p.add_argument("--ref", default="master", help="git branch the server trains from")
-    p.add_argument("--epochs", type=int, default=50)
-    p.add_argument("--max-minutes", type=int, default=45)
+    p.add_argument("--epochs", type=int, default=100)
+    p.add_argument("--max-minutes", type=int, help="default: estimated from the photo count (time_limit), at least 60")
     p.add_argument("--force", action="store_true", help="train even if the model matches the photos")
     args = p.parse_args()
     if args.env_file:
