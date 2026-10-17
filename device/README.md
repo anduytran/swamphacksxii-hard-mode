@@ -63,15 +63,31 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
    sudo python3 -m venv --system-site-packages /opt/lastscene/venv
    sudo /opt/lastscene/venv/bin/pip install openwakeword
    sudo /opt/lastscene/venv/bin/python -c "from openwakeword.utils import download_models; download_models(['hey_jarvis'])"
-   sudo mkdir -p /opt/lastscene/models   # put last_scene.onnx here once it's trained (wake/README.md)
    ```
+   (That fetches openWakeWord's shared feature models; the "Last Scene" model itself ships in `wake/`.)
    The service runs from this venv. With `WAKE_WORD` empty, or its model missing, only the buttons work.
+
+   **Speech-to-text on the Pi** (optional, recommended): with `STT_ENGINE=moonshine` the Pi transcribes what you said and sends only the words, so the recording never leaves the wearable. Moonshine tiny (quantized ONNX, 28 MB) is the default. `--no-deps` skips librosa/numba, which it only needs for reading audio files:
+   ```bash
+   sudo /opt/lastscene/venv/bin/pip install onnxruntime tokenizers
+   sudo /opt/lastscene/venv/bin/pip install --no-deps useful-moonshine-onnx
+   sudo mkdir -p /opt/lastscene/stt/moonshine-tiny && cd /opt/lastscene/stt/moonshine-tiny
+   for f in encoder_model decoder_model_merged; do
+     sudo curl -fL -o $f.onnx https://huggingface.co/UsefulSensors/moonshine/resolve/main/onnx/merged/tiny/quantized/$f.onnx
+   done
+   ```
+   Or Vosk instead (`STT_ENGINE=vosk`; ~68 MB, faster to load, but lower case with no punctuation and less accurate):
+   ```bash
+   sudo /opt/lastscene/venv/bin/pip install vosk
+   cd /opt/lastscene/stt && sudo curl -fLO https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip && sudo unzip vosk-model-small-en-us-0.15.zip
+   ```
+   Time it on the Pi before relying on it: `arecord -f S16_LE -r 16000 -c 1 -d 4 said.wav`, then `STT_ENGINE=moonshine /opt/lastscene/venv/bin/python lastscene_device.py --transcribe said.wav` (no network or Auth0 needed). On a Mac, one thread, Moonshine took 40–90 ms per 2 s clip with ~285 MB peak memory; the Zero 2 W has 512 MB in all, so check `free -m` with the service running. If the model is missing or hears nothing, the clip goes to the server's speech-to-text instead; `STT_FALLBACK=false` turns that off.
 4. Copy this folder to the Pi and set up config:
    ```bash
    sudo useradd --system --groups gpio,video,audio lastscene
    sudo mkdir -p /opt/lastscene /etc/lastscene /var/lib/lastscene/spool
    sudo chown lastscene /var/lib/lastscene/spool
-   sudo cp lastscene_device.py /opt/lastscene/
+   sudo cp -r lastscene_device.py wake /opt/lastscene/
    sudo install -m 640 -g lastscene device.env.example /etc/lastscene/device.env
    ```
    Fill in `/etc/lastscene/device.env` with the **Wearable** M2M app's Client ID/Secret and your API's HTTPS URL.
@@ -94,7 +110,7 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
 
 ## Using it
 
-- **Say "Last Scene"**, wait for the beep, then speak: "I'm putting my keys on the counter" is saved with a photo (high beep), "Where are my keys?" is answered out loud. It records until you stop talking (up to `WAKE_MAX_SECONDS`). Audio stays on the Pi until the phrase is heard; only the words after the beep are sent. If it triggers by mistake, raise `WAKE_THRESHOLD`; if it misses you, lower it. `WAKE_WORD` points at the "Last Scene" model (training: [wake/README.md](wake/README.md)); `WAKE_WORD=hey_jarvis` works right away for testing, with "Hey Jarvis" as the phrase.
+- **Say "Last Scene"**, wait for the beep, then speak: "I'm putting my keys on the counter" is saved with a photo (high beep), "Where are my keys?" is answered out loud. It records until you stop talking (up to `WAKE_MAX_SECONDS`). Audio stays on the Pi until the phrase is heard; only what's said after the beep is sent (as text, with `STT_ENGINE` set). If it triggers by mistake, raise `WAKE_THRESHOLD`; if it misses you, lower it. `WAKE_WORD` points at the "Last Scene" model (training: [wake/README.md](wake/README.md)); `WAKE_WORD=hey_jarvis` works right away for testing, with "Hey Jarvis" as the phrase.
 - **Hold REMEMBER**, say where you're putting something ("I'm putting my keys on the counter"), release. It takes a photo when you press, records while held, and uploads when you let go. The LED is solid while recording and blinks while sending.
 - **Hold ASK**, ask ("Where are my keys?"), release. The answer plays through the speaker.
 - With no Wi-Fi, memories are kept in `/var/lib/lastscene/spool` and uploaded automatically once it's back. Questions need a connection.
@@ -103,4 +119,5 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
 
 - The API must be reachable from the Pi over **HTTPS** with a real hostname. `localhost` on your laptop is not reachable; for testing on the same network use `http://<laptop-ip>:8000` and start uvicorn with `--host 0.0.0.0`.
 - Unlike the ESP32 in the original plan, the Pi can't deep-sleep; budget for a battery that lasts the day, or accept a ~25 s boot if you power it on demand.
-- Wake word instead of buttons: [openWakeWord](https://github.com/dscripka/openWakeWord) runs on a Zero 2 W. Swap `Button.when_pressed` for its detection callback and stop recording on silence. Buttons are more reliable for the target user, so they're the default.
+- The wake phrase and the buttons work side by side; buttons stay the more reliable way in for the target user.
+- With `STT_ENGINE` set, a low beep after speaking means nothing was heard (and, with `STT_FALLBACK=false`, nothing was sent).

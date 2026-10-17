@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 
 MAX_IMAGE_BYTES = 2 * 1024 * 1024  # photos live in Postgres; ESP32 JPEGs are ~50-200 KB
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
+MAX_TRANSCRIPT_CHARS = 2000  # a 15 s clip is ~40 words
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 
@@ -39,6 +40,22 @@ async def _read(upload: UploadFile, limit: int, label: str) -> bytes:
     if len(data) > limit:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, f"{label} exceeds {limit} bytes")
     return data
+
+
+TRANSCRIPT_FORM = Form(None, description="what was said, transcribed on the device (Moonshine/Vosk); "
+                       "sent instead of audio, so the recording never leaves the wearable")
+
+
+async def _heard(ai: AIServices, audio: UploadFile | None, transcript: str | None) -> str:
+    """The words: the device's own transcript when it sent one, else speech-to-text on the audio."""
+    if transcript is not None and transcript.strip():
+        if len(transcript) > MAX_TRANSCRIPT_CHARS:
+            raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, f"transcript exceeds {MAX_TRANSCRIPT_CHARS} characters")
+        return transcript.strip()
+    if audio is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Send audio or a transcript")
+    audio_bytes = await _read(audio, MAX_AUDIO_BYTES, "audio")
+    return await ai.transcribe(audio.filename, audio_bytes, audio.content_type)
 
 
 # Image-to-text indexing, positioning and question logging run after the response by
@@ -149,8 +166,9 @@ async def _spoken_answer(
 @router.post("/log")
 async def log_memory(
     background: BackgroundTasks,
-    audio: UploadFile = File(...),
+    audio: UploadFile | None = File(None),
     image: UploadFile = File(...),
+    transcript: str | None = TRANSCRIPT_FORM,
     where: Whereabouts = Depends(whereabouts),
     pairing_code: str | None = Header(None, alias="X-Pairing-Code"),
     device: Principal = Depends(require_device),
@@ -159,11 +177,9 @@ async def log_memory(
     geo: Geolocator = Depends(get_geo),
     settings: Settings = Depends(get_settings),
 ):
-    audio_bytes = await _read(audio, MAX_AUDIO_BYTES, "audio")
     image_bytes = await _read(image, MAX_IMAGE_BYTES, "image")
+    transcript = await _heard(ai, audio, transcript)
     await _note_pairing(db, device.sub, pairing_code)
-
-    transcript = await ai.transcribe(audio.filename, audio_bytes, audio.content_type)
     if not transcript:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "No speech detected")
     return await _save_memory(background, db, ai, geo, settings, device.sub, transcript, image_bytes, image.content_type, where)
@@ -172,7 +188,8 @@ async def log_memory(
 @router.post("/query")
 async def query_memory(
     background: BackgroundTasks,
-    audio: UploadFile = File(...),
+    audio: UploadFile | None = File(None),
+    transcript: str | None = TRANSCRIPT_FORM,
     where: Whereabouts = Depends(whereabouts),
     pairing_code: str | None = Header(None, alias="X-Pairing-Code"),
     device: Principal = Depends(require_device),
@@ -181,17 +198,17 @@ async def query_memory(
     geo: Geolocator = Depends(get_geo),
     settings: Settings = Depends(get_settings),
 ):
-    audio_bytes = await _read(audio, MAX_AUDIO_BYTES, "audio")
+    question = await _heard(ai, audio, transcript)
     await _note_pairing(db, device.sub, pairing_code)
-    question = await ai.transcribe(audio.filename, audio_bytes, audio.content_type)
     return await _spoken_answer(background, db, ai, geo, settings, device.sub, question, where)
 
 
 @router.post("/voice")
 async def voice(
     background: BackgroundTasks,
-    audio: UploadFile = File(...),
+    audio: UploadFile | None = File(None),
     image: UploadFile | None = File(None, description="the photo taken when the wake phrase was heard"),
+    transcript: str | None = TRANSCRIPT_FORM,
     where: Whereabouts = Depends(whereabouts),
     pairing_code: str | None = Header(None, alias="X-Pairing-Code"),
     device: Principal = Depends(require_device),
@@ -202,10 +219,9 @@ async def voice(
 ):
     """Wake phrase, no button: the words decide. A statement is saved like /log (JSON back, with
     "intent": "remember"); a question is answered like /query (spoken audio back, X-Intent: ask)."""
-    audio_bytes = await _read(audio, MAX_AUDIO_BYTES, "audio")
     image_bytes = await _read(image, MAX_IMAGE_BYTES, "image") if image is not None else None
+    heard = await _heard(ai, audio, transcript)
     await _note_pairing(db, device.sub, pairing_code)
-    heard = await ai.transcribe(audio.filename, audio_bytes, audio.content_type)
     if not heard:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "No speech detected")
     words = strip_wake_phrase(heard)

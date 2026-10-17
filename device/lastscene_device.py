@@ -11,6 +11,10 @@ Two push-to-talk buttons:
   * ASK (hold, speak, release): "Where are my keys?"
       -> records while held, POSTs /api/v1/memory/query, plays the spoken answer
 
+Speech-to-text on the device (STT_ENGINE=moonshine, or vosk): the wearable sends the words,
+not the recording, so the audio never leaves it. If the local model is missing or hears nothing,
+the clip goes to the server's speech-to-text instead (STT_FALLBACK=false turns that off).
+
 Authenticates with Auth0 Machine-to-Machine (client credentials) and caches the
 token until shortly before it expires. Memories that fail to upload (no Wi-Fi)
 are kept in a spool folder and retried in the background.
@@ -23,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import array
+import io
 import json
 import logging
 import math
@@ -35,6 +40,7 @@ import tempfile
 import threading
 import time
 import uuid
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote
@@ -68,6 +74,9 @@ class Config:
     wake_word: str = ""  # path to the "Last Scene" .onnx (or a stock name like hey_jarvis); empty = buttons only
     wake_threshold: float = 0.6  # tune per model: with hey_jarvis, "hey Travis" scores ~0.45, the phrase ~1.0
     wake_max_seconds: int = 10
+    stt_engine: str = "server"  # moonshine | vosk | server (send the audio; the server transcribes)
+    stt_model: str = ""  # model folder; empty = the default under /opt/lastscene/stt
+    stt_fallback: bool = True  # local model missing or heard nothing: send the audio instead
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -93,6 +102,9 @@ class Config:
             wake_word=env.get("WAKE_WORD", ""),
             wake_threshold=float(env.get("WAKE_THRESHOLD", 0.6)),
             wake_max_seconds=int(env.get("WAKE_MAX_SECONDS", 10)),
+            stt_engine=env.get("STT_ENGINE", "server").lower(),
+            stt_model=env.get("STT_MODEL", ""),
+            stt_fallback=env.get("STT_FALLBACK", "true").lower() not in ("0", "false", "no"),
         )
 
 
@@ -202,26 +214,92 @@ class ApiClient:
             return resp
         raise RuntimeError("unreachable")
 
-    def log_memory(self, wav: bytes, jpeg: bytes, where: dict | None = None) -> dict:
-        return self._post(
-            "/api/v1/memory/log",
-            {"audio": ("memory.wav", wav, "audio/wav"), "image": ("scene.jpg", jpeg, "image/jpeg")},
-            where,
-        ).json()
+    @staticmethod
+    def _speech(name: str, wav: bytes | None, transcript: str | None, where: dict | None) -> tuple[dict, dict]:
+        """The words if the device transcribed them (no audio sent), else the recording."""
+        data = dict(where or {})
+        if transcript:
+            data["transcript"] = transcript
+            return {}, data
+        return {"audio": (name, wav, "audio/wav")}, data
 
-    def voice(self, wav: bytes, jpeg: bytes | None, where: dict | None = None) -> tuple[str, bytes | dict]:
+    def log_memory(self, wav: bytes | None, jpeg: bytes, where: dict | None = None, transcript: str | None = None) -> dict:
+        files, data = self._speech("memory.wav", wav, transcript, where)
+        files["image"] = ("scene.jpg", jpeg, "image/jpeg")
+        return self._post("/api/v1/memory/log", files, data).json()
+
+    def voice(self, wav: bytes | None, jpeg: bytes | None, where: dict | None = None,
+              transcript: str | None = None) -> tuple[str, bytes | dict]:
         """Wake-phrase clip: ("ask", spoken answer audio) or ("remember", the saved memory)."""
-        files = {"audio": ("voice.wav", wav, "audio/wav")}
+        files, data = self._speech("voice.wav", wav, transcript, where)
         if jpeg is not None:
             files["image"] = ("scene.jpg", jpeg, "image/jpeg")
-        resp = self._post("/api/v1/memory/voice", files, where)
+        resp = self._post("/api/v1/memory/voice", files, data)
         if resp.headers.get("x-intent") == "ask" or resp.headers.get("content-type", "").startswith("audio/"):
             return "ask", resp.content
         return "remember", resp.json()
 
-    def ask(self, wav: bytes, where: dict | None = None) -> tuple[bytes, str]:
-        resp = self._post("/api/v1/memory/query", {"audio": ("question.wav", wav, "audio/wav")}, where)
+    def ask(self, wav: bytes | None, where: dict | None = None, transcript: str | None = None) -> tuple[bytes, str]:
+        files, data = self._speech("question.wav", wav, transcript, where)
+        resp = self._post("/api/v1/memory/query", files, data)
         return resp.content, unquote(resp.headers.get("x-answer", ""))
+
+
+# ---------------------------------------------------------------- on-device speech-to-text
+
+STT_DIR = Path("/opt/lastscene/stt")
+STT_DEFAULT_MODELS = {"moonshine": STT_DIR / "moonshine-tiny", "vosk": STT_DIR / "vosk-model-small-en-us-0.15"}
+
+
+def wav_pcm(wav: bytes) -> bytes:
+    """16-bit mono PCM out of a WAV (what arecord and wav_bytes produce: 16 kHz mono)."""
+    with wave.open(io.BytesIO(wav)) as w:
+        if w.getsampwidth() != 2 or w.getnchannels() != 1 or w.getframerate() != RATE:
+            raise ValueError(f"need 16-bit mono {RATE} Hz audio")
+        return w.readframes(w.getnframes())
+
+
+class LocalSTT:
+    """Moonshine (default: tiny, quantized ONNX, ~28 MB) or Vosk (small-en, ~68 MB) on the Pi.
+
+    Measured on a Mac, one thread: Moonshine tiny 40-90 ms per 1.5-2.6 s clip with punctuation kept
+    ("Where did I leave my glasses?"), Vosk ~0.5 s and lower case. On the Pi: run --transcribe.
+    """
+
+    def __init__(self, engine: str, model_dir: str | Path = ""):
+        self.engine = engine
+        self.model_dir = Path(model_dir) if model_dir else STT_DEFAULT_MODELS[engine]
+        if not self.model_dir.is_dir():
+            raise FileNotFoundError(f"{engine} model folder {self.model_dir} not found (README step 3)")
+        if engine == "moonshine":
+            from moonshine_onnx import MoonshineOnnxModel, load_tokenizer  # pip install --no-deps useful-moonshine-onnx
+
+            size = "base" if "base" in self.model_dir.name else "tiny"
+            self._model = MoonshineOnnxModel(models_dir=str(self.model_dir), model_name=size)
+            self._tokenizer = load_tokenizer()
+        elif engine == "vosk":
+            from vosk import Model, SetLogLevel
+
+            SetLogLevel(-1)
+            self._model = Model(str(self.model_dir))
+        else:
+            raise ValueError(f"unknown STT_ENGINE {engine!r} (moonshine, vosk or server)")
+
+    def transcribe(self, wav: bytes) -> str:
+        pcm = wav_pcm(wav)
+        seconds = len(pcm) / 2 / RATE
+        if seconds < 0.15:
+            return ""
+        if self.engine == "moonshine":
+            import numpy as np
+
+            audio = (np.frombuffer(pcm[: 60 * RATE * 2], np.int16).astype(np.float32) / 32768.0)[None, :]
+            return self._tokenizer.decode_batch(self._model.generate(audio))[0].strip()
+        from vosk import KaldiRecognizer
+
+        rec = KaldiRecognizer(self._model, RATE)
+        rec.AcceptWaveform(pcm)
+        return json.loads(rec.FinalResult()).get("text", "").strip()
 
 
 # ---------------------------------------------------------------- offline spool
@@ -233,12 +311,17 @@ class Spool:
         self.folder = folder
         self.folder.mkdir(parents=True, exist_ok=True)
 
-    def add(self, wav: bytes, jpeg: bytes, where: dict | None = None, kind: str = "log") -> Path:
-        """kind "log": a REMEMBER press; "voice": a wake-phrase clip (the server decides what it was)."""
+    def add(self, wav: bytes | None, jpeg: bytes, where: dict | None = None, kind: str = "log",
+            transcript: str | None = None) -> Path:
+        """kind "log": a REMEMBER press; "voice": a wake-phrase clip (the server decides what it was).
+        With a device transcript only the words are kept, not the recording."""
         item = self.folder / f"{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
         tmp = item.with_suffix(".tmp")
         tmp.mkdir()
-        (tmp / "audio.wav").write_bytes(wav)
+        if transcript:
+            (tmp / "transcript.txt").write_text(transcript)
+        else:
+            (tmp / "audio.wav").write_bytes(wav)
         (tmp / "scene.jpg").write_bytes(jpeg)
         (tmp / "kind").write_text(kind)
         (tmp / "where.json").write_text(json.dumps(where or {}))  # where it happened, not where it's sent from
@@ -255,11 +338,15 @@ class Spool:
                 where_file = item / "where.json"
                 where = json.loads(where_file.read_text()) if where_file.exists() else None
                 kind = (item / "kind").read_text() if (item / "kind").exists() else "log"
-                wav, jpeg = (item / "audio.wav").read_bytes(), (item / "scene.jpg").read_bytes()
+                said = item / "transcript.txt"
+                transcript = said.read_text() if said.exists() else None
+                wav = None if transcript else (item / "audio.wav").read_bytes()
+                jpeg = (item / "scene.jpg").read_bytes()
                 if kind == "voice":
-                    api.voice(wav, jpeg, where)  # a question asked offline gets no late answer; a statement is saved
+                    # a question asked offline gets no late answer; a statement is saved
+                    api.voice(wav, jpeg, where, transcript)
                 else:
-                    api.log_memory(wav, jpeg, where)
+                    api.log_memory(wav, jpeg, where, transcript)
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == 422:  # e.g. no speech: retrying won't help
                     log.warning("Dropping spooled memory %s: %s", item.name, exc.response.text)
@@ -509,6 +596,10 @@ class Camera:
 
 # ---------------------------------------------------------------- device loop
 
+class NothingHeard(Exception):
+    """Local speech-to-text heard nothing and STT_FALLBACK=false: send nothing."""
+
+
 class Device:
     def __init__(self, cfg: Config):
         from gpiozero import LED, Button  # preinstalled on Raspberry Pi OS
@@ -521,6 +612,14 @@ class Device:
         self.remember = Button(cfg.remember_pin, pull_up=True, bounce_time=0.05)
         self.ask = Button(cfg.ask_pin, pull_up=True, bounce_time=0.05)
         self.busy = threading.Lock()  # one interaction at a time
+        self.stt: LocalSTT | None = None
+        if cfg.stt_engine != "server":
+            try:
+                self.stt = LocalSTT(cfg.stt_engine, cfg.stt_model)
+                log.info("Speech-to-text on the device: %s (%s)", cfg.stt_engine, self.stt.model_dir)
+            except Exception:  # package or model missing: the server transcribes instead
+                log.exception("On-device speech-to-text %r unavailable; %s", cfg.stt_engine,
+                              "sending audio to the server" if cfg.stt_fallback else "nothing can be sent")
 
         self.remember.when_pressed = lambda: self._begin("remember")
         self.remember.when_released = lambda: self._end("remember")
@@ -539,6 +638,22 @@ class Device:
             else:
                 self.stream_rec = StreamRecorder(cfg.max_record_seconds)
                 self.mic = MicStream(cfg.audio_in, self._on_frame)
+
+    def _words(self, wav: bytes) -> str | None:
+        """The transcript to send instead of the audio, or None to send the audio. Raises
+        NothingHeard when only local transcription is allowed and it heard nothing."""
+        if self.stt is not None:
+            try:
+                t0 = time.monotonic()
+                text = self.stt.transcribe(wav)
+                log.info("Heard (%s, %.2f s): %r", self.cfg.stt_engine, time.monotonic() - t0, text)
+                if text:
+                    return text
+            except Exception:
+                log.exception("On-device speech-to-text failed")
+        if self.cfg.stt_engine != "server" and not self.cfg.stt_fallback:
+            raise NothingHeard()
+        return None
 
     def _on_frame(self, frame: bytes) -> None:
         """Every 80 ms of microphone audio, when the wake phrase is on."""
@@ -563,15 +678,20 @@ class Device:
                 return
             self.led.blink(on_time=0.1, off_time=0.1)
             wav = wav_bytes(pcm)
+            try:
+                words = self._words(wav)
+            except NothingHeard:
+                play_wav(self.cfg.audio_out, tone(440))
+                return
             where = whereabouts(self.cfg)
             try:
-                intent, result = self.api.voice(wav, photo, where)
+                intent, result = self.api.voice(wav, photo, where, words)
             except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
                     log.warning("Server rejected voice clip: %s", exc.response.text)
                     play_wav(self.cfg.audio_out, tone(440))
                 else:
-                    self.spool.add(wav, photo, where, kind="voice")
+                    self.spool.add(wav, photo, where, kind="voice", transcript=words)
                     log.warning("Offline; voice clip spooled for later")
                 return
             if intent == "ask":
@@ -612,19 +732,24 @@ class Device:
 
     def _send(self, mode: str, wav: bytes, photo: bytes | None) -> None:
         try:
+            try:
+                words = self._words(wav)
+            except NothingHeard:
+                play_wav(self.cfg.audio_out, tone(440))
+                return
             where = whereabouts(self.cfg)  # a Wi-Fi scan takes a second or two
             if mode == "remember":
                 try:
-                    result = self.api.log_memory(wav, photo, where)
+                    result = self.api.log_memory(wav, photo, where, words)
                     log.info("Logged: %s", result.get("transcript"))
                 except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
                         log.warning("Server rejected memory: %s", exc.response.text)
                     else:
-                        self.spool.add(wav, photo, where)
+                        self.spool.add(wav, photo, where, transcript=words)
                         log.warning("Offline; memory spooled for later")
             else:
-                audio, answer = self.api.ask(wav, where)
+                audio, answer = self.api.ask(wav, where, words)
                 log.info("Answer: %s", answer)
                 self.led.on()
                 play_wav(self.cfg.audio_out, audio)
@@ -656,8 +781,22 @@ def main() -> None:
     parser.add_argument("--ask-file", metavar="WAV", help="ask a question from a file and save answer.wav, no hardware")
     parser.add_argument("--check", action="store_true", help="check the Auth0 token and API reachability")
     parser.add_argument("--where", action="store_true", help="print the location fields this device would send")
+    parser.add_argument("--transcribe", metavar="WAV", nargs="+",
+                        help="transcribe 16 kHz mono WAVs with STT_ENGINE on this device and time it; no network")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    if args.transcribe:  # needs no Auth0 settings
+        engine = os.environ.get("STT_ENGINE", "moonshine").lower()
+        t0 = time.monotonic()
+        stt = LocalSTT("moonshine" if engine == "server" else engine, os.environ.get("STT_MODEL", ""))
+        print(f"{stt.engine} loaded from {stt.model_dir} in {time.monotonic() - t0:.1f} s")
+        for path in args.transcribe:
+            wav = Path(path).read_bytes()
+            t0 = time.monotonic()
+            text = stt.transcribe(wav)
+            print(f"{path}: {time.monotonic() - t0:.2f} s for {len(wav_pcm(wav)) / 2 / RATE:.1f} s of audio: {text!r}")
+        return
 
     cfg = Config.from_env()
     api = ApiClient(cfg)

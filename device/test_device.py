@@ -321,3 +321,77 @@ def test_spooled_voice_clip_goes_to_the_voice_route(tmp_path):
     spool.add(b"wav", b"jpg", None)  # a REMEMBER press
     assert spool.flush(api) == 2
     assert sorted(server.uploads) == ["/api/v1/memory/log", "/api/v1/memory/voice"]
+
+
+# ---------------------------------------------------------------- on-device speech-to-text
+
+def test_a_device_transcript_is_sent_instead_of_audio():
+    seen = []
+
+    def handler(req):
+        if req.url.path == "/oauth/token":
+            return httpx.Response(200, json={"access_token": "t", "expires_in": 3600})
+        seen.append(req.content)
+        return httpx.Response(200, json={"transcript": "keys on the hook"})
+
+    api = make_client(handler)
+    api.log_memory(None, b"jpeg", {"lat": 1.0}, transcript="keys on the hook")
+    api.log_memory(b"RIFFwav", b"jpeg", None)
+    with_words, with_audio = seen
+    assert b'name="transcript"' in with_words and b"keys on the hook" in with_words and b"audio" not in with_words
+    assert b'name="audio"' in with_audio and b"transcript" not in with_audio
+
+
+def test_spool_keeps_only_the_words_when_the_device_transcribed(tmp_path):
+    item = Spool(tmp_path).add(None, b"jpeg", None, kind="voice", transcript="wallet in the car")
+    assert (item / "transcript.txt").read_text() == "wallet in the car" and not (item / "audio.wav").exists()
+    sent = []
+
+    class Api:
+        def voice(self, wav, jpeg, where, transcript=None):
+            sent.append((wav, transcript))
+
+    assert Spool(tmp_path).flush(Api()) == 1 and sent == [(None, "wallet in the car")]
+
+
+class FakeSTT:
+    def __init__(self, text="", fail=False):
+        self.text, self.fail = text, fail
+
+    def transcribe(self, wav):
+        if self.fail:
+            raise RuntimeError("model crashed")
+        return self.text
+
+
+def device_with(stt, engine="moonshine", fallback=True):
+    d = dev.Device.__new__(dev.Device)  # no GPIO/camera: only the speech-to-text choice
+    d.cfg = Config(api_url="", auth0_domain="", auth0_audience="", client_id="", client_secret="",
+                   stt_engine=engine, stt_fallback=fallback)
+    d.stt = stt
+    return d
+
+
+def test_words_local_then_fallback_to_audio():
+    assert device_with(FakeSTT("where are my keys?"))._words(b"wav") == "where are my keys?"
+    assert device_with(FakeSTT(""))._words(b"wav") is None  # heard nothing: let the server try
+    assert device_with(FakeSTT(fail=True))._words(b"wav") is None
+    assert device_with(None)._words(b"wav") is None  # model missing at start-up
+    assert device_with(None, engine="server")._words(b"wav") is None
+    with pytest.raises(dev.NothingHeard):
+        device_with(FakeSTT(""), fallback=False)._words(b"wav")  # audio never leaves the device
+
+
+def test_config_reads_stt_settings(monkeypatch):
+    for k, v in {"AUTH0_DOMAIN": "d", "AUTH0_AUDIENCE": "a", "DEVICE_CLIENT_ID": "i", "DEVICE_CLIENT_SECRET": "s",
+                 "STT_ENGINE": "Vosk", "STT_FALLBACK": "false"}.items():
+        monkeypatch.setenv(k, v)
+    cfg = Config.from_env()
+    assert cfg.stt_engine == "vosk" and cfg.stt_fallback is False and cfg.stt_model == ""
+
+
+def test_local_stt_needs_its_model_folder(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        dev.LocalSTT("moonshine", tmp_path / "missing")
+    with pytest.raises(ValueError):
+        dev.wav_pcm(wav_bytes(b"\0\0" * 100, rate=8000))

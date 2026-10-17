@@ -69,3 +69,34 @@ def test_strip_wake_phrase():
     assert strip_wake_phrase("Lastscene where's my wallet") == "where's my wallet"
     assert strip_wake_phrase("Last seen, where are my glasses?") == "where are my glasses?"
     assert strip_wake_phrase("That was the last scene of the movie") == "That was the last scene of the movie"
+
+
+# On-device speech-to-text (Moonshine/Vosk on the Pi): the wearable sends the words, not the recording.
+
+def test_a_device_transcript_is_used_without_audio(client):  # noqa: F811
+    resp = client.post("/api/v1/memory/voice", headers=DEVICE, data={"transcript": "Last Scene, my wallet is in the car"},
+                       files={"image": ("s.jpg", JPEG, "image/jpeg")})
+    assert resp.status_code == 200
+    assert resp.json()["intent"] == "remember" and resp.json()["transcript"] == "my wallet is in the car"
+
+
+def test_a_device_transcript_works_for_the_buttons_too(client):  # noqa: F811
+    resp = client.post("/api/v1/memory/log", headers=DEVICE, data={"transcript": "Keys on the hook"},
+                       files={"image": ("s.jpg", JPEG, "image/jpeg")})
+    assert resp.status_code == 200 and resp.json()["transcript"] == "Keys on the hook"
+    resp = client.post("/api/v1/memory/query", headers=DEVICE, data={"transcript": "Where are my keys?"})
+    assert resp.status_code == 200 and resp.headers["content-type"].startswith("audio/")
+
+
+def test_a_device_transcript_wins_over_audio(client):  # noqa: F811
+    resp = client.post("/api/v1/memory/log", headers=DEVICE, data={"transcript": "Glasses by the sink"},
+                       files={"audio": ("v.wav", b"something else", "audio/wav"), "image": ("s.jpg", JPEG, "image/jpeg")})
+    assert resp.json()["transcript"] == "Glasses by the sink"
+
+
+def test_neither_audio_nor_transcript_is_rejected(client):  # noqa: F811
+    resp = client.post("/api/v1/memory/query", headers=DEVICE, data={"transcript": "  "})
+    assert resp.status_code == 422
+    resp = client.post("/api/v1/memory/log", headers=DEVICE, data={"transcript": "x" * 2001},
+                       files={"image": ("s.jpg", JPEG, "image/jpeg")})
+    assert resp.status_code == 413
