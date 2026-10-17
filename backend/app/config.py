@@ -61,10 +61,10 @@ class Settings(BaseSettings):
     # ElevenLabs speech for the wearable (TTS_PROVIDER=elevenlabs). Billed in characters: capped per
     # month here, and never past what the plan has left (checked with ElevenLabs, keeping a reserve).
     elevenlabs_api_key: str = ""
-    elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # a premade voice; any voice id from your account
+    elevenlabs_voice_id: str = "EXAVITQu4vr4xnSDxMaL"  # Sarah: mature, reassuring (premade); any voice id works
     elevenlabs_model: str = "eleven_flash_v2_5"  # ~75 ms, 32 languages, half price per character
     elevenlabs_speed: float = 0.9  # 0.7-1.2; a little slower is easier to follow
-    elevenlabs_monthly_chars: int = 9000
+    elevenlabs_monthly_chars: int = 120000  # Creator plan: 131,000 a month, no overage
     elevenlabs_reserve_chars: int = 500
     elevenlabs_rpm: int = 20
     llm_model: str = "claude-opus-5-5"
