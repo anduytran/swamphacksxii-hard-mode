@@ -5,7 +5,7 @@ per stage: OpenAI for speech-to-text, embeddings and text-to-speech, Claude for 
 language tasks.
 """
 
-import asyncio
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cached_property
@@ -53,10 +53,16 @@ This photo was taken by a chest-worn camera at the moment its wearer, who has me
 loss, said: "{transcript}". Turn it into text a search engine can use to find the item later.
 - description: one plain sentence (under 25 words) saying where things are, naming \
 visible landmarks ("Keys on a wooden table by the front door, next to a blue bowl.").
-- items: the physical items being put down, as short lowercase singular names \
-("keys", "reading glasses"), each with its location as a short phrase.
+- items: each physical item the wearer is putting down, from their words or, if they \
+don't name it, from the photo.
+  - name: a short lowercase singular noun phrase a family member would recognise, with no \
+possessive ("keys", "reading glasses", "wallet", "blue umbrella"). Use the same name every \
+time for the same kind of item.
+  - location: where it was put, as a short phrase ("kitchen counter", "coat pocket"): the \
+place they said, else the place the photo shows. Empty if neither tells.
 - visible_text: any words readable in the photo (labels, notes, screens), or empty.
-If the photo is too dark or blurry to tell, say so in the description and return no items."""
+If the photo is too dark or blurry to tell, say so in the description and give only the \
+items and places the wearer said."""
 
 
 SUMMARY_SYSTEM_PROMPT = """\
@@ -115,6 +121,77 @@ def _note(m: RetrievedMemory) -> str:
     return f"- ({humanize_ago(m.created_at)}) " + "; ".join(parts)
 
 
+# Spoken replies that never change, so their audio is made once per server process.
+DIDNT_CATCH = "Sorry, I didn't catch that. Could you ask again?"
+REFUSED = "Sorry, I can't help with that one."
+NO_ANSWER = "Sorry, I couldn't come up with an answer just now."
+FIXED_PHRASES = frozenset({DIDNT_CATCH, REFUSED, NO_ANSWER})
+
+_PREPOSITIONS = ("on", "in", "inside", "under", "underneath", "by", "next", "beside", "behind", "near",
+                 "at", "between", "beneath", "above", "below", "against", "into", "onto")
+# Places you put things *in* rather than *on*, by their last word.
+_CONTAINERS = {"pocket", "drawer", "bag", "box", "cabinet", "cupboard", "fridge", "freezer", "car", "purse",
+               "backpack", "basket", "bowl", "jar", "case", "closet", "wardrobe", "safe", "bin", "mug", "cup",
+               "tray", "room", "kitchen", "bedroom", "bathroom", "garage", "office", "hallway", "hall",
+               "jacket", "coat", "suitcase", "sink", "oven", "microwave", "trunk", "glovebox"}
+_WORD = re.compile(r"[a-z]+")
+
+
+def _stem(word: str) -> str:
+    return word[:-1] if word.endswith("s") and not word.endswith("ss") else word
+
+
+def _head(name: str) -> str:
+    """The noun an item name ends in: "reading glasses" -> "glasse", matched stem to stem."""
+    words = _WORD.findall(name.lower())
+    return _stem(words[-1]) if words else ""
+
+
+def _items(memory: RetrievedMemory) -> list[tuple[str, str]]:
+    return [(name.strip(), loc.strip()) for name, _, loc in (f.partition(":") for f in memory.facts(ITEM))]
+
+
+def _place(location: str) -> str:
+    """"kitchen counter" -> "on the kitchen counter"; "my coat pocket" -> "in your coat pocket"."""
+    words = location.strip().rstrip(".").split()
+    if words and words[0].lower() in _PREPOSITIONS:
+        return " ".join("your" if w.lower() == "my" else w for w in words)
+    if words and words[0].lower() in ("my", "the", "a", "an", "your"):
+        det, words = ("your" if words[0].lower() in ("my", "your") else words[0].lower()), words[1:]
+    else:
+        det = "the"
+    last = words[-1].lower() if words else ""
+    prep = "in" if last in _CONTAINERS or _stem(last) in _CONTAINERS else "on"
+    return " ".join([prep, det, *words])
+
+
+def template_answer(question: str, memories: list[RetrievedMemory], now: datetime | None = None) -> str | None:
+    """Answer "where is X?" from the top memory alone, with no language model, when that's safe.
+
+    Safe means: it's a "where" question; exactly one item in the retrieved memories is the
+    thing asked about (its name's last noun is in the question); the top memory has it with
+    a place; and no other retrieved memory has it more recently. Otherwise None, and the
+    language model answers.
+    """
+    if not memories or not re.search(r"\bwhere\b", question, re.I):
+        return None
+    asked = {_stem(w) for w in _WORD.findall(question.lower())}
+    heads = {_head(name) for m in memories for name, _ in _items(m) if _head(name) in asked}
+    if len(heads) != 1:
+        return None
+    [head] = heads
+    top = memories[0]
+    found = [(name, loc) for name, loc in _items(top) if _head(name) == head and loc]
+    if not found:
+        return None
+    if any(m.created_at > top.created_at and any(_head(n) == head for n, _ in _items(m)) for m in memories[1:]):
+        return None
+    name, location = found[0]
+    plural = name.endswith("s") and not name.endswith("ss")
+    return (f"Your {name} {'are' if plural else 'is'} {_place(location)}. "
+            f"You put {'them' if plural else 'it'} there {humanize_ago(top.created_at, now)}.")
+
+
 def humanize_ago(then: datetime, now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
     minutes = int((now - then).total_seconds() // 60)
@@ -132,6 +209,7 @@ def humanize_ago(then: datetime, now: datetime | None = None) -> str:
 class AIServices:
     def __init__(self, settings: Settings):
         self.s = settings
+        self._speech_cache: dict[tuple, bytes] = {}
 
     # Clients are created on first use so the API (and the dashboard) can start
     # before the AI keys are configured; the voice endpoints fail until they are.
@@ -167,6 +245,15 @@ class AIServices:
         return result.text.strip()
 
     async def speak(self, text: str) -> bytes:
+        if text not in FIXED_PHRASES:
+            return await self._speak(text)
+        key = (self.s.tts_provider, self.s.gemini_tts_model, self.s.gemini_tts_voice, self.s.tts_model,
+               self.s.tts_voice, self.s.tts_format, text)
+        if key not in self._speech_cache:
+            self._speech_cache[key] = await self._speak(text)
+        return self._speech_cache[key]
+
+    async def _speak(self, text: str) -> bytes:
         if self.s.tts_provider == "gemini":
             return await self.gemini.speak(text)
         result = await self.openai.audio.speech.create(
@@ -184,8 +271,7 @@ class AIServices:
         if not texts:
             return []
         if self.s.embedding_provider == "gemini":
-            # One request per chunk: a list sent to the multimodal model is one input.
-            return list(await asyncio.gather(*(self.gemini.embed(t, query=False) for t in texts)))
+            return await self.gemini.embed_many(texts, query=False)
         result = await self.openai.embeddings.create(
             model=self.s.embedding_model, input=texts, dimensions=self.s.embedding_dimensions
         )
@@ -204,9 +290,11 @@ class AIServices:
 
     # ---------------------------------------------------------------- language
 
-    async def _generate(self, system: str, prompt: str) -> str | None:
+    # fast=True: the wearer is waiting (or the call is frequent), so Gemini thinks as
+    # little as the model allows. Claude already runs at LLM_EFFORT.
+    async def _generate(self, system: str, prompt: str, *, fast: bool = False) -> str | None:
         if self.s.llm_provider == "gemini":
-            return await self.gemini.generate(system, prompt)
+            return await self.gemini.generate(system, prompt, fast=fast)
         response = await self.claude.beta.messages.create(
             model=self.s.llm_model,
             max_tokens=1024,
@@ -220,9 +308,11 @@ class AIServices:
             return None
         return "".join(b.text for b in response.content if b.type == "text").strip()
 
-    async def _generate_json(self, system: str, text: str, schema: type[BaseModel]) -> BaseModel | None:
+    async def _generate_json(
+        self, system: str, text: str, schema: type[BaseModel], *, fast: bool = False
+    ) -> BaseModel | None:
         if self.s.llm_provider == "gemini":
-            return await self.gemini.generate_json(system, [text], schema)
+            return await self.gemini.generate_json(system, [text], schema, fast=fast)
         response = await self.claude.beta.messages.parse(
             model=self.s.llm_model,
             max_tokens=1024,
@@ -239,21 +329,26 @@ class AIServices:
 
     async def answer(self, question: str, memories: list[RetrievedMemory]) -> str:
         notes = "\n".join(_note(m) for m in memories) or "(nothing retrieved)"
-        text = await self._generate(ANSWER_SYSTEM_PROMPT, f"Memories:\n{notes}\n\nQuestion: {question}")
+        text = await self._generate(ANSWER_SYSTEM_PROMPT, f"Memories:\n{notes}\n\nQuestion: {question}", fast=True)
         if text is None:
-            return "Sorry, I can't help with that one."
-        return text or "Sorry, I couldn't come up with an answer just now."
+            return REFUSED
+        return text or NO_ANSWER
 
     async def extract_items(self, text: str) -> list[ItemMention]:
         """Pull the items (and where they were put) out of a statement or question.
 
-        Feeds the dashboard's Items and Insights pages.
+        Feeds the dashboard's Items and Insights pages. With vision on, a memory's items
+        come from describe_scene instead; this is for questions and VISION_PROVIDER=none.
         """
-        parsed = await self._generate_json(EXTRACT_SYSTEM_PROMPT, text, ExtractedItems)
+        parsed = await self._generate_json(EXTRACT_SYSTEM_PROMPT, text, ExtractedItems, fast=True)
         return _mentions(parsed.items) if parsed else []
 
     async def describe_scene(self, image: bytes, content_type: str, transcript: str) -> SceneText | None:
-        """Image to text: a description, the items and where they are, and readable text."""
+        """Image to text: a description, the items and where they are, and readable text.
+
+        One call does the photo and the words: the items come from the transcript (with the
+        camera filling in places it doesn't say), so extract_items isn't needed as well.
+        None when vision is off."""
         if self.s.vision_provider != "gemini":
             return None
         from google.genai import types

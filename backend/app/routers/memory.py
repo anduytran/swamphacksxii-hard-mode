@@ -1,4 +1,5 @@
 import logging
+import time
 from dataclasses import dataclass
 from urllib.parse import quote
 
@@ -15,7 +16,7 @@ from fastapi import (
     status,
 )
 
-from ..ai import AIServices
+from ..ai import DIDNT_CATCH, AIServices, template_answer
 from ..auth import Principal, require_device
 from ..config import Settings, get_settings
 from ..db import MemoryDB
@@ -26,6 +27,7 @@ from ..pipeline import ingest_image, ingest_speech, retrieve
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
 log = logging.getLogger(__name__)
+timing_log = logging.getLogger("lastscene.timing")  # shown by main.py's handler
 
 MAX_IMAGE_BYTES = 2 * 1024 * 1024  # photos live in Postgres; ESP32 JPEGs are ~50-200 KB
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
@@ -142,24 +144,51 @@ async def _spoken_answer(
     background: BackgroundTasks, db: MemoryDB, ai: AIServices, geo: Geolocator, settings: Settings,
     device_id: str, question: str, where: Whereabouts, extra_headers: dict | None = None,
 ) -> Response:
+    timings: dict[str, float] = {}  # stage -> milliseconds, in the order they ran
+    clock = time.perf_counter()
+
+    def lap(stage: str) -> None:
+        nonlocal clock
+        now = time.perf_counter()
+        timings[stage] = (now - clock) * 1000
+        clock = now
+
     record_args = None
+    answered_by = "fixed"
     if question:
-        memories = await retrieve(db, ai, question, [device_id], settings.query_lookback_hours)
-        answer = await ai.answer(question, memories)
+        embedding = await ai.embed(question, query=True)
+        lap("embed")
+        memories = await retrieve(db, ai, question, [device_id], settings.query_lookback_hours, embedding=embedding)
+        lap("retrieve")
+        answer = template_answer(question, memories) if settings.template_answers else None
+        answered_by = "template"
+        if answer is None:
+            answer = await ai.answer(question, memories)
+            answered_by = "llm"
+        lap("answer")
         record_args = (db, ai, geo, device_id, question, answer, where)
         if settings.enrich_in_background:
             background.add_task(_record_query, *record_args)
     else:
-        answer = "Sorry, I didn't catch that. Could you ask again?"
+        answer = DIDNT_CATCH
 
     speech = await ai.speak(answer)
+    lap("speak")
+    timing_log.info("Spoken answer (%s): %s, total %.0f ms", answered_by,
+             ", ".join(f"{k} {v:.0f} ms" for k, v in timings.items()), sum(timings.values()))
     if record_args and not settings.enrich_in_background:
         await _record_query(*record_args)
     return Response(
         content=speech,
         media_type=ai.speech_media_type,
         # Handy for debugging from curl / serial logs; the device can ignore them.
-        headers={"X-Question": quote(question), "X-Answer": quote(answer), **(extra_headers or {})},
+        headers={
+            "X-Question": quote(question),
+            "X-Answer": quote(answer),
+            "X-Answered-By": answered_by,
+            "Server-Timing": ", ".join(f"{k};dur={v:.0f}" for k, v in timings.items()),
+            **(extra_headers or {}),
+        },
     )
 
 

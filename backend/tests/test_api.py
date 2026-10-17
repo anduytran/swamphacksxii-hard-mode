@@ -191,6 +191,7 @@ def client(monkeypatch):
     app.state.db, app.state.ai = FakeDB(), FakeAI()
     with TestClient(app) as c:
         c.app_state = app.state
+        c.settings = settings
         yield c
 
 
@@ -237,6 +238,7 @@ def test_rejects_bad_signature_and_audience(client):
 
 
 def test_query_returns_audio(client):
+    client.settings.template_answers = False  # this one is about the language model's answer
     log(client)
     resp = client.post(
         "/api/v1/memory/query", headers=DEVICE, files={"audio": ("q.wav", b"Where are my keys?", "audio/wav")}
@@ -430,6 +432,7 @@ def test_memory_is_stored_as_text_chunks(client):
 
 
 def test_question_is_answered_from_retrieved_chunks(client):
+    client.settings.template_answers = False
     log(client, "I am putting my keys on the counter")
     log(client, "I am putting my wallet on the shelf")
     ask(client, "Where are my keys?")
@@ -504,3 +507,59 @@ def test_search_without_a_wearable_spends_nothing(client):
     client.app_state.ai.embed = lambda *a, **k: calls.append(a)  # would be a paid call
     resp = client.get("/api/v1/dashboard/search?q=keys", headers=CAREGIVER)
     assert resp.json() == {"query": "keys", "results": []} and calls == []
+
+
+def test_a_confident_question_is_answered_without_the_language_model(client):
+    log(client, "I am putting my keys on the kitchen counter")
+    log(client, "I am putting my wallet on the shelf")
+    resp = ask(client, "Where are my keys?")
+    assert unquote(resp.headers["x-answer"]) == "Your keys are on the kitchen counter. You put them there just now."
+    assert resp.headers["x-answered-by"] == "template"
+    assert client.app_state.ai.answered_with is None
+    assert [t.split(";")[0] for t in resp.headers["server-timing"].split(", ")] == ["embed", "retrieve", "answer", "speak"]
+
+
+@pytest.mark.parametrize(
+    "said, asked",
+    [
+        ("I am putting my keys down", "Where are my keys?"),  # no place to say
+        ("I am putting my keys on the counter", "Did I leave my keys out?"),  # not a "where" question
+        ("I am putting my keys on the counter", "Where are my glasses?"),  # not about what was asked
+    ],
+)
+def test_an_unsure_question_goes_to_the_language_model(client, said, asked):
+    log(client, said)
+    resp = ask(client, asked)
+    assert resp.headers["x-answered-by"] == "llm"
+    assert client.app_state.ai.answered_with[0] == asked
+
+
+def test_template_answers_can_be_turned_off(client):
+    client.settings.template_answers = False
+    log(client, "I am putting my keys on the counter")
+    assert ask(client, "Where are my keys?").headers["x-answered-by"] == "llm"
+
+
+def test_vision_finds_the_items_in_the_same_call(client):
+    calls = []
+    ai = client.app_state.ai
+    ai.scene = SceneText("Keys on the counter.", [ItemMention("keys", "kitchen counter")], "")
+    real_describe = ai.describe_scene
+
+    async def describe(*a):
+        calls.append("describe_scene")
+        return await real_describe(*a)
+
+    async def extract(text):
+        calls.append("extract_items")
+        return []
+
+    ai.describe_scene, ai.extract_items = describe, extract
+    log(client, "I am putting my keys down")
+    assert calls == ["describe_scene"]
+    assert [(i.name, i.location) for i in client.app_state.db.items] == [("keys", "kitchen counter")]
+
+    calls.clear()
+    ai.scene = None  # VISION_PROVIDER=none (or the photo call failed): the words alone
+    log(client, "I am putting my wallet down")
+    assert calls == ["describe_scene", "extract_items"]
