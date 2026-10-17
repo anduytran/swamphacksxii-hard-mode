@@ -81,7 +81,26 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
    sudo /opt/lastscene/venv/bin/pip install vosk
    cd /opt/lastscene/stt && sudo curl -fLO https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip && sudo unzip vosk-model-small-en-us-0.15.zip
    ```
-   Time it on the Pi before relying on it: `arecord -f S16_LE -r 16000 -c 1 -d 4 said.wav`, then `STT_ENGINE=moonshine /opt/lastscene/venv/bin/python lastscene_device.py --transcribe said.wav` (no network or Auth0 needed). On a Mac, one thread, Moonshine took 40–90 ms per 2 s clip with ~285 MB peak memory; the Zero 2 W has 512 MB in all, so check `free -m` with the service running. If the model is missing or hears nothing, the clip goes to the server's speech-to-text instead; `STT_FALLBACK=false` turns that off.
+   Time it on the Pi before relying on it: `arecord -f S16_LE -r 16000 -c 1 -d 4 said.wav`, then `STT_ENGINE=moonshine /opt/lastscene/venv/bin/python lastscene_device.py --transcribe said.wav` (no network or Auth0 needed). On a Mac, one thread, Moonshine took 40–90 ms per 2 s clip with ~285 MB peak memory. If the model is missing or hears nothing, the clip goes to the server's speech-to-text instead; `STT_FALLBACK=false` turns that off.
+
+   **Measured on a Pi Zero 2 W** (Oct 17, 2026; Debian 13, Python 3.13, onnxruntime 1.31.0, Moonshine tiny quantized, `LocalSTT`
+   as the service uses it; clips are 16 kHz macOS voices, all transcribed word for word):
+
+   | Clip | Alone | With the vision detector running (`lastscene_pipeline.bench`, 4 threads) |
+   |---|---|---|
+   | 1.2 s ("Where are my keys?") | 1.0 s | 2.7 s |
+   | 3.5 s | 2.8 s | 4.8 s |
+   | 6.8 s | 5.6 s | 10.3 s |
+   | 10.8 s | 7.6 s | 14.7 s |
+   | 14.7 s (about `MAX_RECORD_SECONDS`) | 10.1 s | 25.8 s |
+
+   - Alone, Moonshine runs at 0.7–0.8x real time; the reply waits about as long as you spoke. A live 5 s recording from
+     the USB camera's mic took 1.1–1.9 s.
+   - Loading the model takes 9 s (17 s while the detector runs): once, when the service starts.
+   - Memory: 168 MB after loading, peaks of 200–270 MB while transcribing (longer clips use more). The Pi has 415 MB
+     usable, so it dropped to 35–44 MB available and used up to 66 MB of swap; nothing was killed.
+   - Together, both slow down about 2–2.5x: the detector went from 0.63 s to 1.75 s per frame (p95 2.7 s), so keep
+     detect at `--fps 1` or lower, and short questions answer much faster than 15 s monologues.
 4. Copy this folder to the Pi and set up config:
    ```bash
    sudo useradd --system --groups gpio,video,audio lastscene
