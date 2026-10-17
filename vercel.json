@@ -1,12 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": null,
-  "installCommand": "cd web && npm ci",
-  "buildCommand": "cd web && npm run build",
-  "outputDirectory": "web/dist",
+  "buildCommand": "if [ -d web ]; then cd web; else cd ../web; fi && npm ci && npm run build",
   "functions": {
     "api/index.py": {
-      "includeFiles": "backend/app/**",
+      "includeFiles": "{backend/app/**,web/dist/**}",
       "maxDuration": 60
     }
   },

@@ -187,7 +187,7 @@ cd backend && DEVICE_CLIENT_ID=... DEVICE_CLIENT_SECRET=... AUTH0_DOMAIN=... AUT
 
 ### Deploy on Vercel at lastscene.photo
 
-Vercel builds the dashboard (`web/`, `npm ci && npm run build`) and serves `web/dist` from its CDN; everything else (`/api/…`, `/healthz`, `/config.json`) goes to one Python function, `api/index.py`, which imports the FastAPI app. `vercel.json` holds the build, the rewrite and the daily purge schedule. `.vercelignore` keeps `.env`, the venv, `node_modules` and the device code out of uploads.
+The Vercel project uses the FastAPI preset with Root Directory `backend` (and "include files outside the root directory" on). Each deploy installs `requirements.txt`, then `vercel.json`'s build command builds the dashboard (`web/`, `npm ci && npm run build`); the FastAPI app serves the API and the built `web/dist`. `vercel.json` also holds the daily purge schedule. `.vercelignore` keeps `.env`, the venv, `node_modules` and the device code out of uploads.
 
 1. Install the CLI and log in (opens a browser):
    ```bash
