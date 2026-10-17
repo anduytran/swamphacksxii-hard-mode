@@ -72,6 +72,18 @@ The dashboard is at http://localhost:8000. Tests (no external services needed):
 cd backend && .venv/bin/pytest -q
 ```
 
+Simulate three days of the wearable without spending any tokens (no Gemini/Claude/OpenAI or Auth0 calls). It runs the real device client and API routes in-process with offline stand-ins for every AI stage, and writes to `DATABASE_URL`, so the dashboard shows the result. Rows use the device id `sim-wearable@clients` and are replaced on each run:
+
+```bash
+cd backend && .venv/bin/python scripts/simulate_hardware.py
+```
+
+```bash
+cd backend && .venv/bin/python scripts/simulate_hardware.py --clean
+```
+
+The scenario covers saving items, a location filled in from the photo, a question about an item that was never logged, and a memory spooled while offline and uploaded later. Viewing the Insights page will still request the real Gemini summary.
+
 Try it end to end as the wearable:
 
 ```bash

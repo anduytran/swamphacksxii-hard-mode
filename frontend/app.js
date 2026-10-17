@@ -56,7 +56,9 @@ function currentPage() {
   return PAGES.includes(name) ? name : DEFAULT_PAGE;
 }
 
+// When each page last loaded; switching back after this long fetches fresh data.
 const loaded = {};
+const STALE_AFTER_MS = 60_000;
 
 async function showPage(name, { force = false } = {}) {
   for (const p of PAGES) $(`page-${p}`).hidden = p !== name;
@@ -64,13 +66,13 @@ async function showPage(name, { force = false } = {}) {
     if (a.dataset.page === name) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
-  if (loaded[name] && !force) return;
+  if (!force && loaded[name] && Date.now() - loaded[name] < STALE_AFTER_MS) return;
   const loaders = { items: loadItems, timeline: loadTimeline, insights: loadInsights };
   const status = $("status");
   status.textContent = "Loading…";
   try {
     await loaders[name]();
-    loaded[name] = true;
+    loaded[name] = Date.now();
     if (status.textContent === "Loading…") status.textContent = "";
   } catch (err) {
     status.textContent = `Couldn't load this page: ${err.message}`;
