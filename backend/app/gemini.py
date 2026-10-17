@@ -48,7 +48,14 @@ def _embed_input(text: str, query: bool) -> str:
 class GeminiAI:
     def __init__(self, settings: Settings):
         self.s = settings
-        self.client = genai.Client(api_key=settings.gemini_api_key or None)
+        self.client = genai.Client(
+            api_key=settings.gemini_api_key or None,
+            # Retry real server errors once. "Too many requests" (429) and "overloaded" (503) are
+            # left to limits.py, which makes every instance wait instead of each retrying for a minute.
+            http_options=types.HttpOptions(
+                retry_options=types.HttpRetryOptions(attempts=2, http_status_codes=[500, 502, 504])
+            ),
+        )
 
     async def transcribe(self, audio: bytes, content_type: str | None) -> str:
         response = await self.client.aio.models.generate_content(

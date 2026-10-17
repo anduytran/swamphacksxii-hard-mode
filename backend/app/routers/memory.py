@@ -17,14 +17,15 @@ from fastapi import (
     status,
 )
 
-from ..ai import DIDNT_CATCH, AIServices, template_answer
+from ..ai import BUSY, DIDNT_CATCH, AIServices, template_answer
 from ..auth import Principal, require_device
 from ..config import Settings, get_settings
 from ..db import MemoryDB
-from ..deps import get_ai, get_db, get_geo
+from ..deps import device_limit, get_ai, get_db, get_geo
 from ..geo import Geolocator, locate_and_record, record_public, resolve_location
 from ..intent import classify, strip_wake_phrase
 from ..languages import is_english, normalize, phrase
+from ..limits import RateLimited
 from ..maps_names import name_memory_place
 from ..pipeline import ingest_image, ingest_speech, retrieve
 
@@ -136,7 +137,10 @@ async def _save_memory(
     # The type is echoed back when the dashboard loads the photo, so never trust it blindly.
     image_type = image_content_type if image_content_type in ALLOWED_IMAGE_TYPES else "image/jpeg"
     record = await db.insert(device_id, transcript, image_bytes, image_type)
-    await ingest_speech(db, ai, record.id, transcript)
+    try:
+        await ingest_speech(db, ai, record.id, transcript)
+    except RateLimited as busy:  # the memory is saved; only its search index waits for the photo pass
+        log.warning("Indexing a memory's words skipped: %s", busy)
     enrich_args = (db, ai, geo, device_id, record.id, transcript, image_bytes, image_type, where, settings)
     if settings.enrich_in_background:
         background.add_task(_enrich_memory, *enrich_args)
@@ -170,21 +174,27 @@ async def _spoken_answer(
     record_args = None
     answered_by = "fixed"
     if question:
-        embedding, language = await asyncio.gather(ai.embed(question, query=True), _language(db, device_id))
-        lap("embed")
-        memories = await retrieve(db, ai, question, [device_id], settings.query_lookback_hours, embedding=embedding)
-        lap("retrieve")
-        # Template answers are English sentences; other languages always go to the model.
-        use_template = settings.template_answers and is_english(language)
-        answer = template_answer(question, memories) if use_template else None
-        answered_by = "template"
-        if answer is None:
-            answer = await ai.answer(question, memories, language)
-            answered_by = "llm"
-        lap("answer")
-        record_args = (db, ai, geo, device_id, question, answer, where)
-        if settings.enrich_in_background:
-            background.add_task(_record_query, *record_args)
+        language = None
+        try:
+            embedding, language = await asyncio.gather(ai.embed(question, query=True), _language(db, device_id))
+            lap("embed")
+            memories = await retrieve(db, ai, question, [device_id], settings.query_lookback_hours, embedding=embedding)
+            lap("retrieve")
+            # Template answers are English sentences; other languages always go to the model.
+            use_template = settings.template_answers and is_english(language)
+            answer = template_answer(question, memories) if use_template else None
+            answered_by = "template"
+            if answer is None:
+                answer = await ai.answer(question, memories, language)
+                answered_by = "llm"
+            lap("answer")
+            record_args = (db, ai, geo, device_id, question, answer, where)
+            if settings.enrich_in_background:
+                background.add_task(_record_query, *record_args)
+        except RateLimited as busy:  # over a model's limit: say so (a cached phrase, no model call)
+            log.warning("Answer rate limited: %s", busy)
+            answer = phrase(BUSY, language or await _language(db, device_id))
+            answered_by = "busy"
     else:
         answer = phrase(DIDNT_CATCH, await _language(db, device_id))
 
@@ -216,7 +226,7 @@ async def log_memory(
     transcript: str | None = TRANSCRIPT_FORM,
     where: Whereabouts = Depends(whereabouts),
     pairing_code: str | None = Header(None, alias="X-Pairing-Code"),
-    device: Principal = Depends(require_device),
+    device: Principal = Depends(device_limit()),
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
     geo: Geolocator = Depends(get_geo),
@@ -237,7 +247,7 @@ async def query_memory(
     transcript: str | None = TRANSCRIPT_FORM,
     where: Whereabouts = Depends(whereabouts),
     pairing_code: str | None = Header(None, alias="X-Pairing-Code"),
-    device: Principal = Depends(require_device),
+    device: Principal = Depends(device_limit()),
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
     geo: Geolocator = Depends(get_geo),
@@ -256,7 +266,7 @@ async def voice(
     transcript: str | None = TRANSCRIPT_FORM,
     where: Whereabouts = Depends(whereabouts),
     pairing_code: str | None = Header(None, alias="X-Pairing-Code"),
-    device: Principal = Depends(require_device),
+    device: Principal = Depends(device_limit()),
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
     geo: Geolocator = Depends(get_geo),

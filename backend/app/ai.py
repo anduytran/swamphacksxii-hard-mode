@@ -5,6 +5,7 @@ per stage: OpenAI for speech-to-text, embeddings and text-to-speech, Claude for 
 language tasks.
 """
 
+import functools
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ from .config import Settings
 from .home_map import FloorPlan, floor_plan
 from .rag import ITEM, TEXT, RetrievedMemory
 from .gemini import GeminiAI
+from .limits import Limiter, RateLimited, Rule, per, provider_busy
 from . import languages
 
 ANSWER_SYSTEM_PROMPT = """\
@@ -150,7 +152,8 @@ DIDNT_CATCH = "Sorry, I didn't catch that. Could you ask again?"
 REFUSED = "Sorry, I can't help with that one."
 NO_ANSWER = "Sorry, I couldn't come up with an answer just now."
 # With their translations (languages.py), so every language's audio is cached as well.
-FIXED_PHRASES = frozenset().union(*(languages.all_translations(p) for p in (DIDNT_CATCH, REFUSED, NO_ANSWER)))
+BUSY = "I'm getting a lot of questions right now. Please ask me again in a minute."
+FIXED_PHRASES = frozenset().union(*(languages.all_translations(p) for p in (DIDNT_CATCH, REFUSED, NO_ANSWER, BUSY)))
 
 _PREPOSITIONS = ("on", "in", "inside", "under", "underneath", "by", "next", "beside", "behind", "near",
                  "at", "between", "beneath", "above", "below", "against", "into", "onto")
@@ -231,10 +234,55 @@ def humanize_ago(then: datetime, now: datetime | None = None) -> str:
     return f"about {days} day{'s' if days != 1 else ''} ago"
 
 
+def limited(stage: str):
+    """Guard a provider call with the shared rate limits for `stage` (see AIServices.rules):
+    a slot is taken first, and a provider "too many requests" cools its bucket down for every
+    server instance. Either way the caller gets RateLimited."""
+
+    def wrap(fn):
+        @functools.wraps(fn)
+        async def run(self, *args, **kwargs):
+            rules = self.rules(stage)
+            if self.limiter and rules:
+                await self.limiter.take(rules)
+            try:
+                return await fn(self, *args, **kwargs)
+            except RateLimited:
+                raise
+            except Exception as exc:
+                if self.limiter and rules and (wait := provider_busy(exc)) is not None:
+                    await self.limiter.cool_down(rules[0].bucket, wait)
+                    raise RateLimited(rules[0].bucket, wait, "provider busy") from exc
+                raise
+
+        return run
+
+    return wrap
+
+
 class AIServices:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, limiter: Limiter | None = None):
         self.s = settings
+        self.limiter = limiter  # None: no shared limits (tests, scripts)
         self._speech_cache: dict[tuple, bytes] = {}
+
+    def rules(self, stage: str) -> list[Rule]:
+        """The limits a call for `stage` counts against: the provider and model it goes to.
+        stt | tts | embed | text | vision | maps."""
+        s = self.s
+        provider = {"stt": s.stt_provider, "tts": s.tts_provider, "embed": s.embedding_provider,
+                    "text": s.llm_provider, "vision": s.vision_provider, "maps": "gemini"}[stage]
+        if provider == "gemini":
+            if stage == "tts":
+                return per(f"gemini:{s.gemini_tts_model}", s.gemini_tts_rpm, s.gemini_tts_rpd)
+            if stage == "embed":
+                return per(f"gemini:{s.gemini_embedding_model}", s.gemini_embedding_rpm, s.gemini_embedding_rpd)
+            return per(f"gemini:{s.gemini_model}", s.gemini_rpm, s.gemini_rpd)
+        if provider == "openai":
+            return per("openai", s.openai_rpm, s.openai_rpd)
+        if provider == "claude":
+            return per("claude", s.claude_rpm, s.claude_rpd)
+        return []  # e.g. VISION_PROVIDER=none: no call is made
 
     # Clients are created on first use so the API (and the dashboard) can start
     # before the AI keys are configured; the voice endpoints fail until they are.
@@ -260,6 +308,7 @@ class AIServices:
 
     # ---------------------------------------------------------------- speech in/out
 
+    @limited("stt")
     async def transcribe(self, filename: str, audio: bytes, content_type: str | None) -> str:
         if self.s.stt_provider == "gemini":
             return await self.gemini.transcribe(audio, content_type)
@@ -278,6 +327,7 @@ class AIServices:
             self._speech_cache[key] = await self._speak(text)
         return self._speech_cache[key]
 
+    @limited("tts")
     async def _speak(self, text: str) -> bytes:
         if self.s.tts_provider == "gemini":
             return await self.gemini.speak(text)
@@ -291,6 +341,7 @@ class AIServices:
 
     # ---------------------------------------------------------------- retrieval
 
+    @limited("embed")
     async def embed_many(self, texts: list[str]) -> list[list[float]]:
         """Embed several memory chunks."""
         if not texts:
@@ -302,6 +353,7 @@ class AIServices:
         )
         return [d.embedding for d in result.data]
 
+    @limited("embed")
     async def embed(self, text: str, *, query: bool = False) -> list[float]:
         """Embed a memory (query=False) or a question (query=True) for vector search."""
         if self.s.embedding_provider == "gemini":
@@ -317,6 +369,7 @@ class AIServices:
 
     # fast=True: the wearer is waiting (or the call is frequent), so Gemini thinks as
     # little as the model allows. Claude already runs at LLM_EFFORT.
+    @limited("text")
     async def _generate(self, system: str, prompt: str, *, fast: bool = False) -> str | None:
         if self.s.llm_provider == "gemini":
             return await self.gemini.generate(system, prompt, fast=fast)
@@ -333,6 +386,7 @@ class AIServices:
             return None
         return "".join(b.text for b in response.content if b.type == "text").strip()
 
+    @limited("text")
     async def _generate_json(
         self, system: str, text: str, schema: type[BaseModel], *, fast: bool = False
     ) -> BaseModel | None:
@@ -369,6 +423,7 @@ class AIServices:
         parsed = await self._generate_json(EXTRACT_SYSTEM_PROMPT, text, ExtractedItems, fast=True)
         return _mentions(parsed.items) if parsed else []
 
+    @limited("vision")
     async def describe_scene(self, image: bytes, content_type: str, transcript: str) -> SceneText | None:
         """Image to text: a description, the items and where they are, and readable text.
 
@@ -394,6 +449,7 @@ class AIServices:
     async def caregiver_summary(self, facts: str, language: str = languages.DEFAULT_LANGUAGE) -> str | None:
         return await self._generate(f"{SUMMARY_SYSTEM_PROMPT}\n{languages.instruction(language)}", facts)
 
+    @limited("maps")
     async def name_place(self, lat: float, lng: float) -> dict | None:
         """The public place at lat/lng from Grounding with Google Maps (Gemini only):
         {"name", "sources": [{"title", "url"}]} or None. Call it through

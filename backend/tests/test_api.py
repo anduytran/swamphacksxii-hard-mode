@@ -14,6 +14,7 @@ from app.ai import ItemMention, SceneText, humanize_ago
 from app.config import Settings, get_settings
 from app.db import ItemSighting, MemoryRecord, QueryRecord
 from app.rag import ChunkHit
+from app.limits import MemorySlots
 from app.main import create_app
 
 DOMAIN = "test.auth0.local"
@@ -32,7 +33,7 @@ DEVICE = {"Authorization": f"Bearer {make_token('dev1@clients', gty='client-cred
 CAREGIVER = {"Authorization": f"Bearer {make_token('auth0|carer')}"}
 
 
-class FakeDB:
+class FakeDB(MemorySlots):  # shared rate limits, counted in memory
     def __init__(self):
         self.rows: list[MemoryRecord] = []
         self.images: dict[str, tuple[bytes, str]] = {}

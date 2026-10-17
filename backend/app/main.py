@@ -1,16 +1,19 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .ai import AIServices
 from .config import Settings, get_settings
 from .db import MemoryDB
 from .geo import Geolocator, usage_month
-from .live import LiveTokens, RateLimit
+from .limits import Limiter, RateLimited, Rule
+from .live import LiveTokens
 from .mcp_server import router as mcp_router
 from .routers import mcp_keys
 from .routers import admin, dashboard, households, images, live, memory, observations, public, training
@@ -65,9 +68,20 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="LastScene API", lifespan=lifespan if use_lifespan else None)
     app.state.db = MemoryDB(settings)
-    app.state.ai = AIServices(settings)
+    app.state.ai = AIServices(settings, limiter=Limiter(app.state.db))
     app.state.geo = Geolocator(settings, app.state.db)
-    app.state.live_tokens, app.state.live_limit = LiveTokens(), RateLimit()
+    app.state.live_tokens = LiveTokens()
+
+    @app.exception_handler(RateLimited)
+    async def rate_limited(request: Request, exc: RateLimited):
+        # Which limit, never whose: buckets name devices and caregivers.
+        log.warning("Rate limited (%s) on %s", exc.why, request.url.path)
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Busy right now; try again shortly", "retry_after": round(exc.retry_after)},
+            headers={"Retry-After": str(round(exc.retry_after))},
+        )
+
     app.include_router(memory.router)
     app.include_router(dashboard.router)
     app.include_router(images.router)
@@ -92,6 +106,20 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
             pass  # health stays answerable when the database isn't
         return budget
 
+    async def model_usage(settings) -> dict | None:
+        """Calls today (since midnight Pacific, when Gemini's daily quotas reset) per model cap."""
+        ai = app.state.ai
+        caps = {r.bucket: r.limit for stage in ("text", "tts", "embed") for r in ai.rules(stage) if r.window == "day"}
+        if not caps:
+            return None
+        start = Rule("x", 1, "day").span(datetime.now(timezone.utc))[0]
+        try:
+            await asyncio.wait_for(app.state.db.ensure_ready(), 5)
+            used = await asyncio.wait_for(app.state.db.slot_usage([f"{b}:day" for b in caps], start), 5)
+        except Exception:
+            return None
+        return {b: {"used_today": used.get(f"{b}:day", 0), "limit_per_day": cap} for b, cap in caps.items()}
+
     @app.get("/healthz")
     async def healthz():
         settings = get_settings()
@@ -102,6 +130,7 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
             "missing_settings": missing,
             "wifi_positioning": bool(settings.google_geolocation_api_key),
             "geolocation_budget": await geolocation_budget(settings),
+            "model_usage": await model_usage(settings),
         }
 
     @app.get("/config.json")

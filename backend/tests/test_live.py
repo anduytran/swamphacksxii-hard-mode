@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from google import genai
 from google.genai import _api_client, types
 
-from app.live import LIVE_API_VERSION, LIVE_SYSTEM_PROMPT, RateLimit, token_config
+from app.live import LIVE_API_VERSION, LIVE_SYSTEM_PROMPT, token_config
 from app.routers.live import NOTHING_FOUND
 from tests.test_api import CAREGIVER, DEVICE, client, log  # noqa: F401  (client is a fixture)
 
@@ -88,16 +88,6 @@ def test_tokens_are_rate_limited_per_device(client):  # noqa: F811
     assert resp.status_code == 429 and int(resp.headers["retry-after"]) > 0
 
 
-def test_rate_limit_window_slides():
-    now = [0.0]
-    limit = RateLimit(window_s=3600, clock=lambda: now[0])
-    assert limit.retry_after("dev", 1) is None
-    assert limit.retry_after("dev", 1) == 3600
-    assert limit.retry_after("other", 1) is None  # per device
-    now[0] = 3600
-    assert limit.retry_after("dev", 1) is None
-
-
 def test_the_sdk_sends_the_locked_setup_to_v1alpha():
     """The real google-genai request builder (no network): checks the field names end to end."""
     client = genai.Client(api_key="server-key", http_options=types.HttpOptions(api_version=LIVE_API_VERSION))
@@ -152,7 +142,7 @@ def test_recall_fails_soft_when_search_does(client):  # noqa: F811
 
 
 def test_recall_is_rate_limited_per_device(client, monkeypatch):  # noqa: F811
-    monkeypatch.setattr("app.routers.live.RECALLS_PER_HOUR", 2)
+    monkeypatch.setattr(client.settings, "device_rpm", 2)  # recall shares the device's spoken-request limit
     codes = [client.post("/api/v1/memory/recall", headers=DEVICE, json={"question": "where are my keys?"}).status_code
              for _ in range(3)]
     assert codes[:2] == [200, 200] and codes[2] == 429

@@ -22,7 +22,7 @@ from ..auth import Principal, require_device
 from ..config import Settings, get_settings
 from ..db import MemoryDB
 from ..db_observations import LastSeen
-from ..deps import get_ai, get_db
+from ..deps import device_limit, get_ai, get_db
 from ..observations import Observation, scope_for, store_observation, too_far_ahead
 from .memory import ALLOWED_IMAGE_TYPES, MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, _read
 
@@ -67,7 +67,7 @@ async def ingest_observation(
     observation: str = Form(..., description="JSON, see the integration contract"),
     audio: UploadFile | None = File(None),
     pairing_code: str | None = Header(None, alias="X-Pairing-Code"),
-    device: Principal = Depends(require_device),
+    device: Principal = Depends(device_limit("observations")),
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
     settings: Settings = Depends(get_settings),

@@ -5,6 +5,7 @@ Run from cron:  python -m app.retention
 
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 
 from .config import get_settings
 from .db import MemoryDB
@@ -19,6 +20,7 @@ async def purge() -> int:
     try:
         deleted = await db.delete_older_than(settings.retention_hours)
         await db.purge_last_seen(settings.last_seen_retention_hours)
+        await db.prune_limits(datetime.now(timezone.utc) - timedelta(days=2))  # old rate-limit counters
     finally:
         await db.close()
     log.info("Purged %d records older than %dh", deleted, settings.retention_hours)

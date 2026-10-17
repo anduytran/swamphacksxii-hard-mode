@@ -10,8 +10,6 @@ Field names are checked against google-genai 2.31.0 (google/genai/types.py, toke
 live.py): ephemeral tokens are v1alpha only, both to create and to connect with.
 """
 
-import time
-from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 
 from google import genai
@@ -105,23 +103,3 @@ class LiveTokens:
         config = token_config(settings)
         return await self.client.aio.auth_tokens.create(config=config), config
 
-
-class RateLimit:
-    """At most `limit` events per `window_s` per key. In memory, so per server instance:
-    on Vercel each warm instance counts on its own (a cap on mistakes, not a hard quota)."""
-
-    def __init__(self, window_s: float = 3600, clock=time.monotonic):
-        self.window_s = window_s
-        self.clock = clock
-        self._events: dict[str, deque] = defaultdict(deque)
-
-    def retry_after(self, key: str, limit: int) -> float | None:
-        """None and the event is counted, or the seconds to wait."""
-        now = self.clock()
-        events = self._events[key]
-        while events and now - events[0] >= self.window_s:
-            events.popleft()
-        if len(events) >= limit:
-            return self.window_s - (now - events[0])
-        events.append(now)
-        return None

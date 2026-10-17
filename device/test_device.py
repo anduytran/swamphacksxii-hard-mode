@@ -395,3 +395,12 @@ def test_local_stt_needs_its_model_folder(tmp_path):
         dev.LocalSTT("moonshine", tmp_path / "missing")
     with pytest.raises(ValueError):
         dev.wav_pcm(wav_bytes(b"\0\0" * 100, rate=8000))
+
+
+def test_too_many_requests_is_retried_later_not_dropped():
+    def status(code):
+        return httpx.HTTPStatusError("x", request=httpx.Request("POST", "https://api.test"), response=httpx.Response(code))
+
+    assert dev.rejected(status(400)) and dev.rejected(status(422))
+    assert not dev.rejected(status(429)) and not dev.rejected(status(503))
+    assert not dev.rejected(httpx.ConnectError("offline"))

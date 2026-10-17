@@ -10,7 +10,7 @@ from ..ai import AIServices
 from ..auth import Principal, require_caregiver
 from ..config import Settings, get_settings
 from ..db import ACTIVITY_COUNTS_DAYS, ItemSighting, MemoryDB, QueryRecord
-from ..deps import get_ai, get_db
+from ..deps import caregiver_ai_limit, get_ai, get_db
 from ..home_map import FloorPlan, floor_plan, room_for
 from ..languages import normalize
 from ..rooms import Room
@@ -221,6 +221,7 @@ _summary_cache: dict[str, tuple[float, str | None]] = {}
 @router.get("/summary")
 async def summary(
     devices: list[str] = Depends(household_devices),
+    _limit: Principal = Depends(caregiver_ai_limit),
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
     settings: Settings = Depends(get_settings),
@@ -263,6 +264,7 @@ async def search(
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
     settings: Settings = Depends(get_settings),
+    _limit: Principal = Depends(caregiver_ai_limit),
 ):
     """The wearable's retrieval step, shown in full: which memories a question finds and
     which chunks matched, by meaning (vector) and by words (keyword). Embeds the query,

@@ -186,6 +186,13 @@ def whereabouts(cfg: Config) -> dict:
 
 # ---------------------------------------------------------------- API client
 
+def rejected(exc: Exception) -> bool:
+    """The server refused this request for good (4xx), so retrying it won't help. Not 429:
+    "too many requests" means later, so a memory waits in the spool like when offline."""
+    return (isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500
+            and exc.response.status_code != 429)
+
+
 class ApiClient:
     """Talks to the LastScene API with a cached Auth0 M2M token."""
 
@@ -904,7 +911,7 @@ class Device:
             try:
                 intent, result = self.api.voice(wav, photo, where, words)
             except (httpx.TransportError, httpx.HTTPStatusError) as exc:
-                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
+                if rejected(exc):
                     log.warning("Server rejected voice clip: %s", exc.response.text)
                     play_wav(self.cfg.audio_out, tone(440))
                 else:
@@ -957,7 +964,7 @@ class Device:
             self.api.log_memory(None, photo, where, transcript=text)
             return "Saved."
         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
-            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
+            if rejected(exc):
                 raise
             self.spool.add(None, photo, where, transcript=text)
             return "Saved on the wearable; it will upload when it's back online."
@@ -1005,13 +1012,18 @@ class Device:
                     result = self.api.log_memory(wav, photo, where, words)
                     log.info("Logged: %s", result.get("transcript"))
                 except (httpx.TransportError, httpx.HTTPStatusError) as exc:
-                    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
+                    if rejected(exc):
                         log.warning("Server rejected memory: %s", exc.response.text)
                     else:
                         self.spool.add(wav, photo, where, transcript=words)
                         log.warning("Offline; memory spooled for later")
             else:
-                audio, answer = self.api.ask(wav, where, words)
+                try:
+                    audio, answer = self.api.ask(wav, where, words)
+                except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                    log.warning("Question not answered: %s", exc)
+                    play_wav(self.cfg.audio_out, tone(440))  # the low "didn't work" beep, not silence
+                    return
                 log.info("Answer: %s", answer)
                 self.led.on()
                 play_wav(self.cfg.audio_out, audio)

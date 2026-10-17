@@ -55,6 +55,26 @@ class Settings(BaseSettings):
     llm_model: str = "claude-opus-5-5"
     llm_effort: str = "low"
 
+    # Rate limits (limits.py), shared by every server instance through Postgres: per minute
+    # (*_RPM) and per day (*_RPD, from midnight Pacific like Gemini's quotas); 0 = no cap.
+    # Gemini's quotas are per Google Cloud project; AI Studio shows your project's. Keep these
+    # a little under them. Over a cap, questions get a spoken "busy", memories are still saved.
+    gemini_rpm: int = 10  # GEMINI_MODEL: answers, photo descriptions, transcription, items, place names
+    gemini_rpd: int = 20  # Google's free tier for gemini-3.8-flash, seen in its 429 on Oct 17; raise on a paid tier
+    gemini_tts_rpm: int = 10
+    gemini_tts_rpd: int = 200
+    gemini_embedding_rpm: int = 100
+    gemini_embedding_rpd: int = 1000
+    live_tokens_per_day: int = 100  # Gemini Live sessions, all devices together
+    openai_rpm: int = 30  # paid providers, when a stage is switched to them
+    openai_rpd: int = 300
+    claude_rpm: int = 20
+    claude_rpd: int = 200
+    device_rpm: int = 20  # per device: spoken requests (/memory/log, /query, /voice, /recall)
+    device_rpd: int = 1000
+    device_observations_rpm: int = 60  # per device: vision pipeline uploads (it sends at most one per 2 s)
+    caregiver_ai_rpm: int = 30  # per caregiver: dashboard requests that call a model (search, summary)
+
     # Wi-Fi positioning: the wearable sends nearby access points; the server asks Google's
     # Geolocation API where that is. Empty = positions only from the device (or none).
     google_geolocation_api_key: str = ""

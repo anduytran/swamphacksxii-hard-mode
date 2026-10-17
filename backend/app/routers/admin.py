@@ -1,5 +1,7 @@
 import hmac
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from ..config import Settings, get_settings
@@ -30,6 +32,8 @@ async def purge(
     deleted = await db.delete_older_than(settings.retention_hours)
     last_seen = await db.purge_last_seen(settings.last_seen_retention_hours)
     geo_cache = await db.purge_geolocation_cache(settings.geolocation_cache_days)
+    if hasattr(db, "prune_limits"):  # rate-limit counters older than any window still in use
+        await db.prune_limits(datetime.now(timezone.utc) - timedelta(days=2))
     return {
         "deleted": deleted,
         "retention_hours": settings.retention_hours,
