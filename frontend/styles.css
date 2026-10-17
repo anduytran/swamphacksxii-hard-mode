@@ -1,0 +1,76 @@
+:root {
+  --bg: #f7f6f3;
+  --card: #ffffff;
+  --text: #1f2328;
+  --muted: #656d76;
+  --accent: #2f6fdb;
+  --border: #e3e1dc;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171a;
+    --card: #1f2226;
+    --text: #e8e6e3;
+    --muted: #9aa1a9;
+    --accent: #6ea0ff;
+    --border: #30343a;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+h1 { margin: 0; font-size: 1.25rem; }
+#user-bar { display: flex; gap: 8px; align-items: center; color: var(--muted); }
+main { max-width: 720px; margin: 0 auto; padding: 16px; }
+
+button {
+  font: inherit;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+button.secondary { background: transparent; color: var(--accent); }
+#logged-out { display: grid; place-items: center; min-height: 50vh; }
+#logged-out[hidden], #logged-in[hidden], #user-bar[hidden] { display: none; }
+
+.hint, #status { color: var(--muted); }
+.error { color: #c93c37; }
+
+#feed { list-style: none; padding: 0; margin: 0; display: grid; gap: 16px; }
+.entry {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.entry img { width: 100%; height: 100%; min-height: 120px; object-fit: cover; display: block; }
+.entry-body { padding: 12px 16px 12px 0; }
+.entry time { color: var(--muted); font-size: 0.9rem; }
+.transcript { margin: 4px 0 0; font-size: 1.1rem; }
+
+@media (max-width: 520px) {
+  .entry { grid-template-columns: 1fr; }
+  .entry-body { padding: 0 16px 16px; }
+  .entry img { aspect-ratio: 4 / 3; }
+}

@@ -1,0 +1,13 @@
+[Unit]
+Description=Memory Anchor API
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/memory-anchor/backend
+EnvironmentFile=/opt/memory-anchor/backend/.env
+ExecStart=/opt/memory-anchor/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
+Restart=always
+User=www-data
+
+[Install]
+WantedBy=multi-user.target

@@ -1,2 +1,84 @@
 # swamphacksxii-hard-mode
 memory anchor: multimodal ai embedded on hardware to track down items
+
+## Layout
+
+```
+backend/          FastAPI service (Vultr VPS)
+  app/main.py         app + static dashboard + /config.json
+  app/auth.py         Auth0 JWT validation (M2M device vs. caregiver user)
+  app/storage.py      Vultr Object Storage (S3 API, private bucket, presigned URLs)
+  app/db.py           TigerData / Postgres + pgvector schema and queries
+  app/ai.py           Whisper STT, OpenAI embeddings + TTS, Claude answer generation
+  app/routers/        /api/v1/memory/{log,query}, /api/v1/dashboard/history
+  app/retention.py    72h purge job (run from cron)
+  scripts/device_sim.py  pretend-wearable client for end-to-end testing
+frontend/         plain HTML/JS caregiver dashboard (auth0-spa-js)
+deploy/           systemd unit + crontab for the Vultr instance
+```
+
+## API
+
+| Endpoint | Auth | Body | Returns |
+|---|---|---|---|
+| `POST /api/v1/memory/log` | device M2M token with `write:memories` | multipart `audio`, `image` (JPEG) | `{id, timestamp, transcript}` |
+| `POST /api/v1/memory/query` | device M2M token with `write:memories` | multipart `audio` | spoken answer (`audio/wav` by default); `X-Question` / `X-Answer` headers hold the URL-encoded text |
+| `GET /api/v1/dashboard/history` | caregiver user token | – | `[{id, device_id, timestamp, transcript, image_url}]`, last 24h, newest first |
+
+Queries only search the calling device's own memories from the last 72h (top 3 by cosine distance).
+
+## Setup
+
+### Auth0
+1. **API**: create one with identifier = `AUTH0_AUDIENCE` (e.g. `https://api.memory-anchor`), RS256. Add permission `write:memories`.
+2. **Wearable**: create a *Machine to Machine* application, authorize it for the API with the `write:memories` scope. Flash its Client ID/Secret onto the ESP32; the device POSTs `client_credentials` to `https://AUTH0_DOMAIN/oauth/token` and sends `Authorization: Bearer <access_token>` (cache it until `expires_in`).
+3. **Dashboard**: create a *Single Page Application*. Allowed Callback / Logout / Web Origins = your dashboard URL (e.g. `http://localhost:8000`). Put its Client ID in `AUTH0_SPA_CLIENT_ID`.
+4. Because any user who can log in sees the feed, disable public sign-ups on the database connection, or enable RBAC on the API, create a `read:history` permission for caregivers, and set `CAREGIVER_PERMISSION=read:history`.
+
+### TigerData
+Create a service and put its connection string in `DATABASE_URL`. On startup the app runs `CREATE EXTENSION vector` and creates the `memory_logs` table with an HNSW index.
+
+### Vultr Object Storage
+Create a bucket (keep it private) and put the endpoint, keys and bucket name in `.env`.
+
+### Run locally
+
+```bash
+cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+```
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+```bash
+cd backend && .venv/bin/uvicorn app.main:app --reload
+```
+
+The dashboard is at http://localhost:8000. Tests (no external services needed):
+
+```bash
+cd backend && .venv/bin/pytest -q
+```
+
+Try it end to end as the wearable:
+
+```bash
+cd backend && DEVICE_CLIENT_ID=... DEVICE_CLIENT_SECRET=... AUTH0_DOMAIN=... AUTH0_AUDIENCE=... .venv/bin/python scripts/device_sim.py log --audio keys.wav --image counter.jpg
+```
+
+### Deploy on Vultr
+Clone to `/opt/memory-anchor`, create the venv and `.env` as above, then:
+
+```bash
+sudo cp deploy/memory-anchor.service /etc/systemd/system/ && sudo systemctl enable --now memory-anchor
+```
+
+```bash
+crontab deploy/memory-anchor.cron
+```
+
+Put it behind HTTPS (Caddy or nginx + Let's Encrypt). Auth0 requires HTTPS origins for the SPA outside localhost, and the device's token should never travel over plain HTTP.
+
+## Privacy
+`python -m app.retention` (daily via cron, 03:15) deletes every `memory_logs` row older than `RETENTION_HOURS` (72) and the images it pointed to. Images are only reachable through presigned URLs that expire after 15 minutes.
