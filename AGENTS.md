@@ -76,7 +76,7 @@ pip install -r requirements.txt
 python -m pytest -q
 ```
 
-Last full run (Oct 17): **`187 passed, 8 skipped`**. That was before `tests/test_pipeline.py`, whose 12 tests pass on their own; a full run with them is pending. The 8 need Adam's local clips and run with `LASTSEEN_E2E=1`. Run tests from inside `vision/`, not the repo root; `backend/tests` is separate. Keep them passing after every change.
+Last full run (Oct 17, evening): **`203 passed, 8 skipped`**, including `tests/test_pipeline.py` and `tests/test_pi_runtime.py`. The 8 need Adam's local clips and run with `LASTSEEN_E2E=1`. Run tests from inside `vision/`, not the repo root; `backend/tests` is separate. Keep them passing after every change.
 
 Model weights download on first detector use: `yolov8m-worldv2.pt` (~57 MB) and `weights/clip/ViT-B-32.pt` (~354 MB). They're gitignored.
 

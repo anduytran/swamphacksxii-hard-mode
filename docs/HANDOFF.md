@@ -21,7 +21,7 @@ While either one runs, type `where` / `found` / `quit` in the console, or press 
   - The apex `lastscene.photo` 308-redirects, and requests drops the bearer token on that hop. The code rewrites the apex to `www`.
 - **Contract match:** the bridge's payloads pass Dylan's real Pydantic model. That includes `placed`, with and without `scene`.
 - **Real local backend run:** the earlier agents ran Dylan's real FastAPI app on a local Postgres 16 + pgvector (Auth0 and Gemini faked). Results: 201, 200 duplicate, 429 then retry, found.
-- **Vision tests:** 187 passed, 8 skipped, plus 12 new `tests/test_pipeline.py` tests passing.
+- **Vision tests:** 203 passed, 8 skipped (full run, Oct 17 evening).
   - Real-clip e2e: 7 passed + 1 xfail, before the event-name change.
 - **Found it:** stale queued sightings are moved to `superseded/`, and the found call is queued in order and retried. 403 doesn't fetch a new token; a 409 resends under a new stable id.
 - **Pilot model** (YOLO11s fine-tuned on 116 frames: 14 keys frames pseudo-labelled by m960d from development clips, plus 102 empty frames; held-out clips never used):

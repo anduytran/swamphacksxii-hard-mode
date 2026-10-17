@@ -7,9 +7,10 @@ r"""Run LastSeen on a camera or clip and post selected memory events to LastScen
     python -m lastscene_bridge.run --source http://<esp-ip>:81/stream --show
 
 The default preset is m960d ("efficient" reads laptop keyboards as keys on 1080p frames).
-While it runs, type where / found / quit in the console, or press w / f / q in the --show
-window: "where" prints the latest memory and starts live guidance, "found" clears the keys'
-memories and calls the found endpoint (see lastscene_bridge/live_view.py).
+While it runs, type where / search / found / quit in the console, or press w / s / f / q in
+the --show window. "search" runs one manual XL tiled search on the current frame; its orange
+candidate is not saved or uploaded. "where" prints the latest memory and starts guidance,
+and "found" clears the keys' memories and calls the found endpoint.
 
 Recorded clips need a real capture time: --recorded-at auto (default) reads it from the file's
 metadata, else from the <clip>.capture.json sidecar that scripts/record_stream.py writes;
@@ -119,7 +120,7 @@ def main():
     session = LiveSession(ls, bridge, show=args.show, uploading=uploader is not None)
     if not args.no_console:
         session.start_console()
-        print("commands: where / found / quit (or w / f / q in the --show window)", flush=True)
+        print("commands: where / search / found / quit (or w / s / f / q in the --show window)", flush=True)
     try:
         if uploader:
             uploader.start()

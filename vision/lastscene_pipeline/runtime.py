@@ -89,6 +89,9 @@ class OnnxYoloDetector:
         if low_memory:  # Pi Zero 2 W has 512 MB: no pre-grown arena / cached allocation plans
             options.enable_cpu_mem_arena = False
             options.enable_mem_pattern = False
+            # Match the runtime already installed on the Pi: let idle workers sleep
+            # between inferences so camera and speech work can use the CPU.
+            options.add_session_config_entry("session.intra_op.allow_spinning", "0")
         self.session = ort.InferenceSession(str(path), sess_options=options, providers=["CPUExecutionProvider"])
         self.input = self.session.get_inputs()[0]
         if list(self.input.shape) != [1, 3, self.size, self.size]:

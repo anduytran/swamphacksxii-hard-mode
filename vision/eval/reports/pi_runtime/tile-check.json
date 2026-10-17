@@ -1,0 +1,13 @@
+{
+  "full_frame_max_raw_class_score": 0.0006315708160400391,
+  "tiled_seconds": 3.1461424490003083,
+  "tiled_detections": [],
+  "image_shape": [
+    1080,
+    1920,
+    3
+  ],
+  "model_input": 320,
+  "confidence_floor": 0.35,
+  "purpose": "One-frame exploratory search; no memories or uploads."
+}

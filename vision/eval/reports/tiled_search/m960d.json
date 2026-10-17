@@ -1,0 +1,138 @@
+{
+  "measured_at_utc": "2026-10-17T19:12:34+00:00",
+  "protocol": "Sequential original clips at 2 Hz; same windows and conf=0.05 for each mode; no resize before detection.",
+  "limitations": [
+    "desk_a and desk_b have only 360x640 source frames; tiling enlarges a crop but adds no captured detail.",
+    "04_return_and_find far window is unscored and excluded from recall.",
+    "IMG_7688.MOV is the labeled no-keys negative recording; one false memory matters even if frame-level false-positive rate is low.",
+    "Phone-recording performance does not measure the live webcam stream or its JPEG quality and focus."
+  ],
+  "runs": [
+    {
+      "mode": "m960d",
+      "weights": "C:\\Users\\Administrator\\Projects\\swamphacks-xii-research\\lastseen\\swamphacksxii-hard-mode\\vision\\yolov8m-worldv2.pt",
+      "preset": "m960d",
+      "prompt": "bunch of keys",
+      "distractors": [
+        "laptop keyboard",
+        "laptop"
+      ],
+      "confidence_floor": 0.05,
+      "tiling": {
+        "grid": 2,
+        "overlap": 0.25,
+        "inferences_per_frame": 1
+      },
+      "sample_rate_hz": 2,
+      "frames": 97,
+      "elapsed_s": 5.85,
+      "effective_fps": 16.57,
+      "peak_process_rss_mb": 2425.6,
+      "peak_cuda_allocated_mb": 127.5,
+      "cpu_percent_mean": 724.1,
+      "gpu": {
+        "samples": 11,
+        "util_pct_mean": 16.5,
+        "util_pct_max": 56.0,
+        "power_w_mean": 19.6,
+        "power_w_max": 26.2,
+        "temp_c_mean": 52.7,
+        "temp_c_max": 54.0
+      },
+      "clips": {
+        "desk_a.mov": {
+          "source_fps": 59.00718076802997,
+          "source_frames": 315,
+          "source_duration_s": 5.338,
+          "original_width": 360,
+          "original_height": 640
+        },
+        "desk_b.mov": {
+          "source_fps": 59.009009009009006,
+          "source_frames": 393,
+          "source_duration_s": 6.66,
+          "original_width": 360,
+          "original_height": 640
+        },
+        "04_return_and_find.MOV": {
+          "source_fps": 59.956989247311824,
+          "source_frames": 697,
+          "source_duration_s": 11.625,
+          "original_width": 1920,
+          "original_height": 1080
+        },
+        "IMG_7688.MOV": {
+          "source_fps": 59.95891060422483,
+          "source_frames": 1897,
+          "source_duration_s": 31.638,
+          "original_width": 1080,
+          "original_height": 1920
+        }
+      },
+      "groups": {
+        "near": {
+          "frames": 4,
+          "target_status": "positive",
+          "recall_at_0_05": "3/4",
+          "false_positive_frames_at_0_05": null,
+          "median_key_score": 0.1495,
+          "max_key_score": 0.157,
+          "median_ms": 15.7,
+          "p95_ms": 15.8
+        },
+        "absent": {
+          "frames": 3,
+          "target_status": "negative",
+          "recall_at_0_05": null,
+          "false_positive_frames_at_0_05": "0/3",
+          "median_key_score": 0.0,
+          "max_key_score": 0.0,
+          "median_ms": 13.9,
+          "p95_ms": 13.9
+        },
+        "far": {
+          "frames": 3,
+          "target_status": "positive",
+          "recall_at_0_05": "0/3",
+          "false_positive_frames_at_0_05": null,
+          "median_key_score": 0.0,
+          "max_key_score": 0.0,
+          "median_ms": 14.9,
+          "p95_ms": 14.9
+        },
+        "clutter": {
+          "frames": 14,
+          "target_status": "positive",
+          "recall_at_0_05": "0/14",
+          "false_positive_frames_at_0_05": null,
+          "median_key_score": 0.0,
+          "max_key_score": 0.0,
+          "median_ms": 13.0,
+          "p95_ms": 13.6
+        },
+        "far_unscored": {
+          "frames": 9,
+          "target_status": "unscored",
+          "recall_at_0_05": null,
+          "false_positive_frames_at_0_05": null,
+          "median_key_score": 0.0,
+          "max_key_score": 0.0,
+          "median_ms": 13.9,
+          "p95_ms": 15.5
+        },
+        "no_keys": {
+          "frames": 64,
+          "target_status": "negative",
+          "recall_at_0_05": null,
+          "false_positive_frames_at_0_05": "0/64",
+          "median_key_score": 0.0,
+          "max_key_score": 0.0,
+          "median_ms": 16.3,
+          "p95_ms": 17.5
+        }
+      },
+      "no_keys_false_memories_created": 0,
+      "no_keys_false_memory_event_times_s": []
+    }
+  ]
+}
