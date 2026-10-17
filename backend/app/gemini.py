@@ -109,6 +109,8 @@ class GeminiAI:
     async def speak(self, text: str) -> bytes:
         response = await self.client.aio.models.generate_content(
             model=self.s.gemini_tts_model,
+            # The style prefix stays English (the TTS model reads it as direction, not words to say);
+            # the text after it goes through unchanged and is spoken in whatever language it's in.
             contents=f"Say warmly and calmly: {text}",
             config=types.GenerateContentConfig(
                 response_modalities=["AUDIO"],

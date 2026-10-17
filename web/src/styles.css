@@ -799,7 +799,7 @@ a.pill { text-decoration: none; }
 
 .search { position: relative; display: flex; align-items: center; width: 300px; max-width: 100%; }
 .search .i { position: absolute; left: 14px; color: var(--faint); pointer-events: none; }
-.search input, .field input, .place-row input, .place-row select, .search-form input {
+.search input, .field input, .field select, .place-row input, .place-row select, .search-form input {
   font: inherit;
   color: var(--text);
   background: var(--surface);
@@ -808,7 +808,7 @@ a.pill { text-decoration: none; }
 }
 .search input { width: 100%; font-size: 0.9375rem; min-height: 44px; padding: 0 14px 0 42px; border-radius: 12px; }
 .search input:hover, .field input:hover, .search-form input:hover { border-color: var(--line-hi); }
-.search input:focus, .field input:focus, .place-row input:focus, .place-row select:focus, .search-form input:focus {
+.search input:focus, .field input:focus, .field select:focus, .place-row input:focus, .place-row select:focus, .search-form input:focus {
   border-color: var(--secondary);
 }
 input::placeholder { color: var(--faint); }
@@ -1068,7 +1068,7 @@ input::placeholder { color: var(--faint); }
 .field > label, .field-label { font-size: 0.8125rem; font-weight: 500; color: var(--text-2); }
 .field-label { display: block; margin-bottom: 8px; }
 .optional { color: var(--faint); font-weight: 400; }
-.field input, .place-row input, .place-row select { font-size: 0.9375rem; min-height: 44px; padding: 0 14px; border-radius: 10px; background: var(--ground); }
+.field input, .field select, .place-row input, .place-row select { font-size: 0.9375rem; min-height: 44px; padding: 0 14px; border-radius: 10px; background: var(--ground); }
 .rows { list-style: none; margin: 0; padding: 0; display: grid; }
 .rows li { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
 .rows li:first-child { border-top: 0; padding-top: 4px; }

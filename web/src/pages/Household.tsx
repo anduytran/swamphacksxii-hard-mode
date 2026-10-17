@@ -6,6 +6,7 @@ import { ApiError, useApi, type Api } from "../lib/api";
 import { useApp, useLoadStatus } from "../lib/app";
 import { useAuth } from "../lib/auth";
 import { timeAgo } from "../lib/format";
+import { DEFAULT_LANGUAGE, LANGUAGES } from "../lib/languages";
 import { invalidateAll, useResource } from "../lib/resource";
 import type { Household } from "../lib/types";
 
@@ -140,6 +141,7 @@ function HouseholdView({ h, api, onChange }: { h: Household; api: Api; onChange(
 
   const people = <People h={h} api={api} owner={owner} />;
   const sharing = <Sharing h={h} api={api} owner={owner} />;
+  const language = <Language h={h} api={api} owner={owner} />;
 
   return (
     <div className="household">
@@ -155,6 +157,7 @@ function HouseholdView({ h, api, onChange }: { h: Household; api: Api; onChange(
       ) : (
         sharing
       )}
+      {language}
       <Places h={h} api={api} />
     </div>
   );
@@ -223,6 +226,47 @@ function Sharing({ h, api, owner }: { h: Household; api: Api; owner: boolean }) 
       <p className="hint">
         Off by default. Only item names and counts from places marked public, rounded to ~100 m, and only where 3+ households contribute. Private
         places never leave this household. New memories count from the moment this is on.
+      </p>
+      {!owner && <p className="hint">Only the person who set up the household can change this.</p>}
+      {error && (
+        <p className="form-msg error" role="status">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Language({ h, api, owner }: { h: Household; api: Api; owner: boolean }) {
+  const [value, setValue] = useState(h.language || DEFAULT_LANGUAGE);
+  const [error, setError] = useState("");
+  const change = async (next: string) => {
+    const before = value;
+    setValue(next);
+    setError("");
+    try {
+      await api(`/api/v1/households/${h.id}`, { method: "PATCH", body: { language: next } });
+    } catch (err) {
+      setValue(before);
+      setError(err instanceof ApiError ? err.detail : (err as Error).message);
+    }
+  };
+  return (
+    <div className="card setup-card">
+      <h2>Language</h2>
+      <div className="field">
+        <label htmlFor={`language-${h.id}`}>Spoken answers</label>
+        <select id={`language-${h.id}`} value={value} disabled={!owner} onChange={(e) => void change(e.target.value)}>
+          {LANGUAGES.map((l) => (
+            <option key={l.code} value={l.code} lang={l.code}>
+              {l.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <p className="hint">
+        The wearable answers in this language, and the summary on Insights is written in it. Memories in any language are still found. For
+        languages other than English, the wearable should send its audio to the server for transcription (STT_ENGINE=server).
       </p>
       {!owner && <p className="hint">Only the person who set up the household can change this.</p>}
       {error && (

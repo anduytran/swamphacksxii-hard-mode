@@ -6,16 +6,17 @@ Typical flow: a caregiver sets LastScene up for someone else.
   3. POST /households/{id}/invites   one-time code for other family members
   4. POST /invites/accept            family member joins with the code
   5. PATCH /households/{id}/places/{place}   name auto-found places, mark public ones
-  6. PATCH /households/{id}          opt in to the anonymous public map
+  6. PATCH /households/{id}          opt in to the anonymous public map, set the wearer's language
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..auth import Principal, require_caregiver
 from ..db import MemoryDB
 from ..deps import get_db
 from ..geo import home_place_id, place_label, place_unplaced
+from ..languages import LANGUAGES
 
 MAX_HOUSEHOLDS_PER_USER = 5
 
@@ -39,7 +40,17 @@ class AcceptInvite(BaseModel):
 
 
 class HouseholdUpdate(BaseModel):
-    share_public: bool
+    share_public: bool | None = None
+    language: str | None = Field(None, description="BCP-47 code of the wearer's spoken answers, e.g. es, vi, zh")
+
+    @field_validator("language")
+    @classmethod
+    def _known_language(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if v.strip().lower() not in LANGUAGES:
+            raise ValueError(f"Unsupported language; use one of {', '.join(LANGUAGES)}")
+        return v.strip().lower()
 
 
 class PlaceUpdate(BaseModel):
@@ -89,6 +100,7 @@ async def my_households(user: Principal = Depends(require_caregiver), db: Memory
                 "id": h.id,
                 "name": h.name,
                 "share_public": h.share_public,
+                "language": h.language,
                 "role": h.role,
                 "members": [
                     {"display_name": m["display_name"] or "Member", "role": m["role"], "is_you": m["user_sub"] == user.sub}
@@ -152,8 +164,14 @@ async def update_household(
     household_id: str, body: HouseholdUpdate, user: Principal = Depends(require_caregiver), db: MemoryDB = Depends(get_db)
 ):
     await _require_member(db, household_id, user, owner=True)
-    await db.set_share_public(household_id, body.share_public)
-    return {"share_public": body.share_public}
+    changed = {}
+    if body.share_public is not None:
+        await db.set_share_public(household_id, body.share_public)
+        changed["share_public"] = body.share_public
+    if body.language is not None:
+        await db.set_language(household_id, body.language)
+        changed["language"] = body.language
+    return changed
 
 
 @router.patch("/households/{household_id}/places/{place_id}")

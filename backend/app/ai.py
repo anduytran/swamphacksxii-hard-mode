@@ -19,6 +19,7 @@ from .config import Settings
 from .home_map import FloorPlan, floor_plan
 from .rag import ITEM, TEXT, RetrievedMemory
 from .gemini import GeminiAI
+from . import languages
 
 ANSWER_SYSTEM_PROMPT = """\
 You are LastScene, a gentle voice assistant on a wearable that helps someone \
@@ -148,7 +149,8 @@ def _note(m: RetrievedMemory) -> str:
 DIDNT_CATCH = "Sorry, I didn't catch that. Could you ask again?"
 REFUSED = "Sorry, I can't help with that one."
 NO_ANSWER = "Sorry, I couldn't come up with an answer just now."
-FIXED_PHRASES = frozenset({DIDNT_CATCH, REFUSED, NO_ANSWER})
+# With their translations (languages.py), so every language's audio is cached as well.
+FIXED_PHRASES = frozenset().union(*(languages.all_translations(p) for p in (DIDNT_CATCH, REFUSED, NO_ANSWER)))
 
 _PREPOSITIONS = ("on", "in", "inside", "under", "underneath", "by", "next", "beside", "behind", "near",
                  "at", "between", "beneath", "above", "below", "against", "into", "onto")
@@ -194,7 +196,7 @@ def template_answer(question: str, memories: list[RetrievedMemory], now: datetim
     Safe means: it's a "where" question; exactly one item in the retrieved memories is the
     thing asked about (its name's last noun is in the question); the top memory has it with
     a place; and no other retrieved memory has it more recently. Otherwise None, and the
-    language model answers.
+    language model answers. The wording is English, so callers skip it for other languages.
     """
     if not memories or not re.search(r"\bwhere\b", question, re.I):
         return None
@@ -350,12 +352,13 @@ class AIServices:
             return None
         return response.parsed_output
 
-    async def answer(self, question: str, memories: list[RetrievedMemory]) -> str:
+    async def answer(self, question: str, memories: list[RetrievedMemory], language: str = languages.DEFAULT_LANGUAGE) -> str:
         notes = "\n".join(_note(m) for m in memories) or "(nothing retrieved)"
-        text = await self._generate(ANSWER_SYSTEM_PROMPT, f"Memories:\n{notes}\n\nQuestion: {question}", fast=True)
+        system = f"{ANSWER_SYSTEM_PROMPT}\n- {languages.instruction(language)}"
+        text = await self._generate(system, f"Memories:\n{notes}\n\nQuestion: {question}", fast=True)
         if text is None:
-            return REFUSED
-        return text or NO_ANSWER
+            return languages.phrase(REFUSED, language)
+        return text or languages.phrase(NO_ANSWER, language)
 
     async def extract_items(self, text: str) -> list[ItemMention]:
         """Pull the items (and where they were put) out of a statement or question.
@@ -388,5 +391,5 @@ class AIServices:
         room = parsed.room if any(r.id == parsed.room for r in plan.rooms) else None
         return SceneText(parsed.description.strip(), _mentions(parsed.items), parsed.visible_text.strip(), room)
 
-    async def caregiver_summary(self, facts: str) -> str | None:
-        return await self._generate(SUMMARY_SYSTEM_PROMPT, facts)
+    async def caregiver_summary(self, facts: str, language: str = languages.DEFAULT_LANGUAGE) -> str | None:
+        return await self._generate(f"{SUMMARY_SYSTEM_PROMPT}\n{languages.instruction(language)}", facts)

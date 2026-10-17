@@ -27,6 +27,7 @@ class Household:
     name: str
     share_public: bool
     role: str  # the requesting user's role: owner | member
+    language: str = "en"  # BCP-47, the wearer's spoken answers (languages.py)
 
 
 @dataclass
@@ -132,6 +133,7 @@ class PlacesMixin:
             )
             """
         )
+        await conn.execute("ALTER TABLE households ADD COLUMN IF NOT EXISTS language text NOT NULL DEFAULT 'en'")
         for table in ("memory_logs", "query_logs"):
             await conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS lat double precision")
             await conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS lng double precision")
@@ -220,13 +222,13 @@ class PlacesMixin:
     async def households_for(self, user_sub: str) -> list[Household]:
         rows = await self.pool.fetch(
             """
-            SELECT h.id, h.name, h.share_public, m.role
+            SELECT h.id, h.name, h.share_public, m.role, h.language
             FROM households h JOIN household_members m ON m.household_id = h.id
             WHERE m.user_sub = $1 ORDER BY h.created_at
             """,
             user_sub,
         )
-        return [Household(str(r["id"]), r["name"], r["share_public"], r["role"]) for r in rows]
+        return [Household(str(r["id"]), r["name"], r["share_public"], r["role"], r["language"]) for r in rows]
 
     async def device_ids_for(self, user_sub: str) -> list[str]:
         rows = await self.pool.fetch(
@@ -279,6 +281,16 @@ class PlacesMixin:
 
     async def set_share_public(self, household_id: str, share: bool) -> None:
         await self.pool.execute("UPDATE households SET share_public = $2 WHERE id = $1::uuid", household_id, share)
+
+    async def set_language(self, household_id: str, language: str) -> None:
+        await self.pool.execute("UPDATE households SET language = $2 WHERE id = $1::uuid", household_id, language)
+
+    async def household_language(self, device_id: str) -> str | None:
+        """The language of the household this device belongs to; None if it isn't claimed."""
+        return await self.pool.fetchval(
+            "SELECT h.language FROM household_devices d JOIN households h ON h.id = d.household_id WHERE d.device_id = $1",
+            device_id,
+        )
 
     async def create_invite(self, household_id: str, user_sub: str, hours: int = 72) -> str:
         code = "-".join(secrets.token_hex(2).upper() for _ in range(3))
