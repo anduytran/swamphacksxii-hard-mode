@@ -91,11 +91,12 @@ Illustration: the landing scene card is an inline SVG (line-art counter, keys, m
 ## 6. Accessibility
 
 - Skip-to-content link is the first focusable element; `main` takes focus.
-- Focus ring: 2px solid deep periwinkle (`--link`), 2px offset, on every control. Cards show the ring around the whole card.
-- Persistent visible labels, `label for`, inline errors via `aria-describedby` + `aria-invalid`, an "(optional)" marker.
+- Focus follows the [GOV.UK Design System](https://design-system.service.gov.uk/get-started/focus-states/): yellow `#FFDD00` and near-black `#0B0C0C`, visible on every background. Links get a yellow background with a dark bar under the words; buttons and fields get a 3px yellow outline with a dark inner ring. Cards show it around the whole card.
+- Persistent visible labels, `label for`, inline errors via `aria-describedby` + `aria-invalid`, an "(optional)" marker. Submit buttons are never disabled: submitting with problems shows the [error summary](https://design-system.service.gov.uk/components/error-summary/) ("There is a problem") at the top of the form, focused, linking to each field, and puts "Error: " at the start of the page title.
+- **Display settings** (the sliders button in the header, and Display in the phone More sheet), kept per browser in `localStorage` and applied before the first paint: text size Standard / Large (112.5%) / Largest (125%); contrast Standard / High (darker text, outlined boxes, heavier link underlines; light and dark); colours Match device / Light / Dark; motion Match device / Reduce. All text sizes are in `rem`, so the browser's own font size scales them too.
 - `role="status"` for loading, results count and errors; icon-only buttons carry `aria-label`; dialogs are labelled by their title; skeletons are `aria-hidden`.
 - Alt text describes the item and place, adds detected objects, and quotes what was said for search results.
-- Reduced motion turns off every animation and shimmer.
+- Reduced motion (the device setting or Display → Motion) turns off every animation, shimmer and map fly-over.
 
 ## 7. Components
 

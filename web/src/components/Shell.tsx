@@ -5,6 +5,7 @@ import { useApp, type Page } from "../lib/app";
 import { useAuth } from "../lib/auth";
 import { initials } from "../lib/format";
 import { Dialog } from "./Dialog";
+import { DisplayButton } from "./DisplaySettings";
 import { BrandMark, Icon, type IconName } from "./Icons";
 
 interface NavItem {
@@ -60,6 +61,7 @@ export function Header({ page }: { page: Page }) {
           <a className="nav-link" href="#/public">
             Public map
           </a>
+          <DisplayButton />
           <button id="login-header" type="button" className="pill" onClick={login}>
             Log in
           </button>
@@ -91,6 +93,7 @@ export function Header({ page }: { page: Page }) {
               {initials(name)}
             </span>
             <span className="user-name">{name}</span>
+            <DisplayButton />
             <button id="refresh" type="button" className="icon-btn" aria-label="Refresh this page" title="Refresh" onClick={refresh}>
               <Icon name="refresh" />
             </button>
@@ -141,6 +144,7 @@ function MoreSheet({ open, onClose, page }: { open: boolean; onClose(): void; pa
           <Icon name="refresh" />
           Refresh
         </button>
+        <DisplayButton className="pill" withLabel />
         <button type="button" className="pill ghost" onClick={logout}>
           <Icon name="logout" />
           Log out

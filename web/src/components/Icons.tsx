@@ -106,6 +106,13 @@ const PATHS: Record<string, ReactNode> = {
     </>
   ),
   bulb: <path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z" />,
+  sliders: (
+    <>
+      <path d="M4 7h9M17 7h3M4 17h3M11 17h9" />
+      <circle cx="15" cy="7" r="2" />
+      <circle cx="9" cy="17" r="2" />
+    </>
+  ),
   alert: (
     <>
       <circle cx="12" cy="12" r="9" />
