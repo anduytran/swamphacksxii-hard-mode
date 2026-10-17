@@ -186,3 +186,10 @@ export interface TrainingList {
   items: TrainingItem[];
   limits: { items: number; samples_per_item: number };
 }
+
+/** Hourly counts for the "when things go missing" grid; `at` is a UTC hour. */
+export interface MissingTimes {
+  days: number;
+  since: string;
+  hours: { at: string; asked: number; put_down: number }[];
+}

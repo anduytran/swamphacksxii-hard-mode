@@ -53,6 +53,9 @@ class QueryRecord:
     item: str | None
 
 
+# How long the anonymous hourly counts are kept (the memories themselves: RETENTION_HOURS).
+ACTIVITY_COUNTS_DAYS = 90
+
 # Every query that lists records selects this instead of the image bytes.
 _COLUMNS = "id, device_id, created_at, transcript, scene, source, image IS NOT NULL AS has_image"
 
@@ -173,6 +176,19 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin):
             await self.init_places_schema(conn)
             await self.init_observations_schema(conn)
             await self.init_training_schema(conn)
+            # Anonymous hourly counts that outlive the 72-hour purge (see delete_older_than):
+            # no words, photos or item names, just how many questions / put-downs per hour.
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS activity_hourly (
+                    device_id  text        NOT NULL,
+                    hour       timestamptz NOT NULL,
+                    kind       text        NOT NULL,   -- asked | put_down
+                    count      integer     NOT NULL,
+                    PRIMARY KEY (device_id, hour, kind)
+                )
+                """
+            )
 
     async def insert(
         self, device_id: str, transcript: str, image: bytes | None, image_type: str | None
@@ -346,8 +362,28 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin):
         )
         return [QueryRecord(**dict(r)) for r in rows]
 
-    async def delete_older_than(self, hours: int) -> int:
+    async def delete_older_than(self, hours: int, keep_counts_days: int = ACTIVITY_COUNTS_DAYS) -> int:
+        """The privacy purge. In the same transaction, what's about to go is first counted
+        into activity_hourly (per device and hour, no content), so the "when things go
+        missing" grid can look back further than the memories themselves."""
         async with self.pool.acquire() as conn, conn.transaction():
+            # now() is fixed for the transaction, so the counted rows are exactly the deleted ones.
+            for kind, source in (
+                ("asked", "SELECT device_id, created_at FROM query_logs"),
+                ("put_down", "SELECT m.device_id, m.created_at FROM memory_items i JOIN memory_logs m ON m.id = i.memory_id"),
+            ):
+                await conn.execute(
+                    f"""
+                    INSERT INTO activity_hourly (device_id, hour, kind, count)
+                    SELECT device_id, date_trunc('hour', created_at), '{kind}', count(*)
+                    FROM ({source}) AS rows
+                    WHERE created_at < now() - make_interval(hours => $1)
+                    GROUP BY 1, 2
+                    ON CONFLICT (device_id, hour, kind) DO UPDATE SET count = activity_hourly.count + EXCLUDED.count
+                    """,
+                    hours,
+                )
+            await conn.execute("DELETE FROM activity_hourly WHERE hour < now() - make_interval(days => $1)", keep_counts_days)
             await conn.execute(
                 "DELETE FROM query_logs WHERE created_at < now() - make_interval(hours => $1)",
                 hours,
@@ -358,6 +394,38 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin):
                 hours,
             )
         return int(result.split()[-1])  # asyncpg returns e.g. "DELETE 12"
+
+
+    async def missing_grid(self, device_ids: list[str], days: int) -> list[tuple[datetime, int, int]]:
+        """(hour, questions asked, things put down) for every hour with any activity in the
+        last `days` days: recent rows from the live tables, older ones from activity_hourly."""
+        rows = await self.pool.fetch(
+            """
+            WITH counts AS (
+                SELECT date_trunc('hour', created_at) AS hour, 'asked' AS kind, count(*) AS n
+                FROM query_logs
+                WHERE device_id = ANY($1::text[]) AND created_at > now() - make_interval(days => $2)
+                GROUP BY 1
+                UNION ALL
+                SELECT date_trunc('hour', m.created_at), 'put_down', count(*)
+                FROM memory_items i JOIN memory_logs m ON m.id = i.memory_id
+                WHERE m.device_id = ANY($1::text[]) AND m.created_at > now() - make_interval(days => $2)
+                GROUP BY 1
+                UNION ALL
+                SELECT hour, kind, sum(count)
+                FROM activity_hourly
+                WHERE device_id = ANY($1::text[]) AND hour > now() - make_interval(days => $2)
+                GROUP BY 1, 2
+            )
+            SELECT hour,
+                   coalesce(sum(n) FILTER (WHERE kind = 'asked'), 0)::int AS asked,
+                   coalesce(sum(n) FILTER (WHERE kind = 'put_down'), 0)::int AS put_down
+            FROM counts GROUP BY hour ORDER BY hour
+            """,
+            device_ids,
+            days,
+        )
+        return [(r["hour"], r["asked"], r["put_down"]) for r in rows]
 
 
 def _record(row) -> MemoryRecord:

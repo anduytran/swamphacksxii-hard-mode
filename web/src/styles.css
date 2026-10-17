@@ -1620,3 +1620,24 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
 .error-summary h3 { margin: 0 0 6px; font: 600 1.0625rem/1.3 var(--sans); color: var(--text); }
 .error-summary ul { margin: 0; padding-left: 18px; }
 .error-summary a { color: var(--attention-ink); font-weight: 600; text-decoration-thickness: 2px; }
+
+/* ---------- When things go missing: heat grid ----------
+   One sequential hue (--series-1) mixed into the card surface: steps 1-4 by share of the
+   busiest cell, 0 a neutral of its own. Lightness moves one way only, in both themes. */
+.heat-grid { display: grid; gap: 2px; align-items: center; margin: 4px 0 12px; }
+.heat-row { display: contents; }
+.heat-tick { font: 0.6875rem var(--mono); color: var(--muted); padding-bottom: 4px; }
+.heat-row-label { padding-right: 8px; font: 0.75rem var(--mono); color: var(--muted); }
+.heat-cell { display: block; aspect-ratio: 1; min-height: 10px; border-radius: 3px; }
+.heat-grid .heat-cell:hover { outline: 2px solid var(--text); outline-offset: 0; }
+.heat-cell.h0 { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.heat-cell.h1 { background: color-mix(in srgb, var(--series-1) 25%, var(--surface)); }
+.heat-cell.h2 { background: color-mix(in srgb, var(--series-1) 48%, var(--surface)); }
+.heat-cell.h3 { background: color-mix(in srgb, var(--series-1) 74%, var(--surface)); }
+.heat-cell.h4 { background: var(--series-1); }
+.heat-legend { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.8125rem; color: var(--muted); }
+.heat-legend .heat-cell { width: 14px; min-height: 14px; }
+.heat-legend span:not(:first-child) { margin-left: 6px; }
+.missing-sub { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.missing-peak { margin: 0; color: var(--text); font-weight: 500; max-width: 60ch; }
+.segmented.small button { font-size: 0.875rem; }

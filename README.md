@@ -88,6 +88,7 @@ Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, 
 | `GET /api/v1/dashboard/history` | `[{id, device_id, timestamp, source, transcript, scene, summary, detections, image_url, items}]`, newest first |
 | `GET /api/v1/dashboard/items` | `{window_hours, items}`: per item its last location, photo + `detection` box, earlier spots, mentions, times asked |
 | `GET /api/v1/dashboard/insights?hours=` | counts, most-asked / most-logged items, unanswered questions, recent Q&A, activity; `hours` narrows the window (default and maximum 72) |
+| `GET /api/v1/dashboard/missing-times?days=` | questions asked and things put down per hour (UTC instants) for the "When things go missing" grid; `days` 7–90, default 28. Older than 72 h these come from `activity_hourly`: anonymous per-device hourly counts the purge keeps for 90 days (no words, photos or item names) |
 | `GET /api/v1/dashboard/summary` | `{summary}`: 2–3 sentences from Gemini (cached 10 min) |
 | `GET /api/v1/dashboard/search?q=` | `{query, results}`: hybrid vector + keyword retrieval with per-chunk match explanations |
 | `GET /api/v1/dashboard/map` | house floor plan: rooms, item spots, movement trips |
