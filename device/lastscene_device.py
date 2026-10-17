@@ -11,6 +11,12 @@ Two push-to-talk buttons:
   * ASK (hold, speak, release): "Where are my keys?"
       -> records while held, POSTs /api/v1/memory/query, plays the spoken answer
 
+Live conversation (LIVE=true, optional): the wake phrase, or holding ASK quietly for
+LIVE_HOLD_SECONDS, starts a back-and-forth with Gemini Live using a one-use token from
+/api/v1/live/token. Gemini looks memories up through /api/v1/memory/recall and saves new
+ones (with a photo) through /api/v1/memory/log. It ends after LIVE_SILENCE_SECONDS of quiet,
+LIVE_MAX_SECONDS, or any button press; if it can't start or fails, the one-shot flow above runs.
+
 Speech-to-text on the device (STT_ENGINE=moonshine, or vosk): the wearable sends the words,
 not the recording, so the audio never leaves it. If the local model is missing or hears nothing,
 the clip goes to the server's speech-to-text instead (STT_FALLBACK=false turns that off).
@@ -27,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import array
+import asyncio
 import io
 import json
 import logging
@@ -77,6 +84,10 @@ class Config:
     stt_engine: str = "server"  # moonshine | vosk | server (send the audio; the server transcribes)
     stt_model: str = ""  # model folder; empty = the default under /opt/lastscene/stt
     stt_fallback: bool = True  # local model missing or heard nothing: send the audio instead
+    live: bool = False  # the wake phrase (or a quiet long press of ASK) starts a Gemini Live conversation
+    live_max_seconds: int = 90
+    live_silence_seconds: float = 8  # a conversation ends after this long with nobody talking
+    live_hold_seconds: float = 2  # hold ASK this long without speaking to start one
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -105,6 +116,10 @@ class Config:
             stt_engine=env.get("STT_ENGINE", "server").lower(),
             stt_model=env.get("STT_MODEL", ""),
             stt_fallback=env.get("STT_FALLBACK", "true").lower() not in ("0", "false", "no"),
+            live=env.get("LIVE", "false").lower() in ("1", "true", "yes"),
+            live_max_seconds=int(env.get("LIVE_MAX_SECONDS", 90)),
+            live_silence_seconds=float(env.get("LIVE_SILENCE_SECONDS", 8)),
+            live_hold_seconds=float(env.get("LIVE_HOLD_SECONDS", 2)),
         )
 
 
@@ -200,12 +215,13 @@ class ApiClient:
             self._expires_at = time.time() + int(body.get("expires_in", 3600))
             return self._token
 
-    def _post(self, path: str, files: dict, data: dict | None = None) -> httpx.Response:
+    def _post(self, path: str, files: dict | None = None, data: dict | None = None, json: dict | None = None) -> httpx.Response:
         headers = {"Authorization": f"Bearer {self.token()}"}
         if self.cfg.pairing_code:
             headers["X-Pairing-Code"] = self.cfg.pairing_code
+        body = {"json": json} if json is not None else {"files": files or {}, "data": data or {}}
         for attempt in (1, 2):
-            resp = self.http.post(f"{self.cfg.api_url}{path}", headers=headers, files=files, data=data or {})
+            resp = self.http.post(f"{self.cfg.api_url}{path}", headers=headers, **body)
             if resp.status_code == 401 and attempt == 1:
                 self._token = None  # revoked or rotated: fetch a fresh one once
                 headers["Authorization"] = f"Bearer {self.token()}"
@@ -243,6 +259,15 @@ class ApiClient:
         files, data = self._speech("question.wav", wav, transcript, where)
         resp = self._post("/api/v1/memory/query", files, data)
         return resp.content, unquote(resp.headers.get("x-answer", ""))
+
+    def live_token(self) -> dict:
+        """A one-use Gemini Live token: {"token": "auth_tokens/...", "model", "api_version", ...}.
+        404 = live mode is off on the server; 429 = too many sessions this hour."""
+        return self._post("/api/v1/live/token").json()
+
+    def recall(self, question: str) -> str:
+        """The saved memories about a question, as short text facts (no answer is generated)."""
+        return self._post("/api/v1/memory/recall", json={"question": question}).json()["text"]
 
 
 # ---------------------------------------------------------------- on-device speech-to-text
@@ -594,6 +619,192 @@ class Camera:
         return buf.getvalue()
 
 
+# ---------------------------------------------------------------- live conversation (LIVE=true)
+
+LIVE_RATE = 24000  # Gemini Live speaks 16-bit mono PCM at 24 kHz
+LIVE_MIC_MIME = f"audio/pcm;rate={RATE}"
+
+
+def gemini_live_connect(token: dict):
+    """Gemini Live with the server's one-use token (pip install google-genai). The model, persona,
+    tools and voice are locked into the token by the server; this only picks audio out."""
+    from google import genai
+    from google.genai import types
+
+    # google-genai 2.31 (live.py): ephemeral tokens work with v1alpha only; the server says which.
+    client = genai.Client(api_key=token["token"],
+                          http_options=types.HttpOptions(api_version=token.get("api_version", "v1alpha")))
+    return client.aio.live.connect(model=token["model"],
+                                   config=types.LiveConnectConfig(response_modalities=[types.Modality.AUDIO]))
+
+
+class PcmPlayer:
+    """Streams Gemini's 24 kHz PCM through one aplay. busy() is true while it is (by the bytes
+    written) still playing, so the mic can stay muted: with no echo cancellation on the Pi,
+    Gemini would otherwise hear itself and interrupt its own answer."""
+
+    def __init__(self, device: str, rate: int = LIVE_RATE, tail_s: float = 0.3, clock=time.monotonic):
+        self.device, self.rate, self.tail_s, self.clock = device, rate, tail_s, clock
+        self._proc: subprocess.Popen | None = None
+        self._until = 0.0
+
+    def play(self, pcm: bytes) -> None:
+        if self._proc is None or self._proc.poll() is not None:
+            self._proc = subprocess.Popen(
+                ["aplay", "-q", "-D", self.device, "-t", "raw", "-f", "S16_LE", "-r", str(self.rate), "-c", "1"],
+                stdin=subprocess.PIPE,
+            )
+        self._until = max(self.clock(), self._until) + len(pcm) / 2 / self.rate
+        self._proc.stdin.write(pcm)
+        self._proc.stdin.flush()
+
+    def busy(self) -> bool:
+        return self.clock() < self._until + self.tail_s
+
+    def close(self) -> None:
+        if self._proc is None:
+            return
+        try:
+            self._proc.stdin.close()
+            self._proc.wait(timeout=max(0.0, self._until - self.clock()) + 2)
+        except (OSError, subprocess.TimeoutExpired):
+            self._proc.kill()
+        self._proc = None
+
+
+class LiveSession:
+    """One spoken back-and-forth with Gemini Live, after the wake phrase.
+
+    `connect()` gives an async context manager for a session with send_realtime_input(audio=...),
+    send_tool_response(function_responses=...) and receive() (google-genai's AsyncSession, or a
+    fake in tests). `tools` maps tool names to blocking functions, run off the event loop. The mic
+    thread calls feed() with 80 ms frames; nothing is sent until run() has connected, and nothing
+    while Gemini's answer is playing. Ends on `silence_s` with nobody talking, at `max_s`, on
+    stop() (a button) or when Gemini closes the session; errors propagate so the caller can fall back.
+    """
+
+    def __init__(self, connect, tools: dict, player, silence_s: float = 8, max_s: float = 90,
+                 on_ready=None, clock=time.monotonic, tick_s: float = 0.1):
+        self.connect, self.tools, self.player = connect, tools, player
+        self.silence_s, self.max_s, self.on_ready = silence_s, max_s, on_ready
+        self.clock, self.tick_s = clock, tick_s
+        self.active = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._frames: asyncio.Queue | None = None
+        self._stop: asyncio.Event | None = None
+        self._last = 0.0  # last time anyone spoke (or a tool ran)
+        self._floor = 300.0  # the room's loudness, learnt while nobody speaks (as in Endpointer)
+
+    def feed(self, frame: bytes) -> None:
+        """From the mic thread."""
+        if not self.active or self.player.busy():
+            return
+        level = rms(frame)
+        if level > max(self._floor * 2.5, 500):
+            self._last = self.clock()
+        else:
+            self._floor = 0.9 * self._floor + 0.1 * level
+        try:
+            self._loop.call_soon_threadsafe(self._frames.put_nowait, frame)
+        except RuntimeError:  # the loop just closed
+            pass
+
+    def stop(self) -> None:
+        """From any thread: end the conversation (a button was pressed)."""
+        if self._loop is not None and self._stop is not None:
+            try:
+                self._loop.call_soon_threadsafe(self._stop.set)
+            except RuntimeError:
+                pass
+
+    async def run(self) -> str:
+        """Why it ended: "silence", "max", "button" or "closed"."""
+        self._loop = asyncio.get_running_loop()
+        self._frames, self._stop = asyncio.Queue(), asyncio.Event()
+        async with self.connect() as session:
+            if self.on_ready:
+                await asyncio.to_thread(self.on_ready)  # e.g. the "go ahead" chime, before the mic opens
+            started = self._last = self.clock()
+            self.active = True
+            try:
+                tasks = [asyncio.create_task(c) for c in (self._send(session), self._receive(session), self._watch(started))]
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for t in pending:
+                    t.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                for t in done:
+                    if t.exception():
+                        raise t.exception()
+                return next(iter(done)).result()
+            finally:
+                self.active = False
+
+    async def _send(self, session) -> None:
+        while True:
+            frame = await self._frames.get()
+            await session.send_realtime_input(audio={"data": frame, "mime_type": LIVE_MIC_MIME})
+
+    async def _receive(self, session) -> str:
+        while True:
+            got = False
+            async for msg in session.receive():  # one model turn per loop
+                got = True
+                if audio := getattr(msg, "data", None):
+                    self._last = self.clock()
+                    await asyncio.to_thread(self.player.play, audio)
+                call = getattr(msg, "tool_call", None)
+                if call and call.function_calls:
+                    responses = [await self._call(fc) for fc in call.function_calls]
+                    await session.send_tool_response(function_responses=responses)
+                content = getattr(msg, "server_content", None)
+                for side in ("input_transcription", "output_transcription"):
+                    if text := getattr(getattr(content, side, None), "text", None):
+                        log.info("Live %s: %s", "heard" if side.startswith("input") else "said", text)
+            if not got:
+                return "closed"
+
+    async def _call(self, fc) -> dict:
+        self._last = self.clock()
+        log.info("Live tool call %s(%s)", fc.name, fc.args)
+        try:
+            fn = self.tools[fc.name]
+            response = {"result": await asyncio.to_thread(fn, **(fc.args or {}))}
+        except Exception:
+            log.exception("Live tool %s failed", fc.name)
+            response = {"error": "That didn't work just now; say so kindly and don't guess."}
+        self._last = self.clock()
+        return {"id": fc.id, "name": fc.name, "response": response}
+
+    async def _watch(self, started: float) -> str:
+        while True:
+            try:
+                await asyncio.wait_for(self._stop.wait(), self.tick_s)
+                return "button"
+            except asyncio.TimeoutError:
+                pass
+            now = self.clock()
+            if now - started >= self.max_s:
+                return "max"
+            if self.player.busy():
+                self._last = now
+            elif now - self._last >= self.silence_s:
+                return "silence"
+
+
+def held_quietly(wav: bytes, seconds: float) -> bool:
+    """A press of ASK held at least `seconds` with no speech in it: start a live conversation."""
+    try:
+        pcm = wav_pcm(wav)
+    except Exception:
+        return False
+    if len(pcm) / 2 / RATE < seconds:
+        return False
+    ep = Endpointer(max_s=1e9, timeout_s=1e9)
+    for i in range(0, len(pcm) - FRAME_BYTES + 1, FRAME_BYTES):
+        ep.feed(pcm[i:i + FRAME_BYTES])
+    return not ep.spoke
+
+
 # ---------------------------------------------------------------- device loop
 
 class NothingHeard(Exception):
@@ -627,17 +838,19 @@ class Device:
         self.ask.when_released = lambda: self._end("ask")
         self._active: tuple[str, Recorder | StreamRecorder, bytes | None] | None = None
 
-        # Wake phrase: one shared microphone stream for the listener and the buttons.
+        # Wake phrase (and live mode): one shared microphone stream for the listener and the buttons.
         self.mic: MicStream | None = None
+        self.wake: WakeListener | None = None
+        self.live: LiveSession | None = None  # set while a live conversation runs
         self.voice = VoiceCapture()
         if cfg.wake_word:
             try:
                 self.wake = WakeListener(cfg.wake_word, cfg.wake_threshold)
             except Exception:  # openwakeword or its model missing: keep the buttons working
                 log.exception("Wake phrase %r unavailable; buttons only (see README step 3)", cfg.wake_word)
-            else:
-                self.stream_rec = StreamRecorder(cfg.max_record_seconds)
-                self.mic = MicStream(cfg.audio_in, self._on_frame)
+        if self.wake or cfg.live:
+            self.stream_rec = StreamRecorder(cfg.max_record_seconds)
+            self.mic = MicStream(cfg.audio_in, self._on_frame)
 
     def _words(self, wav: bytes) -> str | None:
         """The transcript to send instead of the audio, or None to send the audio. Raises
@@ -656,12 +869,14 @@ class Device:
         return None
 
     def _on_frame(self, frame: bytes) -> None:
-        """Every 80 ms of microphone audio, when the wake phrase is on."""
-        if self.stream_rec.active:  # a button is held
+        """Every 80 ms of microphone audio, when the wake phrase (or live mode) is on."""
+        if (live := self.live) is not None:  # a live conversation: the audio goes to Gemini
+            live.feed(frame)
+        elif self.stream_rec.active:  # a button is held
             self.stream_rec.add(frame)
         elif self.voice.listening:  # after the wake phrase
             self.voice.add(frame)
-        elif not self.busy.locked() and self.wake.heard(frame):
+        elif self.wake and not self.busy.locked() and self.wake.heard(frame):
             threading.Thread(target=self._wake, daemon=True).start()
 
     def _wake(self) -> None:
@@ -669,6 +884,8 @@ class Device:
             return
         try:
             self.led.on()
+            if self.cfg.live and self._converse():
+                return
             photo = self.camera.capture_jpeg()
             play_wav(self.cfg.audio_out, tone(880))  # "I'm listening" (before recording, so it isn't heard)
             pcm = self.voice.listen(Endpointer(max_s=self.cfg.wake_max_seconds), self.cfg.wake_max_seconds + 3)
@@ -707,7 +924,48 @@ class Device:
             self.wake.reset()  # don't let our own beeps or answer trigger it again
             self.busy.release()
 
+    def _converse(self) -> bool:
+        """A live conversation with Gemini (LIVE=true). False if it failed at any point (no
+        token, live mode off on the server, quota, network): the caller then uses /memory/voice."""
+        player = PcmPlayer(self.cfg.audio_out)
+        try:
+            token = self.api.live_token()
+            session = LiveSession(
+                lambda: gemini_live_connect(token),
+                {"recall_memories": self.api.recall, "save_memory": self._save_spoken},
+                player, silence_s=self.cfg.live_silence_seconds, max_s=self.cfg.live_max_seconds,
+                on_ready=lambda: play_wav(self.cfg.audio_out, tone(660)),  # "go ahead, I'm listening"
+            )
+            self.live = session
+            reason = asyncio.run(session.run())
+            log.info("Live conversation ended (%s)", reason)
+            player.close()
+            play_wav(self.cfg.audio_out, tone(440, 90))  # "bye"
+            return True
+        except Exception:
+            log.exception("Live conversation failed; using the one-shot voice flow")
+            return False
+        finally:
+            self.live = None
+            player.close()
+
+    def _save_spoken(self, text: str) -> str:
+        """The save_memory tool: a photo now, saved with the words, like a REMEMBER press."""
+        photo = self.camera.capture_jpeg()
+        where = whereabouts(self.cfg)
+        try:
+            self.api.log_memory(None, photo, where, transcript=text)
+            return "Saved."
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
+                raise
+            self.spool.add(None, photo, where, transcript=text)
+            return "Saved on the wearable; it will upload when it's back online."
+
     def _begin(self, mode: str) -> None:
+        if (live := self.live) is not None:  # any button ends a live conversation
+            live.stop()
+            return
         if not self.busy.acquire(blocking=False):
             return
         try:
@@ -732,6 +990,10 @@ class Device:
 
     def _send(self, mode: str, wav: bytes, photo: bytes | None) -> None:
         try:
+            if mode == "ask" and self.cfg.live and held_quietly(wav, self.cfg.live_hold_seconds):
+                if not self._converse():  # a quiet long press of ASK: a conversation instead
+                    play_wav(self.cfg.audio_out, tone(440))
+                return
             try:
                 words = self._words(wav)
             except NothingHeard:
@@ -762,7 +1024,8 @@ class Device:
     def run(self) -> None:
         if self.mic:
             self.mic.start()
-            log.info("Listening for the wake phrase (%s)", self.cfg.wake_word)
+        if self.wake:
+            log.info("Listening for the wake phrase (%s)%s", self.cfg.wake_word, "; live conversations on" if self.cfg.live else "")
         log.info("LastScene ready: hold REMEMBER (GPIO%d) or ASK (GPIO%d)", self.cfg.remember_pin, self.cfg.ask_pin)
         while True:
             time.sleep(60)
@@ -781,6 +1044,8 @@ def main() -> None:
     parser.add_argument("--ask-file", metavar="WAV", help="ask a question from a file and save answer.wav, no hardware")
     parser.add_argument("--check", action="store_true", help="check the Auth0 token and API reachability")
     parser.add_argument("--where", action="store_true", help="print the location fields this device would send")
+    parser.add_argument("--live-check", action="store_true",
+                        help="get a live token and open (then close) a Gemini Live session; sends no audio")
     parser.add_argument("--transcribe", metavar="WAV", nargs="+",
                         help="transcribe 16 kHz mono WAVs with STT_ENGINE on this device and time it; no network")
     args = parser.parse_args()
@@ -802,6 +1067,16 @@ def main() -> None:
     api = ApiClient(cfg)
     if args.where:
         print(json.dumps(whereabouts(cfg), indent=2))
+    elif args.live_check:
+        token = api.live_token()
+        print("Live token OK:", token["model"], token["api_version"], "until", token["expires_at"])
+
+        async def connect_once():
+            async with gemini_live_connect(token):
+                pass
+
+        asyncio.run(connect_once())
+        print("Gemini Live session opened and closed")
     elif args.check:
         api.token()
         print("Auth0 token OK;", "API", httpx.get(f"{cfg.api_url}/healthz", timeout=10).json())

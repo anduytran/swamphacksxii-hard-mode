@@ -37,6 +37,8 @@ Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, 
 |---|---|---|
 | `POST /api/v1/memory/log` | multipart `audio`, `image` (JPEG/PNG); optional location `wifi` (JSON `[{bssid, signal}]`) or `lat`, `lng`, `accuracy_m` | `{id, timestamp, transcript}` |
 | `POST /api/v1/memory/query` | multipart `audio` (+ same optional location fields) | spoken answer (`audio/wav`); `X-Question` / `X-Answer` headers hold the URL-encoded text |
+| `POST /api/v1/live/token` | – | `{token, model, api_version, expires_at, new_session_expires_at}`: a one-use Gemini Live token (model, persona, tools, voice locked in) for live conversation mode; 404 unless `LIVE_ENABLED=true`, 429 past `LIVE_TOKENS_PER_HOUR` per device, 503 if Gemini refuses |
+| `POST /api/v1/memory/recall` | JSON `{question}` | `{question, facts, text}`: the retrieved memories as short text facts, no language model (Gemini Live's `recall_memories` tool) |
 
 ### Vision pipeline (device)
 
@@ -224,6 +226,7 @@ The Vercel project uses the FastAPI preset with Root Directory `backend` (and "i
 3. Add the environment variables for **Production** in the Vercel dashboard (Project → Settings → Environment Variables), copying values from `backend/.env`: `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`, `AUTH0_SPA_CLIENT_ID`, `DATABASE_URL`, `IMAGE_URL_SECRET`, `GEMINI_API_KEY`, plus:
    - `ENRICH_IN_BACKGROUND=false` (serverless functions may freeze once the response is sent, so enrichment runs before replying)
    - `CRON_SECRET=` a long random string (Vercel Cron sends it to `/api/v1/admin/purge`)
+   - optional: `LIVE_ENABLED=true` for live conversation mode (the wearable then talks to Gemini Live directly, since Vercel can't hold its websocket; see `backend/.env.example`)
 4. Deploy:
    ```bash
    vercel --prod
