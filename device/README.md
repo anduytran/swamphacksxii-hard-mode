@@ -81,6 +81,10 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
    sudo /opt/lastscene/venv/bin/pip install vosk
    cd /opt/lastscene/stt && sudo curl -fLO https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip && sudo unzip vosk-model-small-en-us-0.15.zip
    ```
+   **Live conversation** (optional, `LIVE=true`): talk back and forth with Gemini Live. The Pi connects to Gemini itself with a one-use token from the server (the server's Gemini key never reaches the Pi), so it needs the SDK:
+   ```bash
+   sudo /opt/lastscene/venv/bin/pip install google-genai
+   ```
    Time it on the Pi before relying on it: `arecord -f S16_LE -r 16000 -c 1 -d 4 said.wav`, then `STT_ENGINE=moonshine /opt/lastscene/venv/bin/python lastscene_device.py --transcribe said.wav` (no network or Auth0 needed). On a Mac, one thread, Moonshine took 40–90 ms per 2 s clip with ~285 MB peak memory; the Zero 2 W has 512 MB in all, so check `free -m` with the service running. If the model is missing or hears nothing, the clip goes to the server's speech-to-text instead; `STT_FALLBACK=false` turns that off.
 4. Copy this folder to the Pi and set up config:
    ```bash
@@ -111,6 +115,7 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
 ## Using it
 
 - **Say "Last Scene"**, wait for the beep, then speak: "I'm putting my keys on the counter" is saved with a photo (high beep), "Where are my keys?" is answered out loud. It records until you stop talking (up to `WAKE_MAX_SECONDS`). Audio stays on the Pi until the phrase is heard; only what's said after the beep is sent (as text, with `STT_ENGINE` set). If it triggers by mistake, raise `WAKE_THRESHOLD`; if it misses you, lower it. `WAKE_WORD` points at the "Last Scene" model (training: [wake/README.md](wake/README.md)); `WAKE_WORD=hey_jarvis` works right away for testing, with "Hey Jarvis" as the phrase.
+- **Live conversation** (`LIVE=true` here and `LIVE_ENABLED=true` on the server): say "Last Scene" (or hold ASK for `LIVE_HOLD_SECONDS` without speaking, then release), wait for the chime, and just talk: "Where are my keys?", "And my glasses?", "I'm putting my wallet in the drawer". Gemini looks things up in your memories (it's told never to guess) and saves new ones with a photo. It ends with a low beep after `LIVE_SILENCE_SECONDS` of quiet, at `LIVE_MAX_SECONDS`, or when you press any button. The mic is muted while Gemini speaks (the Pi has no echo cancellation), so wait for it to finish. Nothing is streamed before the wake phrase or the long press. If live mode can't start (server has it off, quota, no Wi-Fi), the normal one-shot flow runs instead. Check it with `--live-check`, which gets a token and opens a session without sending audio.
 - **Hold REMEMBER**, say where you're putting something ("I'm putting my keys on the counter"), release. It takes a photo when you press, records while held, and uploads when you let go. The LED is solid while recording and blinks while sending.
 - **Hold ASK**, ask ("Where are my keys?"), release. The answer plays through the speaker.
 - With no Wi-Fi, memories are kept in `/var/lib/lastscene/spool` and uploaded automatically once it's back. Questions need a connection.

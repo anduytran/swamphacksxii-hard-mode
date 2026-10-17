@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     gemini_tts_model: str = "gemini-3.8-flash-tts"
     gemini_tts_voice: str = "Kore"
     gemini_embedding_model: str = "gemini-embedding-2"
+    # Live conversation mode: the wearable talks with Gemini Live using a one-use token from
+    # POST /api/v1/live/token (the model, persona, tools and GEMINI_TTS_VOICE are locked into it).
+    live_enabled: bool = False
+    gemini_live_model: str = "gemini-3.8-live"
+    live_tokens_per_hour: int = 30  # per device
 
     openai_api_key: str = ""
     stt_model: str = "whisper-1"
