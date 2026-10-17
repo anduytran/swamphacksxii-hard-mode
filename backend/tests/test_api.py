@@ -87,6 +87,16 @@ class FakeDB:
     async def household_of_device(self, device_id):
         return None
 
+    async def missing_grid(self, device_ids, days):
+        """Hourly (asked, put down) counts from the in-memory queries and items."""
+        trunc = lambda t: t.replace(minute=0, second=0, microsecond=0)
+        hours: dict = {}
+        for q in self.queries:
+            hours.setdefault(trunc(q.created_at), [0, 0])[0] += 1
+        for i in self.items:
+            hours.setdefault(trunc(i.created_at), [0, 0])[1] += 1
+        return [(h, a, p) for h, (a, p) in sorted(hours.items())]
+
     async def remember_pairing_code(self, device_id, code):
         self.pairing = (device_id, code)
 
@@ -473,3 +483,24 @@ def test_device_pairing_code_is_remembered(client):
         files={"audio": ("a.wav", b"I am putting my keys down", "audio/wav"), "image": ("i.jpg", b"\xff\xd8", "image/jpeg")},
     )
     assert client.app_state.db.pairing == ("dev1@clients", "ABCD-1234")
+
+
+def test_missing_times_counts_questions_by_hour(client):
+    log(client, "I am putting my keys on the counter")
+    ask(client, "Where are my keys?")
+    ask(client, "Where are my glasses?")
+    assert client.get("/api/v1/dashboard/missing-times", headers=DEVICE).status_code == 403
+    assert client.get("/api/v1/dashboard/missing-times?days=3", headers=CAREGIVER).status_code == 422  # 7 to 90
+    data = client.get("/api/v1/dashboard/missing-times", headers=CAREGIVER).json()
+    assert data["days"] == 28
+    (hour,) = data["hours"]  # everything happened within this hour
+    assert hour["asked"] == 2 and hour["put_down"] == 1
+    assert datetime.fromisoformat(hour["at"]).minute == 0
+
+
+def test_search_without_a_wearable_spends_nothing(client):
+    client.app_state.db.household_devices = []
+    calls = []
+    client.app_state.ai.embed = lambda *a, **k: calls.append(a)  # would be a paid call
+    resp = client.get("/api/v1/dashboard/search?q=keys", headers=CAREGIVER)
+    assert resp.json() == {"query": "keys", "results": []} and calls == []

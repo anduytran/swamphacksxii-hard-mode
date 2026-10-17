@@ -1,7 +1,7 @@
 import logging
 import time
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 
@@ -9,7 +9,7 @@ from .. import signing
 from ..ai import AIServices
 from ..auth import Principal, require_caregiver
 from ..config import Settings, get_settings
-from ..db import ItemSighting, MemoryDB, QueryRecord
+from ..db import ACTIVITY_COUNTS_DAYS, ItemSighting, MemoryDB, QueryRecord
 from ..deps import get_ai, get_db
 from ..home_map import floor_plan, room_for
 from ..geo import home_place_id, place_label
@@ -180,6 +180,23 @@ async def insights(
     return await _insights(db, settings, devices, hours)
 
 
+@router.get("/missing-times")
+async def missing_times(
+    days: int = Query(28, ge=7, le=ACTIVITY_COUNTS_DAYS, description="How far back to look"),
+    devices: list[str] = Depends(household_devices),
+    db: MemoryDB = Depends(get_db),
+):
+    """When things go missing: questions asked (and things put down) per hour, for the
+    hour-of-day x day-of-week grid. Hours are UTC instants; the dashboard places them in the
+    viewer's own time zone. Older than 72 h, only anonymous hourly counts are left."""
+    hours = await db.missing_grid(devices, days) if devices else []
+    return {
+        "days": days,
+        "since": (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(),
+        "hours": [{"at": at.isoformat(), "asked": asked, "put_down": put_down} for at, asked, put_down in hours],
+    }
+
+
 # One summary per process for a few minutes: it's an LLM call, and the data moves slowly.
 _SUMMARY_TTL_SECONDS = 600
 _summary_cache: dict[str, tuple[float, str | None]] = {}
@@ -231,7 +248,10 @@ async def search(
 ):
     """The wearable's retrieval step, shown in full: which memories a question finds and
     which chunks matched, by meaning (vector) and by words (keyword). Embeds the query,
-    so each search makes one embedding call."""
+    so each search makes one embedding call: only for households with a wearable (an
+    account with nothing to search can't spend embedding calls)."""
+    if not devices:
+        return {"query": q, "results": []}
     memories = await retrieve(db, ai, q, devices, settings.retention_hours, limit)
     results = []
     for m in memories:

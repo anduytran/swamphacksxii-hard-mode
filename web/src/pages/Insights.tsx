@@ -1,13 +1,13 @@
 // Insights: patterns a caregiver should know about, over a chosen window (24 h – 3 days).
 import { useState, type ReactNode } from "react";
-import { BarList, Columns, DataTable, type BarRow } from "../components/Charts";
+import { BarList, Columns, DataTable, HeatGrid, type BarRow } from "../components/Charts";
 import { EmptyState, repeat, Sk } from "../components/bits";
 import { Icon, type IconName } from "../components/Icons";
 import { useApi } from "../lib/api";
 import { useApp, useLoadStatus } from "../lib/app";
 import { bucketByHour, capitalize, clockTime, timeAgo } from "../lib/format";
 import { getCached, useResource } from "../lib/resource";
-import type { Insights, Question } from "../lib/types";
+import type { Insights, MissingTimes, Question } from "../lib/types";
 
 const RANGES = [
   { hours: 24, label: "24 hours" },
@@ -110,6 +110,8 @@ export default function InsightsPage() {
         </details>
       </section>
 
+      <MissingGridCard />
+
       {/*
         Add new visualizations here: a .card with an <h2> and a chart from components/Charts.tsx
         (BarList, Columns, DataTable). See README → "Adding a visualization".
@@ -210,5 +212,118 @@ function QuestionRow({ q }: { q: Question }) {
         {clockTime(q.timestamp)} · {timeAgo(q.timestamp)}
       </time>
     </li>
+  );
+}
+
+// ---------- When things go missing: hour of day x day of week ----------
+
+const GRID_RANGES = [
+  { days: 7, label: "1 week" },
+  { days: 28, label: "4 weeks" },
+  { days: 90, label: "3 months" },
+];
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const WEEKDAY_NAMES = ["Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays"];
+const HOURS = Array.from({ length: 24 }, (_, h) => h);
+const hourName = (h: number) => `${h % 12 || 12}${h < 12 ? "am" : "pm"}`;
+const BLOCKS = ["12–3am", "3–6am", "6–9am", "9am–12", "12–3pm", "3–6pm", "6–9pm", "9pm–12"];
+let gridDays = 28; // survives switching pages, like the range above
+
+type Measure = "asked" | "put_down";
+
+/** Sums each UTC hour into the viewer's local weekday (Monday first) and hour. */
+export function binMissing(hours: MissingTimes["hours"], measure: Measure): number[][] {
+  const grid = WEEKDAYS.map(() => HOURS.map(() => 0));
+  for (const h of hours) {
+    const at = new Date(h.at);
+    grid[(at.getDay() + 6) % 7][at.getHours()] += h[measure];
+  }
+  return grid;
+}
+
+/** The finding in one sentence: the busiest weekday and 3-hour block. */
+export function missingPeak(grid: number[][], measure: Measure): string | null {
+  const total = grid.flat().reduce((a, b) => a + b, 0);
+  if (!total) return null;
+  const byDay = grid.map((r) => r.reduce((a, b) => a + b, 0));
+  const byBlock = BLOCKS.map((_, b) => grid.reduce((sum, r) => sum + r.slice(b * 3, b * 3 + 3).reduce((a, c) => a + c, 0), 0));
+  const day = byDay.indexOf(Math.max(...byDay));
+  const block = byBlock.indexOf(Math.max(...byBlock));
+  const what = measure === "asked" ? "Questions about lost things come" : "Things get put down";
+  return `${what} most on ${WEEKDAY_NAMES[day]} and between ${BLOCKS[block]} (${Math.round((byBlock[block] / total) * 100)}% of the total).`;
+}
+
+function MissingGridCard() {
+  const api = useApi();
+  const [days, setDays] = useState(gridDays);
+  const [measure, setMeasure] = useState<Measure>("asked");
+  const res = useResource(`missing:${days}`, () => api<MissingTimes>(`/api/v1/dashboard/missing-times?days=${days}`));
+  const grid = res.data ? binMissing(res.data.hours, measure) : null;
+  const noun = measure === "asked" ? "question" : "put-down";
+  const peak = grid && missingPeak(grid, measure);
+
+  return (
+    <section className="card" aria-labelledby="missing-h">
+      <div className="card-head">
+        <h2 id="missing-h">When things go missing</h2>
+        <div className="segmented" role="group" aria-label="How far back">
+          {GRID_RANGES.map((r) => (
+            <button
+              key={r.days}
+              type="button"
+              aria-pressed={days === r.days}
+              onClick={() => {
+                gridDays = r.days;
+                setDays(r.days);
+              }}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="missing-sub">
+        <div className="segmented small" role="group" aria-label="What to show">
+          <button type="button" aria-pressed={measure === "asked"} onClick={() => setMeasure("asked")}>
+            Questions asked
+          </button>
+          <button type="button" aria-pressed={measure === "put_down"} onClick={() => setMeasure("put_down")}>
+            Things put down
+          </button>
+        </div>
+        <p className="missing-peak">{grid ? peak ?? `No ${noun}s in this period yet.` : "\u00a0"}</p>
+      </div>
+      {grid ? (
+        <HeatGrid
+          rows={WEEKDAYS}
+          columns={HOURS.map(String)}
+          columnTicks={["12am", "3am", "6am", "9am", "12pm", "3pm", "6pm", "9pm"]}
+          values={grid}
+          label={`${measure === "asked" ? "Questions asked" : "Things put down"} by day and hour, last ${days} days`}
+          cellLabel={(d, h, v) => `${WEEKDAY_NAMES[d]}, ${hourName(h)}–${hourName((h + 1) % 24)}: ${v} ${noun}${v === 1 ? "" : "s"}`}
+        />
+      ) : (
+        <Sk cls="block h200" />
+      )}
+      <div className="heat-legend" aria-hidden="true">
+        <span>None</span>
+        <i className="heat-cell h0" />
+        <span>Fewer</span>
+        {[1, 2, 3, 4].map((l) => (
+          <i key={l} className={`heat-cell h${l}`} />
+        ))}
+        <span>More</span>
+      </div>
+      <p className="hint">
+        In your time zone. The last 3 days come from the memories themselves; before that, only anonymous hourly counts are kept (no words
+        or photos), for up to 90 days.
+      </p>
+      {grid && (
+        <details>
+          <summary>Show as table</summary>
+          <DataTable headers={["Day", ...BLOCKS]} rows={WEEKDAYS.map((d, i) => [d, ...BLOCKS.map((_, b) => grid[i].slice(b * 3, b * 3 + 3).reduce((a, c) => a + c, 0))])} />
+        </details>
+      )}
+    </section>
   );
 }

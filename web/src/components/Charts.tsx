@@ -110,6 +110,46 @@ export function Columns({ categories, series, label }: { categories: string[]; s
   );
 }
 
+// ---------- heat grid: rows x columns of counts, one sequential hue ----------
+
+export interface HeatGridProps {
+  rows: string[]; // e.g. weekdays
+  columns: string[]; // e.g. hours; every one gets a cell
+  columnTicks: string[]; // labels shown above the grid (columns.length must be a multiple)
+  values: number[][]; // values[row][column]
+  cellLabel(row: number, column: number, value: number): string; // tooltip text
+  label: string; // the chart's text alternative starts with this
+}
+
+/** Steps of the ramp: 0 is its own neutral, then four steps of --series-1 by share of the
+ *  busiest cell. Lightness only moves one way, so more always reads as darker (light theme)
+ *  or brighter (dark theme). */
+export const heatLevel = (value: number, max: number) => (value <= 0 || max <= 0 ? 0 : Math.min(4, Math.ceil((value / max) * 4)));
+
+export function HeatGrid({ rows, columns, columnTicks, values, cellLabel, label }: HeatGridProps) {
+  const max = Math.max(0, ...values.flat());
+  const every = columns.length / columnTicks.length;
+  const description = `${label}. ` + rows.map((r, ri) => `${r}: ${values[ri].reduce((a, b) => a + b, 0)}`).join("; ");
+  return (
+    <div className="heat-grid" role="img" aria-label={description} style={{ gridTemplateColumns: `auto repeat(${columns.length}, minmax(0, 1fr))` }}>
+      <span />
+      {columnTicks.map((t) => (
+        <span key={t} className="heat-tick" style={{ gridColumn: `span ${every}` }}>
+          {t}
+        </span>
+      ))}
+      {rows.map((r, ri) => (
+        <div key={r} className="heat-row">
+          <span className="heat-row-label">{r}</span>
+          {columns.map((c, ci) => (
+            <span key={c} className={`heat-cell h${heatLevel(values[ri][ci], max)}`} {...tooltip(cellLabel(ri, ci, values[ri][ci]))} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ---------- the always-available text view of a chart ----------
 
 type Cell = string | number;
