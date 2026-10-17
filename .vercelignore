@@ -11,3 +11,7 @@ device
 deploy
 backend/tests
 backend/scripts
+# Built and installed on Vercel, not uploaded
+web/node_modules
+web/dist
+web/dist-qa

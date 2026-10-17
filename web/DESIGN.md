@@ -1,6 +1,6 @@
 # LastScene dashboard: UI specification
 
-High-fidelity, responsive spec for the caregiver dashboard as built in `index.html`, `styles.css`, `app.js` and `charts.js`. Change the code and this file together.
+High-fidelity, responsive spec for the caregiver dashboard as built in `web/` (React + TypeScript + Vite: `src/pages`, `src/components`, `src/styles.css`). Change the code and this file together.
 
 ## 1. Four layers
 

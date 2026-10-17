@@ -12,7 +12,8 @@ from .db import MemoryDB
 from .geo import Geolocator, usage_month
 from .routers import admin, dashboard, households, images, memory, observations, public
 
-FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
+# The built dashboard (cd web && npm run build). On Vercel the CDN serves it instead.
+FRONTEND_DIR = Path(__file__).resolve().parents[2] / "web" / "dist"
 log = logging.getLogger("lastscene")
 
 

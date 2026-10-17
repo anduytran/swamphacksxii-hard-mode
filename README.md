@@ -4,9 +4,9 @@ LastScene: multimodal ai embedded on hardware to track down items
 ## Layout
 
 ```
-api/index.py      Vercel entry point (serves backend/ + frontend/)
+api/index.py      Vercel entry point for the API (the dashboard is static, built from web/)
 backend/          FastAPI service
-  app/main.py         app + static dashboard + /config.json
+  app/main.py         app + /config.json (+ serves web/dist locally)
   app/auth.py         Auth0 JWT validation (M2M device vs. caregiver user)
   app/db.py           TigerData / Postgres + pgvector: transcripts, embeddings and photos
   app/signing.py      short-lived signed photo links for the dashboard
@@ -15,8 +15,12 @@ backend/          FastAPI service
   app/routers/        memory, observations (vision pipeline), dashboard, households, public, images, admin (see API)
   app/retention.py    72h purge job (run from cron)
   scripts/device_sim.py  pretend-wearable client for end-to-end testing
-frontend/         plain HTML/JS caregiver dashboard (UI spec: frontend/DESIGN.md): Items, Timeline, Insights pages (auth0-spa-js)
-  charts.js           reusable chart kit (bar list, grouped columns, data table)
+web/              caregiver dashboard: React + TypeScript + Vite (UI spec: web/DESIGN.md)
+  src/App.tsx         shell + hash routing (#/items …); map pages load as their own chunks
+  src/pages/          Items, Timeline, Map, Insights, Search, Public map, Household, Landing
+  src/components/     shell, charts (bar list, columns, sortable table), item drawer, forms
+  src/lib/            Auth0 (auth.tsx), API client and types, data cache, deck.gl layers, public grid
+  src/styles.css      design tokens + all styles
 device/           Raspberry Pi Zero 2 W wearable client, wiring guide, systemd unit
 deploy/           systemd unit + crontab for the Vultr instance
 ```
@@ -143,7 +147,19 @@ cp backend/.env.example backend/.env
 cd backend && .venv/bin/uvicorn app.main:app --reload
 ```
 
-The dashboard is at http://localhost:8000. Tests (no external services needed):
+Build the dashboard once (Node 20+), and again after frontend changes; FastAPI serves `web/dist`:
+
+```bash
+cd web && npm install && npm run build
+```
+
+The dashboard is at http://localhost:8000. For live reload, run `cd web && npm run dev` (http://localhost:5173, proxying the API to :8000); signing in there needs `http://localhost:5173` added to the Auth0 Dashboard app's callback, logout and web-origin URLs. Frontend type check and tests:
+
+```bash
+cd web && npm run typecheck && npm test
+```
+
+Backend tests (no external services needed):
 
 ```bash
 cd backend && .venv/bin/pytest -q
@@ -171,7 +187,7 @@ cd backend && DEVICE_CLIENT_ID=... DEVICE_CLIENT_SECRET=... AUTH0_DOMAIN=... AUT
 
 ### Deploy on Vercel at lastscene.photo
 
-The whole app (API + dashboard) runs as one Python function: `api/index.py` imports the FastAPI app, `vercel.json` routes every path to it and schedules the daily purge. `.vercelignore` keeps `.env`, the venv and the device code out of uploads.
+Vercel builds the dashboard (`web/`, `npm ci && npm run build`) and serves `web/dist` from its CDN; everything else (`/api/…`, `/healthz`, `/config.json`) goes to one Python function, `api/index.py`, which imports the FastAPI app. `vercel.json` holds the build, the rewrite and the daily purge schedule. `.vercelignore` keeps `.env`, the venv, `node_modules` and the device code out of uploads.
 
 1. Install the CLI and log in (opens a browser):
    ```bash
@@ -180,7 +196,7 @@ The whole app (API + dashboard) runs as one Python function: `api/index.py` impo
    ```bash
    vercel login
    ```
-2. From the repo root, create the project (accept the defaults; no build command):
+2. From the repo root, create the project (accept the defaults; `vercel.json` sets the build):
    ```bash
    vercel link
    ```
@@ -264,16 +280,15 @@ The wearable runs no models by default. Next steps with an obvious home: on-devi
 
 ## Adding a visualization
 
-Data flows `TigerData → routers/dashboard.py (insights) → frontend/app.js (loadInsights) → frontend/charts.js`.
+Data flows `TigerData → routers/dashboard.py (insights) → web/src/pages/Insights.tsx → web/src/components/Charts.tsx`.
 
-1. **Compute it on the server.** Add a field to the dict returned by `insights()` in `backend/app/routers/dashboard.py`. Prefer raw timestamps (as `activity` does) when the chart groups by local time, so the browser can bucket in the viewer's timezone. Add a test in `backend/tests/test_api.py`.
-2. **Give it a place on the page.** In `frontend/index.html`, copy a `<section class="card">` with an `<h2>` and an empty `<div id="chart-…">` at the marked spot on the Insights page (add a `.legend` if it has two series).
-3. **Draw it.** In `loadInsights()` call the chart kit:
-   - `Charts.barList(el, [{label, value}], {unit, empty})` for rankings and top-N
-   - `Charts.columns(el, {categories, series: [{name, values}]}, {label, table})` for time buckets or comparisons (1–2 series)
-   - `Charts.bucketByHour(events, {buckets})` to count timestamped events into local-time buckets
-   - `Charts.dataTable(table, headers, rows)` for the text view every chart should have
-4. **Colors.** Use only `--series-1` / `--series-2` for data; status colors are reserved for good/warning badges. A third series needs a validated color first (see the comment at the top of `charts.js`).
+1. **Compute it on the server.** Add a field to the dict returned by `_insights()` in `backend/app/routers/dashboard.py`. Prefer raw timestamps (as `activity` does) when the chart groups by local time, so the browser can bucket in the viewer's timezone. Add a test in `backend/tests/test_api.py`, and the field to `Insights` in `web/src/lib/types.ts`.
+2. **Draw it.** In `InsightsPage` (`web/src/pages/Insights.tsx`), add a `<section className="card">` with an `<h2>` at the marked spot, and a chart from the kit:
+   - `<BarList rows={[{label, value, key}]} unit empty onSelect? />` for rankings and top-N (`onSelect` makes rows open the item drawer)
+   - `<Columns categories series={[{name, values}]} label />` for time buckets or comparisons (1–2 series; add a `.legend`)
+   - `bucketByHour(events, buckets)` (`lib/format.ts`) to count timestamped events into local-time buckets
+   - `<DataTable headers rows />` inside `<details>` for the text view every chart should have
+3. **Colors.** Use only `--series-1` / `--series-2` for data; status colors are reserved for good/warning badges. A third series needs a validated color first (see the comment at the top of `Charts.tsx`).
 
 ## Privacy
 The daily purge (Vercel Cron → `/api/v1/admin/purge`, or `python -m app.retention` from cron on a VPS) deletes every `memory_logs` row older than `RETENTION_HOURS` (72), photo included. Photos are only reachable through signed links that expire after 15 minutes.
