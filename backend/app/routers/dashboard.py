@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends
 
+from .. import signing
 from ..auth import Principal, require_caregiver
 from ..config import Settings, get_settings
 from ..db import MemoryDB
-from ..deps import get_db, get_store
-from ..storage import ObjectStore
+from ..deps import get_db
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
 
@@ -13,7 +13,6 @@ router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
 async def history(
     caregiver: Principal = Depends(require_caregiver),
     db: MemoryDB = Depends(get_db),
-    store: ObjectStore = Depends(get_store),
     settings: Settings = Depends(get_settings),
 ):
     records = await db.recent(settings.dashboard_history_hours)
@@ -23,8 +22,11 @@ async def history(
             "device_id": r.device_id,
             "timestamp": r.created_at.isoformat(),
             "transcript": r.transcript,
-            # Presigning is a local HMAC computation, no network round trip.
-            "image_url": store.presigned_url(r.image_key) if r.image_key else None,
+            "image_url": (
+                signing.image_url(settings.image_url_secret, r.id, settings.image_url_ttl_seconds)
+                if r.has_image
+                else None
+            ),
         }
         for r in records
     ]

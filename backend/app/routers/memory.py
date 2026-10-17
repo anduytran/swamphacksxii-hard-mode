@@ -6,13 +6,13 @@ from ..ai import AIServices
 from ..auth import Principal, require_device
 from ..config import Settings, get_settings
 from ..db import MemoryDB
-from ..deps import get_ai, get_db, get_store
-from ..storage import ObjectStore
+from ..deps import get_ai, get_db
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
 
-MAX_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_IMAGE_BYTES = 2 * 1024 * 1024  # photos live in Postgres; ESP32 JPEGs are ~50-200 KB
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 
 async def _read(upload: UploadFile, limit: int, label: str) -> bytes:
@@ -30,7 +30,6 @@ async def log_memory(
     image: UploadFile = File(...),
     device: Principal = Depends(require_device),
     db: MemoryDB = Depends(get_db),
-    store: ObjectStore = Depends(get_store),
     ai: AIServices = Depends(get_ai),
 ):
     audio_bytes = await _read(audio, MAX_AUDIO_BYTES, "audio")
@@ -40,11 +39,10 @@ async def log_memory(
     if not transcript:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "No speech detected")
 
-    image_key = await store.put_image(
-        ObjectStore.new_image_key(device.sub), image_bytes, image.content_type or "image/jpeg"
-    )
+    # The type is echoed back when the dashboard loads the photo, so never trust it blindly.
+    image_type = image.content_type if image.content_type in ALLOWED_IMAGE_TYPES else "image/jpeg"
     embedding = await ai.embed(transcript)
-    record = await db.insert(device.sub, transcript, embedding, image_key)
+    record = await db.insert(device.sub, transcript, embedding, image_bytes, image_type)
     return {"id": record.id, "timestamp": record.created_at.isoformat(), "transcript": transcript}
 
 

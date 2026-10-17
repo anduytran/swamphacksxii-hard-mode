@@ -19,13 +19,9 @@ class Settings(BaseSettings):
     # TigerData (Postgres + pgvector)
     database_url: str = ""  # postgres://user:pass@host:port/tsdb?sslmode=require
 
-    # Vultr Object Storage (S3-compatible)
-    s3_endpoint_url: str = ""  # e.g. https://ewr1.vultrobjects.com
-    s3_region: str = "us-east-1"
-    s3_access_key: str = ""
-    s3_secret_key: str = ""
-    s3_bucket: str = "memory-anchor"
-    presigned_url_ttl_seconds: int = 900
+    # Signs the short-lived photo links handed to the dashboard. Any long random string.
+    image_url_secret: str = ""
+    image_url_ttl_seconds: int = 900
 
     # AI providers
     openai_api_key: str = ""

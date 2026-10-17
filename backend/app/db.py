@@ -1,4 +1,8 @@
-"""TigerData (Timescale Postgres) with the pgvector extension."""
+"""TigerData (Timescale Postgres) with the pgvector extension.
+
+Photos are stored in the same row as their transcript, so the retention purge
+removes both in one statement and no separate object store is needed.
+"""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,8 +22,12 @@ class MemoryRecord:
     device_id: str
     created_at: datetime
     transcript: str
-    image_key: str | None
+    has_image: bool
     distance: float | None = None
+
+
+# Every query that lists records selects this instead of the image bytes.
+_COLUMNS = "id, device_id, created_at, transcript, image IS NOT NULL AS has_image"
 
 
 class MemoryDB:
@@ -46,10 +54,14 @@ class MemoryDB:
                     created_at  timestamptz NOT NULL DEFAULT now(),
                     transcript  text        NOT NULL,
                     embedding   vector({self.dims}) NOT NULL,
-                    image_key   text
+                    image       bytea,
+                    image_type  text
                 )
                 """
             )
+            # Tables created by the earlier object-storage version lack these columns.
+            await conn.execute("ALTER TABLE memory_logs ADD COLUMN IF NOT EXISTS image bytea")
+            await conn.execute("ALTER TABLE memory_logs ADD COLUMN IF NOT EXISTS image_type text")
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS memory_logs_created_at_idx ON memory_logs (created_at DESC)"
             )
@@ -59,18 +71,24 @@ class MemoryDB:
             )
 
     async def insert(
-        self, device_id: str, transcript: str, embedding: list[float], image_key: str | None
+        self,
+        device_id: str,
+        transcript: str,
+        embedding: list[float],
+        image: bytes | None,
+        image_type: str | None,
     ) -> MemoryRecord:
         row = await self.pool.fetchrow(
-            """
-            INSERT INTO memory_logs (device_id, transcript, embedding, image_key)
-            VALUES ($1, $2, $3::vector, $4)
-            RETURNING id, device_id, created_at, transcript, image_key
+            f"""
+            INSERT INTO memory_logs (device_id, transcript, embedding, image, image_type)
+            VALUES ($1, $2, $3::vector, $4, $5)
+            RETURNING {_COLUMNS}
             """,
             device_id,
             transcript,
             _vec(embedding),
-            image_key,
+            image,
+            image_type,
         )
         return _record(row)
 
@@ -78,9 +96,8 @@ class MemoryDB:
         self, device_id: str, embedding: list[float], lookback_hours: int, limit: int = 3
     ) -> list[MemoryRecord]:
         rows = await self.pool.fetch(
-            """
-            SELECT id, device_id, created_at, transcript, image_key,
-                   embedding <=> $2::vector AS distance
+            f"""
+            SELECT {_COLUMNS}, embedding <=> $2::vector AS distance
             FROM memory_logs
             WHERE device_id = $1
               AND created_at > now() - make_interval(hours => $3)
@@ -96,8 +113,8 @@ class MemoryDB:
 
     async def recent(self, hours: int) -> list[MemoryRecord]:
         rows = await self.pool.fetch(
-            """
-            SELECT id, device_id, created_at, transcript, image_key
+            f"""
+            SELECT {_COLUMNS}
             FROM memory_logs
             WHERE created_at > now() - make_interval(hours => $1)
             ORDER BY created_at DESC
@@ -106,17 +123,19 @@ class MemoryDB:
         )
         return [_record(r) for r in rows]
 
-    async def delete_older_than(self, hours: int) -> list[str]:
-        """Delete expired rows and return their image keys so the caller can purge storage."""
-        rows = await self.pool.fetch(
-            """
-            DELETE FROM memory_logs
-            WHERE created_at < now() - make_interval(hours => $1)
-            RETURNING image_key
-            """,
+    async def get_image(self, record_id: str) -> tuple[bytes, str] | None:
+        row = await self.pool.fetchrow(
+            "SELECT image, image_type FROM memory_logs WHERE id = $1::uuid AND image IS NOT NULL",
+            record_id,
+        )
+        return (row["image"], row["image_type"] or "image/jpeg") if row else None
+
+    async def delete_older_than(self, hours: int) -> int:
+        result = await self.pool.execute(
+            "DELETE FROM memory_logs WHERE created_at < now() - make_interval(hours => $1)",
             hours,
         )
-        return [r["image_key"] for r in rows if r["image_key"]]
+        return int(result.split()[-1])  # asyncpg returns e.g. "DELETE 12"
 
 
 def _record(row) -> MemoryRecord:
@@ -125,6 +144,6 @@ def _record(row) -> MemoryRecord:
         device_id=row["device_id"],
         created_at=row["created_at"],
         transcript=row["transcript"],
-        image_key=row["image_key"],
-        distance=row.get("distance") if "distance" in row.keys() else None,
+        has_image=row["has_image"],
+        distance=row["distance"] if "distance" in row.keys() else None,
     )

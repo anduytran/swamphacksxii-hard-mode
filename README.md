@@ -7,10 +7,10 @@ memory anchor: multimodal ai embedded on hardware to track down items
 backend/          FastAPI service (Vultr VPS)
   app/main.py         app + static dashboard + /config.json
   app/auth.py         Auth0 JWT validation (M2M device vs. caregiver user)
-  app/storage.py      Vultr Object Storage (S3 API, private bucket, presigned URLs)
-  app/db.py           TigerData / Postgres + pgvector schema and queries
+  app/db.py           TigerData / Postgres + pgvector: transcripts, embeddings and photos
+  app/signing.py      short-lived signed photo links for the dashboard
   app/ai.py           Whisper STT, OpenAI embeddings + TTS, Claude answer generation
-  app/routers/        /api/v1/memory/{log,query}, /api/v1/dashboard/history
+  app/routers/        /api/v1/memory/{log,query}, /api/v1/dashboard/history, /api/v1/images/{id}
   app/retention.py    72h purge job (run from cron)
   scripts/device_sim.py  pretend-wearable client for end-to-end testing
 frontend/         plain HTML/JS caregiver dashboard (auth0-spa-js)
@@ -24,6 +24,7 @@ deploy/           systemd unit + crontab for the Vultr instance
 | `POST /api/v1/memory/log` | device M2M token with `write:memories` | multipart `audio`, `image` (JPEG) | `{id, timestamp, transcript}` |
 | `POST /api/v1/memory/query` | device M2M token with `write:memories` | multipart `audio` | spoken answer (`audio/wav` by default); `X-Question` / `X-Answer` headers hold the URL-encoded text |
 | `GET /api/v1/dashboard/history` | caregiver user token | – | `[{id, device_id, timestamp, transcript, image_url}]`, last 24h, newest first |
+| `GET /api/v1/images/{id}?exp=…&sig=…` | signed link from `/history` (15 min) | – | the photo |
 
 Queries only search the calling device's own memories from the last 72h (top 3 by cosine distance).
 
@@ -36,10 +37,10 @@ Queries only search the calling device's own memories from the last 72h (top 3 b
 4. Because any user who can log in sees the feed, disable public sign-ups on the database connection, or enable RBAC on the API, create a `read:history` permission for caregivers, and set `CAREGIVER_PERMISSION=read:history`.
 
 ### TigerData
-Create a service and put its connection string in `DATABASE_URL`. On startup the app runs `CREATE EXTENSION vector` and creates the `memory_logs` table with an HNSW index.
+Create a service and put its connection string in `DATABASE_URL`. On startup the app runs `CREATE EXTENSION vector` and creates the `memory_logs` table with an HNSW index. Photos are stored in the same table (`bytea`), so there is no separate object store; at 72h retention and ~100 KB per JPEG this stays tiny.
 
-### Vultr Object Storage
-Create a bucket (keep it private) and put the endpoint, keys and bucket name in `.env`.
+### Photo link secret
+Set `IMAGE_URL_SECRET` to a long random string (`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`). It signs the photo links the dashboard loads; changing it just invalidates links already handed out.
 
 ### Run locally
 
@@ -81,4 +82,4 @@ crontab deploy/memory-anchor.cron
 Put it behind HTTPS (Caddy or nginx + Let's Encrypt). Auth0 requires HTTPS origins for the SPA outside localhost, and the device's token should never travel over plain HTTP.
 
 ## Privacy
-`python -m app.retention` (daily via cron, 03:15) deletes every `memory_logs` row older than `RETENTION_HOURS` (72) and the images it pointed to. Images are only reachable through presigned URLs that expire after 15 minutes.
+`python -m app.retention` (daily via cron, 03:15) deletes every `memory_logs` row older than `RETENTION_HOURS` (72), photo included. Photos are only reachable through signed links that expire after 15 minutes.

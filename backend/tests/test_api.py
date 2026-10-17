@@ -8,7 +8,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
-from app import auth
+from app import auth, signing
 from app.ai import humanize_ago
 from app.config import Settings, get_settings
 from app.db import MemoryRecord
@@ -33,29 +33,23 @@ CAREGIVER = {"Authorization": f"Bearer {make_token('auth0|carer')}"}
 class FakeDB:
     def __init__(self):
         self.rows: list[MemoryRecord] = []
+        self.images: dict[str, tuple[bytes, str]] = {}
 
-    async def insert(self, device_id, transcript, embedding, image_key):
-        rec = MemoryRecord(str(len(self.rows)), device_id, datetime.now(timezone.utc), transcript, image_key)
+    async def insert(self, device_id, transcript, embedding, image, image_type):
+        rec = MemoryRecord(str(len(self.rows)), device_id, datetime.now(timezone.utc), transcript, image is not None)
         self.rows.append(rec)
+        if image is not None:
+            self.images[rec.id] = (image, image_type)
         return rec
+
+    async def get_image(self, record_id):
+        return self.images.get(record_id)
 
     async def nearest(self, device_id, embedding, lookback_hours, limit=3):
         return [r for r in self.rows if r.device_id == device_id][:limit]
 
     async def recent(self, hours):
         return sorted(self.rows, key=lambda r: r.created_at, reverse=True)
-
-
-class FakeStore:
-    def __init__(self):
-        self.objects = {}
-
-    async def put_image(self, key, data, content_type="image/jpeg"):
-        self.objects[key] = data
-        return key
-
-    def presigned_url(self, key):
-        return f"https://signed.example/{key}?sig=x"
 
 
 class FakeAI:
@@ -78,14 +72,14 @@ class FakeAI:
 
 @pytest.fixture
 def client(monkeypatch):
-    settings = Settings(auth0_domain=DOMAIN, auth0_audience=AUDIENCE, _env_file=None)
+    settings = Settings(auth0_domain=DOMAIN, auth0_audience=AUDIENCE, image_url_secret="test-secret", _env_file=None)
     signing = SimpleNamespace(key=KEY.public_key())
     monkeypatch.setattr(
         auth, "_jwks_client", lambda domain: SimpleNamespace(get_signing_key_from_jwt=lambda t: signing)
     )
     app = create_app(use_lifespan=False)
     app.dependency_overrides[get_settings] = lambda: settings
-    app.state.db, app.state.store, app.state.ai = FakeDB(), FakeStore(), FakeAI()
+    app.state.db, app.state.ai = FakeDB(), FakeAI()
     with TestClient(app) as c:
         c.app_state = app.state
         yield c
@@ -105,7 +99,17 @@ def test_log_stores_image_and_record(client):
     assert resp.json()["transcript"] == "I am putting my keys on the counter"
     (row,) = client.app_state.db.rows
     assert row.device_id == "dev1@clients"
-    assert client.app_state.store.objects[row.image_key] == b"\xff\xd8jpeg"
+    assert client.app_state.db.images[row.id] == (b"\xff\xd8jpeg", "image/jpeg")
+
+
+def test_log_does_not_trust_image_content_type(client):
+    client.post(
+        "/api/v1/memory/log",
+        headers=DEVICE,
+        files={"audio": ("a.wav", b"hello", "audio/wav"), "image": ("x.html", b"<script>", "text/html")},
+    )
+    (row,) = client.app_state.db.rows
+    assert client.app_state.db.images[row.id][1] == "image/jpeg"
 
 
 def test_log_requires_device_token(client):
@@ -143,7 +147,21 @@ def test_history_for_caregiver(client):
     assert resp.status_code == 200
     (entry,) = resp.json()
     assert entry["transcript"] == "I am putting my keys on the counter"
-    assert entry["image_url"].startswith("https://signed.example/images/dev1_clients/")
+
+    image = client.get(entry["image_url"])  # no bearer token: the signature is the credential
+    assert image.status_code == 200
+    assert image.content == b"\xff\xd8jpeg"
+    assert image.headers["content-type"] == "image/jpeg"
+
+
+def test_image_link_rejects_bad_or_expired_signature(client):
+    log(client)
+    future = int(time.time()) + 60
+    assert client.get(f"/api/v1/images/0?exp={future}&sig=deadbeef").status_code == 403
+    expired = signing.image_url("test-secret", "0", -10)
+    assert client.get(expired).status_code == 403
+    other_record = signing.image_url("test-secret", "0", 60).replace("/images/0?", "/images/1?")
+    assert client.get(other_record).status_code == 403
 
 
 def test_humanize_ago():

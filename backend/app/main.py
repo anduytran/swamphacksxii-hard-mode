@@ -7,8 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from .ai import AIServices
 from .config import get_settings
 from .db import MemoryDB
-from .routers import dashboard, memory
-from .storage import ObjectStore
+from .routers import dashboard, images, memory
 
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 
@@ -16,8 +15,9 @@ FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    if not settings.image_url_secret:
+        raise RuntimeError("IMAGE_URL_SECRET must be set")
     app.state.db = MemoryDB(settings)
-    app.state.store = ObjectStore(settings)
     app.state.ai = AIServices(settings)
     await app.state.db.connect()
     await app.state.db.init_schema()
@@ -29,6 +29,7 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
     app = FastAPI(title="Memory Anchor API", lifespan=lifespan if use_lifespan else None)
     app.include_router(memory.router)
     app.include_router(dashboard.router)
+    app.include_router(images.router)
 
     @app.get("/healthz")
     async def healthz():
