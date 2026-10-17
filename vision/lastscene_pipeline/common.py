@@ -41,7 +41,7 @@ def load_env_file(path):
 
 
 def api_base(env=os.environ) -> str:
-    from lastscene_bridge.uploader import normalize_api_base
+    from lastscene_bridge.api_base import normalize_api_base
 
     return normalize_api_base(env.get("API_URL") or env.get("LASTSCENE_API_BASE") or DEFAULT_API)
 
@@ -65,6 +65,27 @@ class Api:
             raise PipelineError(EXIT_CONFIG, f"device credentials missing: {exc}") from None
         self.http = session or requests.Session()
         self.timeout = timeout
+
+    def request(self, method: str, path: str, ok=(200,), **kwargs) -> requests.Response:
+        """Any method, same token and error rules as get_json; returns the response when its status is in ok."""
+        refreshed = False
+        while True:
+            try:
+                headers = {"Authorization": f"Bearer {self.tokens.get()}", **kwargs.pop("headers", {})}
+                if self.pairing:
+                    headers["X-Pairing-Code"] = self.pairing
+                r = self.http.request(method, self.base + path, headers=headers, timeout=self.timeout, allow_redirects=False, **kwargs)
+            except requests.HTTPError as exc:
+                raise PipelineError(EXIT_CONFIG, f"Auth0 token request failed: {exc}") from None
+            except requests.RequestException as exc:
+                raise PipelineError(EXIT_NETWORK, f"{method} {path}: {type(exc).__name__}") from None
+            if r.status_code == 401 and not refreshed:
+                self.tokens.invalidate()
+                refreshed = True
+                continue
+            if r.status_code in ok:
+                return r
+            raise PipelineError(*_explain(path, r))
 
     def get_json(self, path: str) -> dict:
         refreshed = False
@@ -100,6 +121,18 @@ def _explain(path, r) -> tuple[int, str]:
     if r.status_code == 429 or r.status_code >= 500:
         return EXIT_NETWORK, f"GET {path}: {r.status_code} {body}"
     return EXIT_CONFIG, f"GET {path}: {r.status_code} {body}"
+
+
+def set_current(models: Path, version: str):
+    """Point models/current at models/<version> atomically (a one-line file; works without symlink rights)."""
+    import shutil
+
+    current = models / "current"
+    if current.is_symlink() or current.is_dir():
+        current.unlink() if current.is_symlink() else shutil.rmtree(current)
+    tmp = models / ".current.tmp"
+    tmp.write_text(version + "\n", encoding="utf-8")
+    os.replace(tmp, current)
 
 
 def resolve_model_dir(path) -> Path | None:

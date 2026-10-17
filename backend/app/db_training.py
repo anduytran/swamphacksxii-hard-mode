@@ -9,6 +9,7 @@ Unlike memories these are reference photos someone chose to add, so the 72-hour 
 leaves them alone; they go when someone deletes them, or with the household.
 """
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -166,3 +167,126 @@ class TrainingMixin:
     async def training_sample_image(self, sample_id: str) -> tuple[bytes, str] | None:
         row = await self.pool.fetchrow("SELECT image, image_type FROM training_samples WHERE id = $1::uuid", sample_id)
         return (bytes(row["image"]), row["image_type"]) if row else None
+
+
+# ---------------------------------------------------------------- trained models
+# A model the pipeline trained from these photos, uploaded in parts (Vercel caps a request at
+# about 4.5 MB; the Pi's INT8 model is about 10 MB) and fetched the same way by the wearable.
+MODEL_FILES = ("model-int8.onnx", "model.json", "classes.json", "metrics.json")
+MODEL_PART_BYTES = 3 * 1024 * 1024
+MAX_MODEL_BYTES = 40 * 1024 * 1024
+KEEP_MODELS = 2  # per household: the current one and the one before it
+
+
+@dataclass
+class TrainedModel:
+    id: str
+    version: str
+    files: list[dict]  # [{name, size, sha256}]
+    metrics: dict
+    complete: bool
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class TrainingModelsMixin:
+    @staticmethod
+    async def init_training_models_schema(conn) -> None:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS training_models (
+                id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                household_id  uuid NOT NULL REFERENCES households (id) ON DELETE CASCADE,
+                version       text NOT NULL,          -- the dataset version it was trained on
+                files         jsonb NOT NULL,         -- [{name, size, sha256}]
+                metrics       jsonb NOT NULL DEFAULT '{}',
+                complete      boolean NOT NULL DEFAULT false,
+                created_at    timestamptz NOT NULL DEFAULT now(),
+                completed_at  timestamptz
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS training_model_parts (
+                model_id  uuid NOT NULL REFERENCES training_models (id) ON DELETE CASCADE,
+                name      text NOT NULL,
+                part      integer NOT NULL,
+                data      bytea NOT NULL,
+                PRIMARY KEY (model_id, name, part)
+            )
+            """
+        )
+
+    async def create_model(self, household_id: str, version: str, files: list[dict], metrics: dict) -> str:
+        # Abandoned uploads (never completed) go first, so a failed run can't fill the database.
+        await self.pool.execute(
+            "DELETE FROM training_models WHERE household_id = $1::uuid AND NOT complete", household_id
+        )
+        return str(
+            await self.pool.fetchval(
+                "INSERT INTO training_models (household_id, version, files, metrics) VALUES ($1::uuid, $2, $3::jsonb, $4::jsonb) RETURNING id",
+                household_id,
+                version,
+                json.dumps(files),
+                json.dumps(metrics),
+            )
+        )
+
+    async def get_model(self, household_id: str, model_id: str) -> TrainedModel | None:
+        row = await self.pool.fetchrow(
+            "SELECT * FROM training_models WHERE id = $2::uuid AND household_id = $1::uuid", household_id, model_id
+        )
+        return _model(row) if row else None
+
+    async def current_model(self, household_id: str) -> TrainedModel | None:
+        row = await self.pool.fetchrow(
+            "SELECT * FROM training_models WHERE household_id = $1::uuid AND complete ORDER BY completed_at DESC, created_at DESC LIMIT 1",
+            household_id,
+        )
+        return _model(row) if row else None
+
+    async def put_model_part(self, model_id: str, name: str, part: int, data: bytes) -> None:
+        await self.pool.execute(
+            "INSERT INTO training_model_parts (model_id, name, part, data) VALUES ($1::uuid, $2, $3, $4) "
+            "ON CONFLICT (model_id, name, part) DO UPDATE SET data = EXCLUDED.data",
+            model_id,
+            name,
+            part,
+            data,
+        )
+
+    async def model_file(self, model_id: str, name: str) -> bytes:
+        rows = await self.pool.fetch(
+            "SELECT data FROM training_model_parts WHERE model_id = $1::uuid AND name = $2 ORDER BY part", model_id, name
+        )
+        return b"".join(bytes(r["data"]) for r in rows)
+
+    async def model_part(self, model_id: str, name: str, part: int) -> bytes | None:
+        data = await self.pool.fetchval(
+            "SELECT data FROM training_model_parts WHERE model_id = $1::uuid AND name = $2 AND part = $3", model_id, name, part
+        )
+        return bytes(data) if data is not None else None
+
+    async def complete_model(self, household_id: str, model_id: str) -> None:
+        async with self.pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "UPDATE training_models SET complete = true, completed_at = clock_timestamp() WHERE id = $2::uuid AND household_id = $1::uuid",
+                household_id,
+                model_id,
+            )
+            await conn.execute(
+                """
+                DELETE FROM training_models WHERE household_id = $1::uuid AND complete AND id NOT IN (
+                    SELECT id FROM training_models WHERE household_id = $1::uuid AND complete
+                    ORDER BY completed_at DESC, created_at DESC LIMIT $2)
+                """,
+                household_id,
+                KEEP_MODELS,
+            )
+
+
+def _model(row) -> TrainedModel:
+    files = row["files"] if isinstance(row["files"], list) else json.loads(row["files"])
+    metrics = row["metrics"] if isinstance(row["metrics"], dict) else json.loads(row["metrics"] or "{}")
+    return TrainedModel(str(row["id"]), row["version"], files, metrics, row["complete"], row["created_at"], row["completed_at"])

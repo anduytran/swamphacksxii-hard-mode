@@ -45,14 +45,7 @@ class RedirectError(RuntimeError):
     """The API answered 3xx: the configured base URL is not the final one."""
 
 
-def normalize_api_base(api_base: str) -> str:
-    """https://lastscene.photo 308-redirects to www, and requests drops Authorization on that hop (-> 401)."""
-    parts = urlsplit(api_base.rstrip("/"))
-    if parts.hostname == "lastscene.photo":
-        fixed = urlunsplit(parts._replace(netloc="www.lastscene.photo" + (f":{parts.port}" if parts.port else "")))
-        log.warning("API base %s redirects to www (bearer token would be dropped); using %s", api_base, fixed)
-        return fixed
-    return parts.geturl()
+from lastscene_bridge.api_base import normalize_api_base  # noqa: E402  (re-exported; light, no cv2)
 
 
 class Uploader:

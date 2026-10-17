@@ -41,13 +41,10 @@ def photos_per_class(dataset: Path, n_classes: int) -> list[int]:
 
 
 def set_current(out: Path, version: str):
-    """Point models/current at models/<version> atomically (a one-line file; works without symlink rights)."""
-    current = out / "current"
-    if current.is_symlink() or current.is_dir():
-        current.unlink() if current.is_symlink() else shutil.rmtree(current)
-    tmp = out / ".current.tmp"
-    tmp.write_text(version + "\n", encoding="utf-8")
-    os.replace(tmp, current)
+    """Point models/current at models/<version> (see common.set_current)."""
+    from lastscene_pipeline.common import set_current as _set
+
+    _set(out, version)
 
 
 def validate(weights, data_yaml, imgsz, device) -> tuple[float, dict]:

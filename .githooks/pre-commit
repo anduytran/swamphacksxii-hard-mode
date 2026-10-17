@@ -3,7 +3,7 @@
 #     git config core.hooksPath .githooks
 # It checks the staged changes only (never prints a secret's value):
 #   1. files that hold secrets: .env files, device.env, keys, printed device labels
-#   2. the real secret values in your local backend/.env and device/device.env
+#   2. the real secret values in your local backend/.env, device/device.env and ~/.lastscene/*.env
 #   3. common key formats (Google, OpenAI, Anthropic, AWS, GitHub, Slack, private keys,
 #      database URLs with a password)
 set -u
@@ -27,7 +27,7 @@ done <<< "$staged"
 added=$(git diff --cached -U0 --no-color --diff-filter=ACMR | grep -E '^\+[^+]' || true)
 
 # 2. Your real secret values, from the local env files (names that hold secrets).
-for envfile in backend/.env device/device.env; do
+for envfile in backend/.env device/device.env "$HOME/.lastscene/vultr.env" "$HOME/.lastscene/pipeline.env"; do
   [ -f "$envfile" ] || continue
   while IFS='=' read -r key value; do
     case "$key" in ''|\#*) continue ;; esac

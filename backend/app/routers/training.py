@@ -12,21 +12,41 @@ Vision pipeline (device token; the device's household):
     GET    /api/v1/training/vocabulary   names + other words, for YOLO-World's set_classes
     GET    /api/v1/training/dataset      every photo as a signed link + its YOLO label line
                                          (scripts/fetch_training_set.py turns it into a YOLO folder)
+
+Trained models (device token), uploaded and downloaded in parts of up to 3 MB, because Vercel
+caps a request or response at about 4.5 MB and the Pi's INT8 model is about 10 MB:
+    POST   /api/v1/training/models                                  {version, files: [{name, size, sha256}], metrics}
+    PUT    /api/v1/training/models/{model_id}/files/{name}/parts/{n} raw bytes
+    POST   /api/v1/training/models/{model_id}/complete               checks sizes + sha256, makes it current
+    GET    /api/v1/training/models/current                          the newest complete model's manifest
+    GET    /api/v1/training/models/{model_id}/files/{name}/parts/{n} raw bytes
+
+Dashboard: GET /api/v1/households/{household_id}/training/model   is the model up to date with the photos?
 """
 
 import hashlib
 import json
+import math
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
 from pydantic import BaseModel, Field, field_validator
 
 from .. import signing
 from ..auth import Principal, require_caregiver, require_device
 from ..config import Settings, get_settings
 from ..db import MemoryDB
-from ..db_training import MAX_SAMPLES_PER_ITEM, MAX_TRAINING_BYTES, MAX_TRAINING_ITEMS, TrainingItem
+from ..db_training import (
+    MAX_MODEL_BYTES,
+    MAX_SAMPLES_PER_ITEM,
+    MAX_TRAINING_BYTES,
+    MAX_TRAINING_ITEMS,
+    MODEL_FILES,
+    MODEL_PART_BYTES,
+    TrainedModel,
+    TrainingItem,
+)
 from ..deps import get_db
 from .households import _require_member
 from .memory import ALLOWED_IMAGE_TYPES, MAX_IMAGE_BYTES, _read
@@ -301,4 +321,144 @@ async def dataset(
         "version": _version(items),
         "names": {str(n): i.name for n, i in enumerate(items)},
         "samples": samples,
+    }
+
+
+# ---------------------------------------------------------------- trained models
+
+
+class ModelFile(BaseModel):
+    name: str
+    size: int = Field(..., gt=0)
+    sha256: str = Field(..., pattern="^[0-9a-f]{64}$")
+
+
+class NewModel(BaseModel):
+    version: str = Field(..., min_length=1, max_length=64, pattern="^[A-Za-z0-9._-]+$")
+    files: list[ModelFile] = Field(..., min_length=1, max_length=len(MODEL_FILES))
+    metrics: dict = Field(default_factory=dict)
+
+    @field_validator("files")
+    @classmethod
+    def _files(cls, v: list[ModelFile]) -> list[ModelFile]:
+        names = [f.name for f in v]
+        if len(set(names)) != len(names) or not set(names) <= set(MODEL_FILES):
+            raise ValueError(f"files must be distinct, from {', '.join(MODEL_FILES)}")
+        if "model-int8.onnx" not in names:
+            raise ValueError("model-int8.onnx is required")
+        if sum(f.size for f in v) > MAX_MODEL_BYTES:
+            raise ValueError(f"a model can be at most {MAX_MODEL_BYTES // (1024 * 1024)} MB")
+        return v
+
+
+def _parts(size: int) -> int:
+    return math.ceil(size / MODEL_PART_BYTES)
+
+
+def _manifest(model: TrainedModel) -> dict:
+    return {
+        "id": model.id,
+        "version": model.version,
+        "files": [{**f, "parts": _parts(f["size"])} for f in model.files],
+        "metrics": model.metrics,
+        "part_bytes": MODEL_PART_BYTES,
+        "completed_at": model.completed_at.isoformat() if model.completed_at else None,
+    }
+
+
+async def _device_household(db: MemoryDB, device: Principal) -> str:
+    household = await db.household_of_device(device.sub)
+    if household is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "This device isn't in a household yet")
+    return household[0]
+
+
+async def _uploading(db: MemoryDB, household_id: str, model_id: UUID, name: str) -> tuple[TrainedModel, dict]:
+    model = await db.get_model(household_id, str(model_id))
+    if model is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Model not found")
+    entry = next((f for f in model.files if f["name"] == name), None)
+    if entry is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"{name} isn't part of this model")
+    return model, entry
+
+
+@router.post("/training/models", status_code=status.HTTP_201_CREATED)
+async def create_model(body: NewModel, device: Principal = Depends(require_device), db: MemoryDB = Depends(get_db)):
+    household_id = await _device_household(db, device)
+    model_id = await db.create_model(household_id, body.version, [f.model_dump() for f in body.files], body.metrics)
+    return {"id": model_id, "part_bytes": MODEL_PART_BYTES, "parts": {f.name: _parts(f.size) for f in body.files}}
+
+
+@router.put("/training/models/{model_id}/files/{name}/parts/{part}", status_code=status.HTTP_204_NO_CONTENT)
+async def put_model_part(
+    model_id: UUID, name: str, part: int, request: Request, device: Principal = Depends(require_device), db: MemoryDB = Depends(get_db)
+):
+    household_id = await _device_household(db, device)
+    model, entry = await _uploading(db, household_id, model_id, name)
+    if model.complete:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This model is already complete")
+    if not 0 <= part < _parts(entry["size"]):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"part must be 0 to {_parts(entry['size']) - 1}")
+    data = await request.body()
+    if not data or len(data) > MODEL_PART_BYTES:
+        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, f"a part is 1 byte to {MODEL_PART_BYTES} bytes")
+    await db.put_model_part(model.id, name, part, data)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/training/models/{model_id}/complete")
+async def complete_model(model_id: UUID, device: Principal = Depends(require_device), db: MemoryDB = Depends(get_db)):
+    household_id = await _device_household(db, device)
+    model = await db.get_model(household_id, str(model_id))
+    if model is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Model not found")
+    for f in model.files:
+        data = await db.model_file(model.id, f["name"])
+        if len(data) != f["size"] or hashlib.sha256(data).hexdigest() != f["sha256"]:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{f['name']} is incomplete or doesn't match its sha256")
+    await db.complete_model(household_id, model.id)
+    return {"id": model.id, "version": model.version, "current": True}
+
+
+@router.get("/training/models/current")
+async def current_model(device: Principal = Depends(require_device), db: MemoryDB = Depends(get_db)):
+    model = await db.current_model(await _device_household(db, device))
+    if model is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No trained model yet")
+    return _manifest(model)
+
+
+@router.get("/training/models/{model_id}/files/{name}/parts/{part}")
+async def get_model_part(model_id: UUID, name: str, part: int, device: Principal = Depends(require_device), db: MemoryDB = Depends(get_db)):
+    household_id = await _device_household(db, device)
+    model, _ = await _uploading(db, household_id, model_id, name)
+    if not model.complete:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This model is still uploading")
+    data = await db.model_part(model.id, name, part)
+    if data is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such part")
+    return Response(content=data, media_type="application/octet-stream")
+
+
+@router.get("/households/{household_id}/training/model")
+async def model_status(household_id: UUID, user: Principal = Depends(require_caregiver), db: MemoryDB = Depends(get_db)):
+    """For the Teach items page: the household's current model, and whether photos changed since."""
+    hid = str(household_id)
+    await _require_member(db, hid, user)
+    items = await db.training_items(hid)
+    model = await db.current_model(hid)
+    version = _version(items)
+    return {
+        "dataset_version": version,
+        "photos": sum(len(i.samples) for i in items),
+        "model": None
+        if model is None
+        else {
+            "version": model.version,
+            "trained_at": model.completed_at.isoformat() if model.completed_at else None,
+            "map50": model.metrics.get("map50"),
+            "base_model": model.metrics.get("base_model"),
+        },
+        "up_to_date": bool(model and model.version == version),
     }

@@ -193,3 +193,11 @@ export interface MissingTimes {
   since: string;
   hours: { at: string; asked: number; put_down: number }[];
 }
+
+/** GET /households/{id}/training/model: is the camera's model up to date with the Teach photos? */
+export interface ModelStatus {
+  dataset_version: string;
+  photos: number;
+  model: { version: string; trained_at: string | null; map50: number | null; base_model: string | null } | null;
+  up_to_date: boolean;
+}

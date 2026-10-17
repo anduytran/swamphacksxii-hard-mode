@@ -118,6 +118,9 @@ Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, 
 | `DELETE /api/v1/households/{id}/training/samples/{sample_id}` | member | – | `{deleted}` |
 | `GET /api/v1/training/vocabulary` | device | – | `{version, classes, items}`: names for YOLO-World's `set_classes`; class id = position |
 | `GET /api/v1/training/dataset` | device | – | `{version, names, samples}`: each photo's signed link, box in pixels and YOLO label line |
+| `POST /api/v1/training/models` | device | `{version, files: [{name, size, sha256}], metrics}` | `{id, part_bytes, parts}`; then `PUT .../models/{id}/files/{name}/parts/{n}` (raw, ≤ 3 MB each) and `POST .../models/{id}/complete` (checks sha256, makes it current; the newest 2 are kept) |
+| `GET /api/v1/training/models/current` | device | – | the newest model's manifest; download with `GET .../models/{id}/files/{name}/parts/{n}` |
+| `GET /api/v1/households/{id}/training/model` | member | – | `{photos, model, up_to_date}` for the Teach items page |
 
 ### Public, photos and ops
 
@@ -277,6 +280,7 @@ A separate pipeline (YOLO-World detection + ORB scene matching, on a host machin
 - Retention: observations follow the 72 h purge. `LAST_SEEN_RETENTION_HOURS` (default 72) controls the last-seen frames; set 720 if the team adopts the 30-day proposal.
 - The dashboard draws the boxes over photos (dashed + "?" when maybe) with a "Seen automatically" badge.
 - Try it: `backend/scripts/post_observation.py` (post, last-seen, found, delete) with a device's Auth0 credentials.
+- **Training and models.** `vision/lastscene_pipeline`: `sync` → `train` → `publish` on a laptop, or `vultr run` on a temporary Vultr server with spending guardrails ([vision/docs/VULTR.md](vision/docs/VULTR.md)); wearables run `fetch` to get the newest model.
 - **Teach items.** On the dashboard's **Teach items** page, people add their own items and photos of them, with a box drawn around the item in each. The pipeline reads the names from `GET /api/v1/training/vocabulary` (re-fetch when `version` changes) and the photos from `GET /api/v1/training/dataset`; `backend/scripts/fetch_training_set.py dataset` writes them as a YOLO folder (`data.yaml`, `images/`, `labels/`, `prompts.json` for visual prompts) to fine-tune on. These photos are kept until someone deletes them, not purged after 72 h.
 
 Live directions and visibility checks run next to the camera (`lastscene_bridge.run --show`: w/f/q).

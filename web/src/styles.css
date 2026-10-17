@@ -1641,3 +1641,5 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
 .missing-sub { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .missing-peak { margin: 0; color: var(--text); font-weight: 500; max-width: 60ch; }
 .segmented.small button { font-size: 0.875rem; }
+.model-line { display: flex; align-items: center; gap: 8px; margin: -8px 0 20px; padding: 10px 14px; border-radius: 10px; background: var(--pending-bg); color: var(--pending-ink); font-size: 0.9375rem; }
+.model-line.good { background: var(--good-bg); color: var(--good-ink); }

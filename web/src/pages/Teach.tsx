@@ -8,7 +8,8 @@ import { Icon } from "../components/Icons";
 import { ApiError, useApi, type Api } from "../lib/api";
 import { useLoadStatus } from "../lib/app";
 import { useResource } from "../lib/resource";
-import type { Household, TrainingItem, TrainingList, TrainingSample } from "../lib/types";
+import type { Household, ModelStatus, TrainingItem, TrainingList, TrainingSample } from "../lib/types";
+import { timeAgo } from "../lib/format";
 
 const GOOD_ENOUGH = 10; // photos per item before it's "ready"
 const MAX_SIDE = 1024; // photos are shrunk to this before upload (the pipeline trains at 640)
@@ -23,6 +24,11 @@ export default function TeachPage() {
   const household = households?.find((h) => h.id === chosen) ?? households?.[0];
   const base = household ? `/api/v1/households/${household.id}/training` : null;
   const list = useResource(base && `training:${household!.id}`, () => api<TrainingList>(`${base}/items`));
+  const model = useResource(base && `trainmodel:${household!.id}`, () => api<ModelStatus>(`${base}/model`));
+  const changed = () => {
+    list.reload();
+    model.reload();
+  };
   useLoadStatus(homes.loading || list.loading, homes.error ?? list.error, () => (homes.reload(), list.reload()));
 
   return (
@@ -70,6 +76,7 @@ export default function TeachPage() {
         </div>
       ) : (
         <>
+          {model.data && <ModelLine status={model.data} />}
           <div className="teach-grid">
             <FormCard
               title="Add an item"
@@ -83,12 +90,12 @@ export default function TeachPage() {
               onSubmit={async (v) => {
                 const aliases = (v.aliases ?? "").split(",").map((a) => a.trim()).filter(Boolean);
                 await api(`${base}/items`, { method: "POST", body: { name: v.name, aliases } });
-                list.reload();
+                changed();
                 return `Added. Now add photos of ${v.name.trim().toLowerCase()}.`;
               }}
             />
             {list.data.items.map((item) => (
-              <ItemCard key={item.id} item={item} base={base} api={api} maxPhotos={list.data!.limits.samples_per_item} onChange={list.reload} />
+              <ItemCard key={item.id} item={item} base={base} api={api} maxPhotos={list.data!.limits.samples_per_item} onChange={changed} />
             ))}
           </div>
           {!list.data.items.length && <p className="hint">No items yet. Start with the one that goes missing most.</p>}
@@ -358,5 +365,22 @@ function BoxEditor({ item, files, upload, onClose }: { item: string; files: File
         </span>
       </footer>
     </Dialog>
+  );
+}
+
+/** Whether the camera's model has learned the current photos (trained on the laptop or Vultr). */
+function ModelLine({ status }: { status: ModelStatus }) {
+  if (!status.photos) return null;
+  const { model } = status;
+  const text = !model
+    ? "The camera hasn't been trained on these photos yet."
+    : status.up_to_date
+      ? `The camera learned these photos ${model.trained_at ? timeAgo(model.trained_at) : ""}.`
+      : `Photos changed since the camera last learned them ${model.trained_at ? timeAgo(model.trained_at) : ""}. It will catch up at the next training run.`;
+  return (
+    <p className={status.up_to_date ? "model-line good" : "model-line"} role="status">
+      <Icon name={status.up_to_date ? "shield" : "sparkle"} />
+      {text}
+    </p>
   );
 }

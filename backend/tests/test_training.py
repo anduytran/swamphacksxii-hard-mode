@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 import asyncpg
 import pytest
 
-from app.db_training import MAX_SAMPLES_PER_ITEM, TrainingItem, TrainingSample
+from app.db_training import MAX_SAMPLES_PER_ITEM, MODEL_PART_BYTES, TrainedModel, TrainingItem, TrainingSample
 from tests.test_api import CAREGIVER, DEVICE, FakeDB, client  # noqa: F401  (client is a fixture)
 
 HOUSEHOLD = str(uuid.uuid4())
@@ -87,6 +87,45 @@ class FakeTrainingDB(FakeDB):
 
     async def training_sample_image(self, sample_id):
         return self.sample_images.get(sample_id)
+
+    # trained models, in memory
+    models: dict
+    parts: dict
+
+    def _models(self):
+        if not hasattr(self, "models_store"):
+            self.models_store, self.parts_store = {}, {}
+        return self.models_store, self.parts_store
+
+    async def create_model(self, household_id, version, files, metrics):
+        models, _ = self._models()
+        for mid in [m for m, (h, mod) in models.items() if h == household_id and not mod.complete]:
+            del models[mid]
+        model = TrainedModel(str(uuid.uuid4()), version, files, metrics, False, datetime.now(timezone.utc), None)
+        models[model.id] = (household_id, model)
+        return model.id
+
+    async def get_model(self, household_id, model_id):
+        found = self._models()[0].get(model_id)
+        return found[1] if found and found[0] == household_id else None
+
+    async def current_model(self, household_id):
+        done = [m for h, m in self._models()[0].values() if h == household_id and m.complete]
+        return max(done, key=lambda m: m.completed_at) if done else None
+
+    async def put_model_part(self, model_id, name, part, data):
+        self._models()[1][(model_id, name, part)] = data
+
+    async def model_file(self, model_id, name):
+        parts = self._models()[1]
+        return b"".join(parts[k] for k in sorted(k for k in parts if k[0] == model_id and k[1] == name))
+
+    async def model_part(self, model_id, name, part):
+        return self._models()[1].get((model_id, name, part))
+
+    async def complete_model(self, household_id, model_id):
+        model = self._models()[0][model_id][1]
+        model.complete, model.completed_at = True, datetime.now(timezone.utc)
 
 
 @pytest.fixture
@@ -236,3 +275,75 @@ def test_household_photo_storage_is_capped(api, monkeypatch):
     item = api.post(items_url(), headers=CAREGIVER, json={"name": "keys"}).json()
     assert add_photo(api, item["id"]).status_code == 201  # 6 bytes
     assert add_photo(api, item["id"]).status_code == 409  # 12 > 10
+
+
+
+def publish(api, version, files):
+    """The pipeline's upload: manifest, parts, complete. Returns the complete call's response."""
+    import hashlib
+
+    manifest = [{"name": n, "size": len(b), "sha256": hashlib.sha256(b).hexdigest()} for n, b in files.items()]
+    created = api.post("/api/v1/training/models", headers=DEVICE, json={"version": version, "files": manifest, "metrics": {"map50": 0.5}})
+    assert created.status_code == 201, created.text
+    mid = created.json()["id"]
+    for name, data in files.items():
+        for i in range(0, max(1, -(-len(data) // MODEL_PART_BYTES))):
+            chunk = data[i * MODEL_PART_BYTES : (i + 1) * MODEL_PART_BYTES]
+            r = api.put(f"/api/v1/training/models/{mid}/files/{name}/parts/{i}", headers=DEVICE, content=chunk)
+            assert r.status_code == 204, r.text
+    return api.post(f"/api/v1/training/models/{mid}/complete", headers=DEVICE)
+
+
+def test_models_upload_in_parts_and_download_byte_for_byte(api):
+    big = bytes(range(256)) * (MODEL_PART_BYTES // 256 * 2 + 1000)  # a bit over 2 parts
+    done = publish(api, "v1", {"model-int8.onnx": big, "classes.json": b'{"classes": ["keys"]}'})
+    assert done.status_code == 200 and done.json()["current"]
+
+    current = api.get("/api/v1/training/models/current", headers=DEVICE).json()
+    assert current["version"] == "v1"
+    onnx = next(f for f in current["files"] if f["name"] == "model-int8.onnx")
+    assert onnx["parts"] == 3
+    got = b"".join(
+        api.get(f"/api/v1/training/models/{current['id']}/files/model-int8.onnx/parts/{i}", headers=DEVICE).content
+        for i in range(onnx["parts"])
+    )
+    assert got == big
+
+
+def test_model_upload_rules(api):
+    import hashlib
+
+    assert api.get("/api/v1/training/models/current", headers=DEVICE).status_code == 404
+    bad_name = {"version": "v1", "files": [{"name": "../evil", "size": 1, "sha256": "0" * 64}]}
+    assert api.post("/api/v1/training/models", headers=DEVICE, json=bad_name).status_code == 422
+    no_model = {"version": "v1", "files": [{"name": "classes.json", "size": 1, "sha256": "0" * 64}]}
+    assert api.post("/api/v1/training/models", headers=DEVICE, json=no_model).status_code == 422
+    huge = {"version": "v1", "files": [{"name": "model-int8.onnx", "size": 41 * 1024 * 1024, "sha256": "0" * 64}]}
+    assert api.post("/api/v1/training/models", headers=DEVICE, json=huge).status_code == 422
+    assert api.post("/api/v1/training/models", headers=CAREGIVER, json=no_model).status_code == 403
+
+    # a wrong checksum never becomes current
+    data = b"onnx bytes"
+    created = api.post("/api/v1/training/models", headers=DEVICE,
+                       json={"version": "v2", "files": [{"name": "model-int8.onnx", "size": len(data), "sha256": hashlib.sha256(b"other").hexdigest()}]}).json()
+    api.put(f"/api/v1/training/models/{created['id']}/files/model-int8.onnx/parts/0", headers=DEVICE, content=data)
+    assert api.put(f"/api/v1/training/models/{created['id']}/files/model-int8.onnx/parts/5", headers=DEVICE, content=data).status_code == 422
+    assert api.post(f"/api/v1/training/models/{created['id']}/complete", headers=DEVICE).status_code == 422
+    assert api.get("/api/v1/training/models/current", headers=DEVICE).status_code == 404
+    # nor can its parts be downloaded while it's uploading
+    assert api.get(f"/api/v1/training/models/{created['id']}/files/model-int8.onnx/parts/0", headers=DEVICE).status_code == 409
+
+
+def test_teach_page_model_status(api):
+    keys = api.post(items_url(), headers=CAREGIVER, json={"name": "keys"}).json()
+    add_photo(api, keys["id"])
+    status = api.get(f"/api/v1/households/{HOUSEHOLD}/training/model", headers=CAREGIVER).json()
+    assert status["model"] is None and status["photos"] == 1 and not status["up_to_date"]
+
+    version = api.get("/api/v1/training/vocabulary", headers=DEVICE).json()["version"]
+    publish(api, version, {"model-int8.onnx": b"m"})
+    status = api.get(f"/api/v1/households/{HOUSEHOLD}/training/model", headers=CAREGIVER).json()
+    assert status["up_to_date"] and status["model"]["map50"] == 0.5
+
+    add_photo(api, keys["id"])  # new photos: needs retraining
+    assert not api.get(f"/api/v1/households/{HOUSEHOLD}/training/model", headers=CAREGIVER).json()["up_to_date"]
