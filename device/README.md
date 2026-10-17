@@ -108,6 +108,36 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
    ```
    Logs: `journalctl -u lastscene-device -f`.
 
+## Remote access (SSH from another network)
+
+On the same Wi-Fi, `ssh <user>@<hostname>.local` works. From anywhere else it doesn't: a phone hotspot or home
+router blocks incoming connections. [Tailscale](https://tailscale.com) (free for personal use) puts the Pi and
+your laptop on one private network that works from any Wi-Fi, with no router setup.
+
+1. **On the Pi** (while still on the same network as it; needs its sudo password once):
+   ```bash
+   curl -fsSL https://tailscale.com/install.sh | sh
+   sudo tailscale up
+   ```
+   It prints a login link: open it and sign in. The Pi joins your tailnet and comes back after reboots.
+2. **On the laptop**: install Tailscale (Mac: `brew install --cask tailscale-app`, or the App Store) and sign in
+   to the same account from its menu-bar icon.
+3. **Connect from anywhere** with MagicDNS's short name (the Pi's hostname), or its `100.x.y.z` address from
+   `tailscale ip -4`. For a Pi named `faker` with the key `~/.ssh/faker`, a second SSH entry keeps the key
+   working both ways:
+   ```
+   Host faker-remote
+       HostName faker
+       User faker
+       IdentityFile ~/.ssh/faker
+   ```
+   `ssh faker` on the same Wi-Fi, `ssh faker-remote` elsewhere. `rsync`/`scp` work the same way.
+
+- The Pi still needs internet: it only joins Wi-Fi networks it knows (Raspberry Pi Imager's, plus any added with
+  `sudo nmcli device wifi connect <SSID> password <password>`).
+- Browser-only alternative: Raspberry Pi Connect (`sudo apt install rpi-connect-lite`, `rpi-connect on`,
+  `rpi-connect signin`) gives a shell at connect.raspberrypi.com, but no `ssh`, `scp` or `rsync` from the laptop.
+
 ## Pairing and location
 
 - **Pairing code.** Generate one per device and put it on the case label with the Client ID; set it as `PAIRING_CODE` in `/etc/lastscene/device.env`. The device sends it with every request; a caregiver enters the Client ID + code on the dashboard's **Household** page to add the wearable to their household.
