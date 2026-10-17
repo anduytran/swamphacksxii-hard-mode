@@ -15,7 +15,7 @@ backend/          FastAPI service
   app/routers/        memory, observations (vision pipeline), dashboard, households, public, images, admin (see API)
   app/retention.py    72h purge job (run from cron)
   scripts/device_sim.py  pretend-wearable client for end-to-end testing
-frontend/         plain HTML/JS caregiver dashboard: Items, Timeline, Insights pages (auth0-spa-js)
+frontend/         plain HTML/JS caregiver dashboard (UI spec: frontend/DESIGN.md): Items, Timeline, Insights pages (auth0-spa-js)
   charts.js           reusable chart kit (bar list, grouped columns, data table)
 device/           Raspberry Pi Zero 2 W wearable client, wiring guide, systemd unit
 deploy/           systemd unit + crontab for the Vultr instance
@@ -83,7 +83,7 @@ Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, 
 |---|---|
 | `GET /api/v1/dashboard/history` | `[{id, device_id, timestamp, source, transcript, scene, summary, detections, image_url, items}]`, newest first |
 | `GET /api/v1/dashboard/items` | `{window_hours, items}`: per item its last location, photo + `detection` box, earlier spots, mentions, times asked |
-| `GET /api/v1/dashboard/insights` | counts, most-asked / most-logged items, unanswered questions, recent Q&A, activity |
+| `GET /api/v1/dashboard/insights?hours=` | counts, most-asked / most-logged items, unanswered questions, recent Q&A, activity; `hours` narrows the window (default and maximum 72) |
 | `GET /api/v1/dashboard/summary` | `{summary}`: 2–3 sentences from Gemini (cached 10 min) |
 | `GET /api/v1/dashboard/search?q=` | `{query, results}`: hybrid vector + keyword retrieval with per-chunk match explanations |
 | `GET /api/v1/dashboard/map` | house floor plan: rooms, item spots, movement trips |

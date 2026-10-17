@@ -123,8 +123,9 @@ def _was_answerable(q: QueryRecord, first_seen: dict[str, datetime]) -> bool:
     return q.item is not None and q.item in first_seen and first_seen[q.item] <= q.created_at
 
 
-async def _insights(db: MemoryDB, settings: Settings, devices: list[str]) -> dict:
-    window = settings.retention_hours
+async def _insights(db: MemoryDB, settings: Settings, devices: list[str], hours: int | None = None) -> dict:
+    # Any window up to what is kept: nothing older than retention_hours exists.
+    window = min(hours or settings.retention_hours, settings.retention_hours)
     memories = await db.recent(window, devices)
     sightings = await db.item_sightings(window, devices)
     queries = await db.recent_queries(window, devices)
@@ -171,11 +172,12 @@ async def _insights(db: MemoryDB, settings: Settings, devices: list[str]) -> dic
 
 @router.get("/insights")
 async def insights(
+    hours: int | None = Query(None, ge=1, description="Window in hours; capped at the retention period"),
     devices: list[str] = Depends(household_devices),
     db: MemoryDB = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    return await _insights(db, settings, devices)
+    return await _insights(db, settings, devices, hours)
 
 
 # One summary per process for a few minutes: it's an LLM call, and the data moves slowly.

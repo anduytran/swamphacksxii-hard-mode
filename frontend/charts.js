@@ -36,16 +36,23 @@ const Charts = (() => {
 
   /**
    * Horizontal bars for one series (ranking, top-N).
-   * rows: [{ label, value }]   opts: { unit: "times asked", empty: "No data yet." }
+   * rows: [{ label, value }]   opts: { unit: "times asked", empty: "No data yet.", onSelect }
+   * With onSelect(row), each row is a button (44px tall) that drills down into that row.
    * The card's title names the series, so there is no legend.
    */
-  function barList(container, rows, { unit = "", empty: emptyText = "No data yet." } = {}) {
+  function barList(container, rows, { unit = "", empty: emptyText = "No data yet.", onSelect } = {}) {
     container.classList.add("bar-list");
+    container.classList.toggle("interactive", Boolean(onSelect));
     if (!rows.length) return empty(container, emptyText);
     const max = Math.max(...rows.map((r) => r.value), 1);
     container.replaceChildren(
       ...rows.map((r) => {
-        const row = el("div", "bar-row");
+        const row = el(onSelect ? "button" : "div", "bar-row");
+        if (onSelect) {
+          row.type = "button";
+          row.setAttribute("aria-label", `${r.label}: ${r.value} ${unit}. Show details`.trim());
+          row.addEventListener("click", () => onSelect(r));
+        }
         const track = el("span", "bar-track");
         const bar = el("span", "bar s1");
         bar.style.width = `${(r.value / max) * 100}%`;
@@ -93,16 +100,47 @@ const Charts = (() => {
     if (table) dataTable(table, ["", ...series.map((s) => s.name)], categories.map((c, i) => [c, ...series.map((s) => s.values[i])]));
   }
 
-  /** Fills a <table> — the always-available text view of a chart. */
-  function dataTable(table, headers, rows) {
+  /**
+   * Fills a <table> — the always-available text view of a chart. Column headers are
+   * buttons that sort the rows (numbers numerically), with aria-sort on the header.
+   */
+  function dataTable(table, headers, rows, { sortable = true } = {}) {
     const head = el("thead");
     const tr = head.insertRow();
-    for (const h of headers) tr.append(el("th", "", h));
     const body = el("tbody");
-    for (const r of rows) {
-      const row = body.insertRow();
-      for (const v of r) row.insertCell().textContent = v;
-    }
+    let sortCol = -1;
+    let dir = "none";
+    const cmp = (a, b) =>
+      typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b), undefined, { numeric: true });
+    const render = () => {
+      const sorted = sortCol < 0 ? rows : [...rows].sort((a, b) => cmp(a[sortCol], b[sortCol]) * (dir === "ascending" ? 1 : -1));
+      body.replaceChildren();
+      for (const r of sorted) {
+        const row = body.insertRow();
+        for (const v of r) row.insertCell().textContent = v;
+      }
+    };
+    headers.forEach((h, i) => {
+      const th = el("th");
+      th.scope = "col";
+      if (sortable && h) {
+        const btn = el("button", "sort-btn", h);
+        btn.type = "button";
+        btn.addEventListener("click", () => {
+          dir = sortCol === i && dir === "ascending" ? "descending" : "ascending";
+          sortCol = i;
+          for (const other of tr.children) if (other.hasAttribute("aria-sort")) other.setAttribute("aria-sort", "none");
+          th.setAttribute("aria-sort", dir);
+          render();
+        });
+        th.setAttribute("aria-sort", "none");
+        th.append(btn);
+      } else {
+        th.textContent = h;
+      }
+      tr.append(th);
+    });
+    render();
     table.replaceChildren(head, body);
   }
 

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0e0d0c">
   <meta name="description" content="LastScene remembers where things were left, so the people who care for someone can see the day at a glance.">
   <title>LastScene</title>
@@ -14,6 +14,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@auth0/auth0-spa-js@2.1.3/dist/auth0-spa-js.production.js"></script>
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
   <div class="shell">
     <!-- Signed in: a sidebar on wide screens, a sticky top bar on phones. Signed out: a slim top bar. -->
     <header class="site-header">
@@ -53,22 +54,26 @@
             <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20h18"/><path d="M7 16v-4M12 16V7M17 16v-7"/></svg>
             Insights
           </a>
-          <a href="#/search" data-page="search">
+          <a href="#/search" data-page="search" class="nav-secondary">
             <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
             Search
           </a>
-          <a href="#/public" data-page="public">
+          <a href="#/public" data-page="public" class="nav-secondary">
             <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z"/></svg>
             Public map
           </a>
         </div>
         <div class="nav-group">
           <span class="nav-label">Setup</span>
-          <a href="#/household" data-page="household">
+          <a href="#/household" data-page="household" class="nav-secondary">
             <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/></svg>
             Household
           </a>
         </div>
+        <button type="button" id="more-btn" class="more-tab" aria-haspopup="dialog" aria-controls="more-sheet">
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>
+          More
+        </button>
       </nav>
 
       <div id="user-bar" class="user-bar" hidden>
@@ -83,7 +88,7 @@
       </div>
     </header>
 
-    <main class="main">
+    <main class="main" id="main" tabindex="-1">
       <!-- Signed out: what LastScene is, and the way in -->
       <section id="logged-out" class="landing" hidden>
         <div class="hero">
@@ -171,6 +176,9 @@
           <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6z"/><path d="m9 12 2 2 4-4"/></svg>
           Photos and words are deleted after 72 hours. Private places never leave your household.
         </p>
+        <div class="landing-cta">
+          <button id="login-sticky" type="button" class="primary">Log in</button>
+        </div>
       </section>
 
       <p id="status" role="status"></p>
@@ -182,11 +190,13 @@
             <p class="eyebrow">Last <span class="window-hours">72</span> hours · <span id="items-count">0 items</span></p>
             <h1 class="display">Where things were left.</h1>
           </div>
-          <label class="search">
-            <span class="sr-only">Find an item</span>
-            <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-            <input id="item-filter" type="search" placeholder="Find an item: keys, glasses…">
-          </label>
+          <div class="field search-field">
+            <label for="item-filter">Find an item</label>
+            <div class="search">
+              <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+              <input id="item-filter" type="search" placeholder="keys, glasses…" autocomplete="off">
+            </div>
+          </div>
         </div>
         <div id="items-featured"></div>
         <ul id="items-grid" class="items-grid"></ul>
@@ -249,8 +259,13 @@
       <section id="page-insights" class="page" hidden>
         <div class="page-head">
           <div>
-            <p class="eyebrow">Last <span class="window-hours">72</span> hours</p>
+            <p class="eyebrow">Last <span id="insights-hours">72</span> hours</p>
             <h1 class="display">How the week is going.</h1>
+          </div>
+          <div class="segmented" role="group" aria-label="Time range" id="insights-range">
+            <button type="button" data-hours="24" aria-pressed="false">24 hours</button>
+            <button type="button" data-hours="48" aria-pressed="false">2 days</button>
+            <button type="button" data-hours="72" aria-pressed="true">3 days</button>
           </div>
         </div>
 
@@ -276,10 +291,10 @@
         <section id="summary-card" class="card summary" aria-labelledby="summary-h" hidden>
           <p class="eyebrow" id="summary-h">
             <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
-            This week, in brief
+            The last 3 days, in brief
           </p>
           <p id="summary-text" class="summary-text"></p>
-          <p class="summary-by">Written by Gemini from the numbers below.</p>
+          <p class="summary-by">Written by Gemini from the last 3 days of activity.</p>
         </section>
 
         <section id="highlights" class="card notice" aria-labelledby="notice-h">
@@ -382,11 +397,11 @@
             <h1 class="display">Ask what the wearer would.</h1>
           </div>
         </div>
+        <label for="search-q" class="field-label">Ask a question</label>
         <form id="search-form" class="search-form" role="search">
-          <label for="search-q" class="sr-only">Question</label>
           <svg class="i search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
           <input id="search-q" type="search" placeholder="Where are my keys?" autocomplete="off" required>
-          <button type="submit" class="primary">Search</button>
+          <button type="submit" class="primary" id="search-submit" disabled>Search</button>
         </form>
         <div class="suggestions" aria-label="Example questions">
           <button type="button" class="suggestion">Where are my keys?</button>
@@ -400,6 +415,53 @@
     </main>
   </div>
 
+  <dialog id="more-sheet" class="sheet" aria-labelledby="more-title">
+    <div class="dialog-inner">
+      <div class="sheet-head">
+        <h2 id="more-title">More</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Close menu"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      </div>
+      <nav class="sheet-links" aria-label="More pages">
+        <a href="#/search" data-page="search">
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <span><strong>Search</strong><small>Ask what the wearer would</small></span>
+        </a>
+        <a href="#/public" data-page="public">
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z"/></svg>
+          <span><strong>Public map</strong><small>Where people lose things</small></span>
+        </a>
+        <a href="#/household" data-page="household">
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/></svg>
+          <span><strong>Household</strong><small>Wearable, family and places</small></span>
+        </a>
+      </nav>
+      <div class="sheet-actions">
+        <button type="button" id="sheet-refresh" class="pill">
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>
+          Refresh
+        </button>
+        <button type="button" id="sheet-logout" class="pill ghost">
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h11"/></svg>
+          Log out
+        </button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Drill-down: details for one item, opened from Items cards and Insights charts -->
+  <dialog id="drawer" class="drawer" aria-labelledby="drawer-title">
+    <div class="dialog-inner">
+      <div class="drawer-head">
+        <div>
+          <p class="eyebrow" id="drawer-eyebrow">Item</p>
+          <h2 id="drawer-title"></h2>
+        </div>
+        <button type="button" class="icon-btn" data-close aria-label="Close details"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      </div>
+      <div class="drawer-body" id="drawer-body"></div>
+    </div>
+  </dialog>
+
   <div id="tooltip" class="tooltip" hidden></div>
 
   <template id="featured-template">
@@ -410,7 +472,7 @@
       </div>
       <div class="featured-body">
         <span class="when mono"></span>
-        <h2 class="item-name"></h2>
+        <h2 class="item-name"><button type="button" class="card-link"></button></h2>
         <p class="item-location"></p>
         <p class="quote"></p>
         <p class="saw" hidden></p>
@@ -424,7 +486,7 @@
       <div class="photo"><img alt="" loading="lazy"></div>
       <div class="item-body">
         <div class="item-title">
-          <h3 class="item-name"></h3>
+          <h3 class="item-name"><button type="button" class="card-link"></button></h3>
           <span class="when mono"></span>
         </div>
         <p class="item-location"></p>

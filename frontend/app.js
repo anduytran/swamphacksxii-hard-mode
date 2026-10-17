@@ -34,18 +34,37 @@ async function init() {
   }
 
   const login = () => auth0Client.loginWithRedirect({ appState: { hash: window.location.hash } });
-  $("login").onclick = login;
-  $("login-header").onclick = login;
-  $("logout").onclick = () =>
-    auth0Client.logout({ logoutParams: { returnTo: window.location.origin } });
-  $("refresh").onclick = () => showPage(currentPage(), { force: true });
+  const logout = () => auth0Client.logout({ logoutParams: { returnTo: window.location.origin } });
+  const refresh = () => showPage(currentPage(), { force: true });
+  for (const id of ["login", "login-header", "login-sticky"]) $(id).onclick = login;
+  $("logout").onclick = logout;
+  $("refresh").onclick = refresh;
   $("item-filter").oninput = filterItems;
   $("search-form").onsubmit = runSearch;
+  // The search button stays disabled until there is a question to ask.
+  const syncSearch = () => ($("search-submit").disabled = !$("search-q").value.trim());
+  $("search-q").addEventListener("input", syncSearch);
   for (const btn of document.querySelectorAll(".suggestion")) {
     btn.onclick = () => {
       $("search-q").value = btn.textContent;
+      syncSearch();
       $("search-form").requestSubmit();
     };
+  }
+  for (const btn of document.querySelectorAll("#insights-range [data-hours]")) {
+    btn.onclick = () => setInsightsRange(Number(btn.dataset.hours));
+  }
+
+  // Phones: secondary pages and account actions live in the "More" bottom sheet.
+  $("more-btn").onclick = () => $("more-sheet").showModal();
+  $("sheet-refresh").onclick = () => ($("more-sheet").close(), refresh());
+  $("sheet-logout").onclick = logout;
+  for (const a of document.querySelectorAll("#more-sheet a")) a.addEventListener("click", () => $("more-sheet").close());
+  // Dialogs close from their close button or a tap on the backdrop.
+  for (const dialog of document.querySelectorAll("dialog")) {
+    dialog.addEventListener("click", (e) => {
+      if (e.target === dialog || e.target.closest("[data-close]")) dialog.close();
+    });
   }
 
   for (const btn of document.querySelectorAll(".segmented [data-mode]")) btn.onclick = () => setMapMode(btn.dataset.mode);
@@ -64,6 +83,7 @@ async function init() {
     $("tabs").hidden = false;
     // Someone with no household yet starts at setup.
     const { households } = await api("/api/v1/households/me");
+    noteSetup(households);
     if (!households.length && !["household", ...PUBLIC_PAGES].includes(currentPage())) {
       window.location.hash = "#/household";
       return;
@@ -103,31 +123,90 @@ const STALE_AFTER_MS = 60_000;
 
 async function showPage(name, { force = false } = {}) {
   for (const p of PAGES) $(`page-${p}`).hidden = p !== name;
-  for (const a of document.querySelectorAll("#tabs a")) {
+  for (const a of document.querySelectorAll("a[data-page]")) {
     if (a.dataset.page === name) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
+  if ($("status").dataset.state !== "loading") setStatus(""); // messages belong to the page they came from
   if (!force && loaded[name] && Date.now() - loaded[name] < STALE_AFTER_MS) return;
   // Search has no loader: it only runs when the caregiver submits a question.
   const loaders = {
     items: loadItems, map: loadMap, timeline: loadTimeline, insights: loadInsights,
     search: async () => {}, public: loadPublic, household: loadHousehold,
   };
+  // First visit: placeholder shapes; later visits keep the old content until the new arrives.
+  if (!loaded[name]) paintSkeleton(name);
   setStatus("Loading…", "loading");
   try {
     await loaders[name]();
     loaded[name] = Date.now();
     if ($("status").dataset.state === "loading") setStatus("");
   } catch (err) {
-    setStatus(`Couldn't load this page: ${err.message}`, "error");
+    setStatus(`Couldn't load this page: ${err.message}`, "error", () => showPage(name, { force: true }));
+  } finally {
+    for (const map of document.querySelectorAll(".home-map.is-loading")) map.classList.remove("is-loading");
   }
 }
 
-// The status line under the header: "loading" shows a spinner, "error" a red notice.
-function setStatus(text, state = "") {
+// The status line under the header: "loading" shows a spinner, "error" a red notice
+// with a Try again button when the failed action can be retried.
+function setStatus(text, state = "", retry = null) {
   const status = $("status");
-  status.textContent = text;
+  status.replaceChildren();
   status.dataset.state = text ? state : "";
+  if (!text) return;
+  status.append(el("span", {}, text));
+  if (retry) status.append(el("button", { type: "button", class: "pill", onclick: retry }, "Try again"));
+}
+
+// A button's loading state: an inline spinner (CSS), disabled until done.
+function setBusy(button, busy) {
+  button.setAttribute("aria-busy", String(busy));
+  button.disabled = busy;
+}
+
+// ---------- loading skeletons (shapes match each page's components) ----------
+
+const sk = (cls) => el("span", { class: `sk ${cls}`, "aria-hidden": "true" });
+const SK_ITEM = () =>
+  el("li", { class: "item-card is-skeleton", "aria-hidden": "true" },
+    el("div", { class: "photo sk" }),
+    el("div", { class: "item-body" }, sk("line w60 h20"), sk("line w40"), sk("line w70")));
+const SK_SCENE = () =>
+  el("li", { class: "scene is-skeleton", "aria-hidden": "true" },
+    el("div", { class: "scene-time" }, sk("line w70"), sk("line w50")),
+    el("div", { class: "scene-body" }, el("div", { class: "photo sk" }),
+      el("div", { class: "scene-text" }, sk("line w80 h24"), sk("line w60"), sk("line w30"))));
+const SK_BARS = () => Array.from({ length: 5 }, () => el("div", { class: "bar-row", "aria-hidden": "true" }, sk("line w70"), sk("line h12"), sk("line w100")));
+const SK_RESULT = () =>
+  el("li", { class: "result is-skeleton", "aria-hidden": "true" },
+    el("div", { class: "photo sk" }),
+    el("div", { class: "result-body" }, sk("line w30"), sk("line w80"), sk("line w60"), sk("line w70")));
+const repeat = (n, make) => Array.from({ length: n }, make);
+
+function paintSkeleton(name) {
+  if (name === "items") {
+    $("items-featured").replaceChildren(
+      el("article", { class: "featured is-skeleton", "aria-hidden": "true" },
+        el("div", { class: "photo sk" }),
+        el("div", { class: "featured-body" }, sk("line w30"), sk("line w50 h40"), sk("line w40 h24"), sk("line w90"), sk("line w70"))));
+    $("items-grid").replaceChildren(...repeat(6, SK_ITEM));
+  } else if (name === "timeline") {
+    $("feed").replaceChildren(...repeat(4, SK_SCENE));
+  } else if (name === "insights") {
+    for (const id of ["stat-memories", "stat-questions", "stat-unanswered", "stat-items"]) $(id).replaceChildren(sk("line w40 h40"));
+    for (const id of ["chart-asked", "chart-logged"]) $(id).replaceChildren(...SK_BARS());
+    $("chart-activity").replaceChildren(sk("block h200"));
+    $("questions").replaceChildren(...repeat(3, () => el("li", { "aria-hidden": "true" }, sk("line w60 h20"), sk("line w80"))));
+  } else if (name === "household") {
+    $("household-body").replaceChildren(el("div", { class: "two-col" }, ...repeat(2, () =>
+      el("div", { class: "card setup-card is-skeleton", "aria-hidden": "true" }, sk("line w40 h24"), sk("line w80"), sk("block h44"), sk("block h44"), sk("line w30 h44")))));
+  } else if (name === "map") {
+    for (const id of ["home-map", "places-map"]) $(id).classList.add("is-loading");
+  } else if (name === "public") {
+    $("public-map").classList.add("is-loading");
+    $("public-list").replaceChildren(...repeat(3, () => el("li", { class: "public-row", "aria-hidden": "true" }, sk("line w60"), sk("line w40"))));
+  }
 }
 
 async function api(path, { method = "GET", body } = {}) {
@@ -188,11 +267,40 @@ function setWindowHours(hours) {
   for (const el of document.querySelectorAll(".window-hours")) el.textContent = hours;
 }
 
-function emptyState(container, text) {
-  const p = document.createElement("p");
-  p.className = "empty";
-  p.textContent = text;
-  container.replaceChildren(p);
+// Setup progress, from /households/me: drives the empty-state checklists.
+let setup = { household: false, wearable: false };
+function noteSetup(households) {
+  setup = { household: households.length > 0, wearable: households.some((h) => h.devices.length > 0) };
+}
+
+/**
+ * An empty state. Plain: one line of text. With opts.title it becomes a card with the
+ * setup checklist (opts.checklist = the last step's label) and an action (opts.cta =
+ * {label, href} or {label, onclick}).
+ */
+function emptyState(container, text, opts = {}) {
+  const tag = ["OL", "UL"].includes(container.tagName) ? "li" : "div";
+  if (!opts.title) return container.replaceChildren(el(tag, { class: "empty" }, text));
+  const steps = opts.checklist && [
+    ["Create a household for the person who wears it", setup.household],
+    ["Add the wearable with the Client ID and pairing code on its label", setup.wearable],
+    [opts.checklist, false],
+  ];
+  // Until setup is done, the action is finishing it.
+  const cta = opts.checklist && !(setup.household && setup.wearable)
+    ? { label: setup.household ? "Add the wearable" : "Set up a household", href: "#/household" }
+    : opts.cta;
+  container.replaceChildren(
+    el(tag, { class: "empty empty-rich" },
+      el("h3", {}, opts.title),
+      el("p", {}, text),
+      steps && el("ol", { class: "checklist", "aria-label": "Setup steps" },
+        steps.map(([label, done]) => el("li", { class: done ? "done" : "" },
+          el("span", { class: "check", "aria-hidden": "true" }),
+          el("span", {}, label, done ? el("span", { class: "sr-only" }, " (done)") : null)))),
+      cta && (cta.href
+        ? el("a", { class: "primary", href: cta.href }, cta.label)
+        : el("button", { type: "button", class: "primary", onclick: cta.onclick }, cta.label))));
 }
 
 // ---------- Items page ----------
@@ -280,14 +388,19 @@ function itemChips(item) {
 }
 
 async function loadItems() {
-  const { window_hours, items } = await api("/api/v1/dashboard/items");
+  itemsCache = await api("/api/v1/dashboard/items");
+  const { window_hours, items } = itemsCache;
   setWindowHours(window_hours);
   $("items-count").textContent = `${items.length} item${items.length === 1 ? "" : "s"}`;
   const featured = $("items-featured");
   const grid = $("items-grid");
   if (!items.length) {
     featured.replaceChildren();
-    emptyState(grid, "No items yet. When the wearer says something like “I'm putting my keys on the counter”, the item shows up here.");
+    emptyState(grid, "When the wearer says something like “I'm putting my keys on the counter”, the item shows up here with a photo.", {
+      title: "No items yet",
+      checklist: "Hold REMEMBER and say where something is going",
+      cta: { label: "Check again", onclick: () => showPage("items", { force: true }) },
+    });
     return;
   }
 
@@ -297,7 +410,8 @@ async function loadItems() {
   hero.dataset.name = latest.name;
   fillPhoto(hero.querySelector(".photo"), latest.image_url, `The ${latest.name} on the ${latest.location || "spot shown"}`);
   hero.querySelector(".when").textContent = `${timeAgo(latest.last_seen)} · ${clockTime(latest.last_seen)}`;
-  hero.querySelector(".item-name").textContent = capitalize(latest.name);
+  hero.querySelector(".card-link").textContent = capitalize(latest.name);
+  hero.querySelector(".card-link").onclick = () => openItem(latest.name);
   hero.querySelector(".item-location").textContent = capitalize(latest.location) || "Location not said";
   hero.querySelector(".quote").textContent = latest.transcript ? `“${latest.transcript}”` : latest.scene || "";
   fillSaw(hero, latest.scene);
@@ -311,7 +425,8 @@ async function loadItems() {
       const node = tpl.content.firstElementChild.cloneNode(true);
       node.dataset.name = item.name;
       fillPhoto(node.querySelector(".photo"), item.image_url, `The ${item.name} on the ${item.location || "spot shown"}`);
-      node.querySelector(".item-name").textContent = capitalize(item.name);
+      node.querySelector(".card-link").textContent = capitalize(item.name);
+      node.querySelector(".card-link").onclick = () => openItem(item.name);
       node.querySelector(".when").textContent = shortAgo(item.last_seen);
       node.querySelector(".when").title = clockTime(item.last_seen);
       node.querySelector(".item-location").textContent = capitalize(item.location) || `“${item.transcript}”`;
@@ -347,7 +462,11 @@ async function loadTimeline() {
   const entries = await api("/api/v1/dashboard/history");
   const feed = $("feed");
   if (!entries.length) {
-    emptyState(feed, "Nothing recorded in the last 24 hours.");
+    emptyState(feed, "Every memory from the last 24 hours shows here, newest first, with its photo.", {
+      title: "Nothing recorded today",
+      checklist: "Hold REMEMBER and say where something is going",
+      cta: { label: "Check again", onclick: () => showPage("timeline", { force: true }) },
+    });
     return;
   }
   const tpl = $("entry-template");
@@ -410,7 +529,11 @@ async function loadHouseMap() {
   if (!data.items.length) {
     mapState?.deck.finalize();
     mapState = null;
-    return emptyState(container, "Nothing to map yet. Items appear here once the wearable logs where they were put down.");
+    return emptyState(container, "Items appear in their rooms once the wearable logs where they were put down.", {
+      title: "Nothing to map yet",
+      checklist: "Log a few items in different rooms",
+      cta: { label: "Check again", onclick: () => showPage("map", { force: true }) },
+    });
   }
   if (!mapState) {
     container.replaceChildren();
@@ -648,7 +771,11 @@ async function loadPlacesMap() {
   if (!places.length) {
     placesDeck?.finalize();
     placesDeck = null;
-    return emptyState(container, "No places yet. They appear once the wearable sends Wi-Fi positions with its memories.");
+    return emptyState(container, "Places appear once the wearable sends Wi-Fi positions with its memories.", {
+      title: "No places yet",
+      checklist: "Log a memory with Wi-Fi turned on",
+      cta: { label: "Check again", onclick: () => showPage("map", { force: true }) },
+    });
   }
   const layers = [
     basemap(),
@@ -762,7 +889,10 @@ async function loadPublic() {
 
   const list = $("public-list");
   if (!cells.length) {
-    return emptyState(list, `Nothing public yet. A spot appears once ${data.min_households} or more households have shared lost items there.`);
+    return emptyState(list, `A spot appears once ${data.min_households} or more households have shared lost items there.`, {
+      title: "Nothing public yet",
+      cta: signedIn ? { label: "Choose what to share", href: "#/household" } : { label: "Log in to contribute", onclick: () => $("login").click() },
+    });
   }
   list.replaceChildren(
     ...cells.slice(0, 10).map((c) => {
@@ -790,26 +920,64 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+let fieldIds = 0;
+
+// A form field: a persistent visible label, the input, and an inline error under it.
 function field(label, input) {
-  return el("label", { class: "field" }, el("span", {}, label), input);
+  input.id ||= `field-${++fieldIds}`;
+  const error = el("span", { class: "field-error", id: `${input.id}-error`, "aria-live": "polite" });
+  input.setAttribute("aria-describedby", error.id);
+  return el("div", { class: "field" }, el("label", { for: input.id }, label, input.required ? null : el("span", { class: "optional" }, " (optional)")), input, error);
 }
 
+function validateField(input) {
+  const error = $(`${input.id}-error`);
+  const label = input.labels?.[0]?.firstChild?.textContent || "This field";
+  const v = input.validity;
+  const message = v.valid ? ""
+    : v.valueMissing ? `Enter the ${/^[A-Z]{2}/.test(label.split(" ").pop()) ? label : label.toLowerCase()}.`
+    : v.tooShort ? `${label} needs at least ${input.minLength} characters.`
+    : v.patternMismatch ? input.title || "Check the format."
+    : input.validationMessage;
+  input.setAttribute("aria-invalid", String(!v.valid));
+  if (error) error.textContent = message;
+}
+
+// A setup form: Submit stays disabled until every field is valid; fields explain what's
+// wrong when you leave them; Submit shows a spinner while saving.
 function formCard(title, hint, fields, submitLabel, onSubmit) {
   const msg = el("p", { class: "form-msg", role: "status" });
+  const submit = el("button", { type: "submit", class: "primary" }, submitLabel);
   const form = el("form", {
     class: "card setup-card",
+    novalidate: true,
     onsubmit: async (e) => {
       e.preventDefault();
+      if (!form.checkValidity()) return form.querySelectorAll("input").forEach(validateField);
       msg.textContent = "";
+      msg.classList.remove("error");
       const values = Object.fromEntries(new FormData(form).entries());
+      setBusy(submit, true);
       try {
         msg.textContent = (await onSubmit(values)) || "";
       } catch (err) {
         msg.textContent = err.message.replace(/^\d+ /, "");
         msg.classList.add("error");
+      } finally {
+        setBusy(submit, false);
+        sync();
       }
     },
-  }, el("h2", {}, title), hint && el("p", { class: "hint" }, hint), ...fields, el("button", { type: "submit", class: "primary" }, submitLabel), msg);
+  }, el("h2", {}, title), hint && el("p", { class: "hint" }, hint), ...fields, submit, msg);
+  const sync = () => (submit.disabled = !form.checkValidity());
+  form.addEventListener("input", (e) => {
+    e.target.dataset.touched = "1";
+    sync();
+    if (e.target.getAttribute("aria-invalid") === "true") validateField(e.target); // clear as soon as it's fixed
+  });
+  // Explain a problem once the person has typed in a field and moved on.
+  form.addEventListener("focusout", (e) => e.target.dataset.touched && validateField(e.target));
+  sync();
   return form;
 }
 
@@ -820,6 +988,7 @@ async function refreshHousehold() {
 
 async function loadHousehold() {
   const { households } = await api("/api/v1/households/me");
+  noteSetup(households);
   const body = $("household-body");
   const myName = currentUser?.name || currentUser?.email || "";
   if (!households.length) {
@@ -835,7 +1004,7 @@ async function loadHousehold() {
           await refreshHousehold();
         }),
         formCard("Join a household", "Ask the person who set it up for an invite code.", [
-          field("Invite code", el("input", { name: "code", required: true, placeholder: "ABCD-1234-EF56", autocomplete: "off" })),
+          field("Invite code", el("input", { name: "code", required: true, minlength: 4, maxlength: 32, placeholder: "ABCD-1234-EF56", autocomplete: "off" })),
           field("Your name", el("input", { name: "display_name", value: myName, maxlength: 80 })),
         ], "Join", async (v) => {
           await api("/api/v1/invites/accept", { method: "POST", body: { code: v.code, display_name: v.display_name || null } });
@@ -862,8 +1031,8 @@ function householdView(h) {
           el("span", { class: "muted" }, d.last_seen ? `last heard ${timeAgo(d.last_seen)}` : "not heard from yet"))))
       : el("p", { class: "hint" }, "No wearable yet. Turn it on and connect it to Wi-Fi, then enter its Client ID and the pairing code on its label."));
   const claim = owner && formCard("Add a wearable", "The device must have connected at least once so LastScene knows its pairing code.", [
-    field("Client ID", el("input", { name: "client_id", required: true, autocomplete: "off", placeholder: "from the device label" })),
-    field("Pairing code", el("input", { name: "pairing_code", required: true, autocomplete: "off", placeholder: "ABCD-1234-EF56" })),
+    field("Client ID", el("input", { name: "client_id", required: true, minlength: 4, maxlength: 128, autocomplete: "off", spellcheck: "false", placeholder: "from the device label" })),
+    field("Pairing code", el("input", { name: "pairing_code", required: true, minlength: 4, maxlength: 32, autocomplete: "off", spellcheck: "false", placeholder: "ABCD-1234-EF56" })),
     field("Name", el("input", { name: "label", placeholder: "Mom's wearable", maxlength: 80 })),
   ], "Add wearable", async (v) => {
     const r = await api(`${base}/devices`, { method: "POST", body: { client_id: v.client_id, pairing_code: v.pairing_code, label: v.label || null } });
@@ -877,9 +1046,17 @@ function householdView(h) {
     el("ul", { class: "rows" }, h.members.map((m) => el("li", {},
       el("strong", {}, m.display_name + (m.is_you ? " (you)" : "")),
       el("span", { class: "muted" }, m.role === "owner" ? "set this up" : "family")))),
-    owner && el("button", { type: "button", class: "pill", onclick: async () => {
-      const { code, expires_in_hours } = await api(`${base}/invites`, { method: "POST" });
-      inviteOut.textContent = `Share this code: ${code} (works once, for ${expires_in_hours} hours)`;
+    owner && el("button", { type: "button", class: "pill", onclick: async (e) => {
+      const button = e.currentTarget;
+      setBusy(button, true);
+      try {
+        const { code, expires_in_hours } = await api(`${base}/invites`, { method: "POST" });
+        inviteOut.textContent = `Share this code: ${code} (works once, for ${expires_in_hours} hours)`;
+      } catch (err) {
+        inviteOut.textContent = `Couldn't make a code: ${err.message.replace(/^\d+ /, "")}`;
+      } finally {
+        setBusy(button, false);
+      }
     } }, "Invite someone"),
     inviteOut);
 
@@ -927,16 +1104,25 @@ async function runSearch(event) {
   const q = $("search-q").value.trim();
   const list = $("search-results");
   if (!q) return;
+  const submit = $("search-submit");
+  setBusy(submit, true);
   setStatus("Searching…", "loading");
+  list.replaceChildren(...repeat(2, SK_RESULT));
   try {
     const { results } = await api(`/api/v1/dashboard/search?q=${encodeURIComponent(q)}`);
-    setStatus("");
-    if (!results.length) return emptyState(list, "No memories matched. Nothing has been logged about that yet.");
+    setStatus(`${results.length} memor${results.length === 1 ? "y" : "ies"} found for “${q}”.`);
+    if (!results.length) {
+      return emptyState(list, "Nothing logged in the last 3 days matches that. Try a single item name, like “keys”.", {
+        title: "No memories matched",
+        cta: { label: "Try “keys”", onclick: () => { $("search-q").value = "keys"; $("search-form").requestSubmit(); } },
+      });
+    }
     const tpl = $("result-template");
     list.replaceChildren(
       ...results.map((r, i) => {
         const node = tpl.content.firstElementChild.cloneNode(true);
-        fillPhoto(node.querySelector(".photo"), r.image_url, "Photo for this memory");
+        const said = r.chunks.find((c) => c.kind === "speech")?.content;
+        fillPhoto(node.querySelector(".photo"), r.image_url, `Photo from ${clockTime(r.timestamp)}${said ? `, when they said: ${said}` : ""}`);
         node.querySelector(".result-rank").textContent = `#${i + 1}`;
         const time = node.querySelector("time");
         time.dateTime = r.timestamp;
@@ -969,15 +1155,87 @@ async function runSearch(event) {
       })
     );
   } catch (err) {
-    setStatus(`Search failed: ${err.message}`, "error");
+    list.replaceChildren();
+    setStatus(`Search failed: ${err.message}`, "error", () => $("search-form").requestSubmit());
+  } finally {
+    setBusy(submit, false);
+    submit.disabled = !$("search-q").value.trim();
   }
+}
+
+// ---------- Item detail panel (drill-down from Items cards and Insights bars) ----------
+
+let itemsCache = null; // last /dashboard/items response
+let insightsCache = null; // last /dashboard/insights response
+
+async function openItem(name) {
+  const drawer = $("drawer");
+  $("drawer-eyebrow").textContent = "Item";
+  $("drawer-title").textContent = capitalize(name);
+  const body = $("drawer-body");
+  body.replaceChildren(el("div", { class: "photo sk detail-photo", "aria-hidden": "true" }), sk("line w60 h24"), sk("line w80"), sk("line w40"));
+  if (!drawer.open) drawer.showModal();
+  try {
+    itemsCache ??= await api("/api/v1/dashboard/items");
+    body.replaceChildren(...itemDetail(name, itemsCache.items.find((i) => i.name === name)));
+  } catch (err) {
+    body.replaceChildren(el("p", { class: "error" }, `Couldn't load this item: ${err.message}`),
+      el("button", { type: "button", class: "pill", onclick: () => ((itemsCache = null), openItem(name)) }, "Try again"));
+  }
+}
+
+function itemDetail(name, item) {
+  const questions = (insightsCache?.recent_questions || []).filter((q) => q.item === name);
+  const questionList = questions.length > 0 && el("section", { class: "detail-section" },
+    el("h3", {}, "Questions about it"),
+    el("ul", { class: "detail-list" }, questions.map((q) => el("li", {},
+      el("strong", {}, `“${q.question}”`),
+      el("span", { class: "muted" }, q.answer),
+      el("time", { class: "mono", datetime: q.timestamp }, `${clockTime(q.timestamp)} · ${timeAgo(q.timestamp)}`)))));
+  if (!item) {
+    return [
+      el("p", { class: "detail-where" }, "Never logged"),
+      el("p", { class: "hint" }, "It was asked about but never put down with the wearable. Saying it out loud when putting it down (“I'm putting my glasses on the nightstand”) means the next question has an answer."),
+      questionList,
+    ];
+  }
+  const photo = el("div", { class: "photo detail-photo" }, el("img", { alt: "" }));
+  fillPhoto(photo, item.image_url, `The ${item.name} on the ${item.location || "spot shown"}`);
+  if (item.detection) drawBoxes(photo, [item.detection]);
+  const spots = [{ location: item.location, timestamp: item.last_seen, now: true }, ...item.previous];
+  return [
+    photo,
+    el("p", { class: "detail-where" }, capitalize(item.location) || "Location not said"),
+    el("p", { class: "when mono" }, `${timeAgo(item.last_seen)} · ${clockTime(item.last_seen)}`),
+    item.transcript && el("p", { class: "quote" }, `“${item.transcript}”`),
+    el("div", { class: "chips" }, ...itemChips(item), ...(item.detection ? autoChips([item.detection]) : [])),
+    el("section", { class: "detail-section" },
+      el("h3", {}, "Where it's been"),
+      el("ol", { class: "trail" }, spots.map((s) => el("li", { class: s.now ? "now" : "" },
+        el("strong", {}, capitalize(s.location) || "Somewhere"),
+        el("span", { class: "muted" }, s.now ? `now · ${timeAgo(s.timestamp)}` : timeAgo(s.timestamp)))))),
+    questionList,
+    el("a", { class: "pill", href: "#/map", onclick: () => $("drawer").close() }, "Show on the home map"),
+  ];
 }
 
 // ---------- Insights page ----------
 
+// Insights time range (hours); the API caps it at the 72h retention.
+let insightsHours = 72;
+
+function setInsightsRange(hours) {
+  insightsHours = hours;
+  for (const btn of document.querySelectorAll("#insights-range [data-hours]")) {
+    btn.setAttribute("aria-pressed", String(Number(btn.dataset.hours) === hours));
+  }
+  showPage("insights", { force: true });
+}
+
 async function loadInsights() {
-  const data = await api("/api/v1/dashboard/insights");
-  setWindowHours(data.window_hours);
+  const data = await api(`/api/v1/dashboard/insights?hours=${insightsHours}`);
+  insightsCache = data;
+  $("insights-hours").textContent = data.window_hours;
   $("stat-memories").textContent = data.memories_logged;
   $("stat-questions").textContent = data.questions_asked;
   $("stat-unanswered").textContent = data.unanswered_count;
@@ -986,9 +1244,11 @@ async function loadInsights() {
 
   renderHighlights(data);
   loadSummary();
-  const rows = (list) => list.map((r) => ({ label: capitalize(r.name), value: r.count }));
-  Charts.barList($("chart-asked"), rows(data.most_asked), { unit: "times asked", empty: "No questions about specific items yet." });
-  Charts.barList($("chart-logged"), rows(data.most_logged), { unit: "times put down", empty: "No items logged yet." });
+  // Each bar opens that item's detail panel.
+  const rows = (list) => list.map((r) => ({ label: capitalize(r.name), value: r.count, name: r.name }));
+  const onSelect = (row) => openItem(row.name);
+  Charts.barList($("chart-asked"), rows(data.most_asked), { unit: "times asked", empty: "No questions about specific items yet.", onSelect });
+  Charts.barList($("chart-logged"), rows(data.most_logged), { unit: "times put down", empty: "No items logged yet.", onSelect });
   renderActivity(data.activity);
   renderQuestions(data.recent_questions);
 }

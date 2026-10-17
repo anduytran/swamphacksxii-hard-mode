@@ -305,6 +305,14 @@ def test_insights_flags_questions_about_items_never_logged(client):
     assert sorted(a["kind"] for a in data["activity"]) == ["memory", "question", "question", "question"]
 
 
+def test_insights_window_can_be_narrowed_but_not_past_retention(client):
+    get = lambda q="": client.get(f"/api/v1/dashboard/insights{q}", headers=CAREGIVER)
+    assert get().json()["window_hours"] == 72
+    assert get("?hours=24").json()["window_hours"] == 24
+    assert get("?hours=500").json()["window_hours"] == 72  # nothing older exists
+    assert get("?hours=0").status_code == 422
+
+
 def test_background_extraction_failure_does_not_break_logging(client):
     async def boom(text):
         raise RuntimeError("Claude is down")
