@@ -1,3 +1,0 @@
-# Daily 72-hour privacy purge (install with: crontab deploy/memory-anchor.cron)
-# Adjust /opt/memory-anchor to where the repo lives on the Vultr instance.
-15 3 * * * cd /opt/memory-anchor/backend && .venv/bin/python -m app.retention >> /var/log/memory-anchor-retention.log 2>&1

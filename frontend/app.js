@@ -16,6 +16,10 @@ async function init() {
 
   // Returning from Universal Login.
   const params = new URLSearchParams(window.location.search);
+  if (params.has("error")) {
+    window.history.replaceState({}, document.title, window.location.pathname);
+    throw new Error(params.get("error_description") || params.get("error"));
+  }
   if (params.has("code") && params.has("state")) {
     await auth0Client.handleRedirectCallback();
     window.history.replaceState({}, document.title, window.location.pathname);
@@ -46,8 +50,8 @@ async function loadHistory() {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) throw new Error(`${res.status} ${(await res.json()).detail || res.statusText}`);
-    render(await res.json());
     status.textContent = "";
+    render(await res.json());
   } catch (err) {
     status.textContent = `Couldn't load history: ${err.message}`;
   }

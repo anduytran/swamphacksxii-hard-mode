@@ -1,0 +1,13 @@
+[Unit]
+Description=LastScene API
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/lastscene/backend
+EnvironmentFile=/opt/lastscene/backend/.env
+ExecStart=/opt/lastscene/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
+Restart=always
+User=www-data
+
+[Install]
+WantedBy=multi-user.target

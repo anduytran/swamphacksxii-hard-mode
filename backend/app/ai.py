@@ -1,6 +1,7 @@
 """Speech-to-text, embeddings and text-to-speech (OpenAI) plus answer generation (Claude)."""
 
 from datetime import datetime, timezone
+from functools import cached_property
 
 import anthropic
 import openai
@@ -9,7 +10,7 @@ from .config import Settings
 from .db import MemoryRecord
 
 ANSWER_SYSTEM_PROMPT = """\
-You are Memory Anchor, a gentle voice assistant on a wearable that helps someone \
+You are LastScene, a gentle voice assistant on a wearable that helps someone \
 with memory loss find everyday items. Your reply is spoken aloud through a small speaker.
 
 You are given the user's question and a few things they said out loud earlier while \
@@ -38,8 +39,16 @@ def humanize_ago(then: datetime, now: datetime | None = None) -> str:
 class AIServices:
     def __init__(self, settings: Settings):
         self.s = settings
-        self.openai = openai.AsyncOpenAI(api_key=settings.openai_api_key or None)
-        self.claude = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key or None)
+
+    # Clients are created on first use so the API (and the dashboard) can start
+    # before the AI keys are configured; the voice endpoints fail until they are.
+    @cached_property
+    def openai(self) -> openai.AsyncOpenAI:
+        return openai.AsyncOpenAI(api_key=self.s.openai_api_key or None)
+
+    @cached_property
+    def claude(self) -> anthropic.AsyncAnthropic:
+        return anthropic.AsyncAnthropic(api_key=self.s.anthropic_api_key or None)
 
     async def transcribe(self, filename: str, audio: bytes, content_type: str | None) -> str:
         result = await self.openai.audio.transcriptions.create(

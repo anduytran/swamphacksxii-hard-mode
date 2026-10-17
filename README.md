@@ -1,5 +1,5 @@
 # swamphacksxii-hard-mode
-memory anchor: multimodal ai embedded on hardware to track down items
+LastScene: multimodal ai embedded on hardware to track down items
 
 ## Layout
 
@@ -31,7 +31,7 @@ Queries only search the calling device's own memories from the last 72h (top 3 b
 ## Setup
 
 ### Auth0
-1. **API**: create one with identifier = `AUTH0_AUDIENCE` (e.g. `https://api.memory-anchor`), RS256. Add permission `write:memories`.
+1. **API**: create one with identifier = `AUTH0_AUDIENCE` (e.g. `https://api.lastscene`), RS256. Add permission `write:memories`.
 2. **Wearable**: create a *Machine to Machine* application, authorize it for the API with the `write:memories` scope. Flash its Client ID/Secret onto the ESP32; the device POSTs `client_credentials` to `https://AUTH0_DOMAIN/oauth/token` and sends `Authorization: Bearer <access_token>` (cache it until `expires_in`).
 3. **Dashboard**: create a *Single Page Application*. Allowed Callback / Logout / Web Origins = your dashboard URL (e.g. `http://localhost:8000`). Put its Client ID in `AUTH0_SPA_CLIENT_ID`.
 4. Because any user who can log in sees the feed, disable public sign-ups on the database connection, or enable RBAC on the API, create a `read:history` permission for caregivers, and set `CAREGIVER_PERMISSION=read:history`.
@@ -69,14 +69,14 @@ cd backend && DEVICE_CLIENT_ID=... DEVICE_CLIENT_SECRET=... AUTH0_DOMAIN=... AUT
 ```
 
 ### Deploy on Vultr
-Clone to `/opt/memory-anchor`, create the venv and `.env` as above, then:
+Clone to `/opt/lastscene`, create the venv and `.env` as above, then:
 
 ```bash
-sudo cp deploy/memory-anchor.service /etc/systemd/system/ && sudo systemctl enable --now memory-anchor
+sudo cp deploy/lastscene.service /etc/systemd/system/ && sudo systemctl enable --now lastscene
 ```
 
 ```bash
-crontab deploy/memory-anchor.cron
+crontab deploy/lastscene.cron
 ```
 
 Put it behind HTTPS (Caddy or nginx + Let's Encrypt). Auth0 requires HTTPS origins for the SPA outside localhost, and the device's token should never travel over plain HTTP.

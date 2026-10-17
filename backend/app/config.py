@@ -7,8 +7,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # Auth0
-    auth0_domain: str = ""  # e.g. memory-anchor.us.auth0.com
-    auth0_audience: str = ""  # API identifier, e.g. https://api.memory-anchor
+    auth0_domain: str = ""  # e.g. lastscene.us.auth0.com
+    auth0_audience: str = ""  # API identifier, e.g. https://api.lastscene
     # Auth0 SPA application used by the caregiver dashboard (public values).
     auth0_spa_client_id: str = ""
     # Scope the wearable's M2M token must carry (grant it to the M2M app in Auth0).

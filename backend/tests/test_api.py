@@ -15,7 +15,7 @@ from app.db import MemoryRecord
 from app.main import create_app
 
 DOMAIN = "test.auth0.local"
-AUDIENCE = "https://api.memory-anchor"
+AUDIENCE = "https://api.lastscene"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 

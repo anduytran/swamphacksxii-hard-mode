@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app(use_lifespan: bool = True) -> FastAPI:
-    app = FastAPI(title="Memory Anchor API", lifespan=lifespan if use_lifespan else None)
+    app = FastAPI(title="LastScene API", lifespan=lifespan if use_lifespan else None)
     app.include_router(memory.router)
     app.include_router(dashboard.router)
     app.include_router(images.router)

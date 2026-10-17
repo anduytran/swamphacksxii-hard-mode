@@ -1,0 +1,3 @@
+# Daily 72-hour privacy purge (install with: crontab deploy/lastscene.cron)
+# Adjust /opt/lastscene to where the repo lives on the Vultr instance.
+15 3 * * * cd /opt/lastscene/backend && .venv/bin/python -m app.retention >> /var/log/lastscene-retention.log 2>&1
