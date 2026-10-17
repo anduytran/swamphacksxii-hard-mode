@@ -1,8 +1,11 @@
 // The frame around every page: header (a sidebar on wide screens, a top bar + bottom tab bar
 // on phones), the status line, and the phone "More" sheet.
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useApi } from "../lib/api";
 import { useApp, type Page } from "../lib/app";
 import { useAuth } from "../lib/auth";
+import { publishReviewCount, useReviewCount } from "../lib/reviewCount";
+import type { Household, ReviewQueue } from "../lib/types";
 import { initials } from "../lib/format";
 import { Dialog } from "./Dialog";
 import { DisplayButton } from "./DisplaySettings";
@@ -43,10 +46,44 @@ const NAV: { group: string; items: NavItem[] }[] = [
   },
 ];
 
+/** Keeps the "needs a look" count fresh for the Teach badge: on sign-in, on Refresh, and on each page change. */
+function useReviewBadge(signedIn: boolean, page: Page): number {
+  const api = useApi();
+  const { refreshNonce } = useApp();
+  useEffect(() => {
+    if (!signedIn || page === "teach") return; // Teach publishes its own count
+    let gone = false;
+    api<{ households: Household[] }>("/api/v1/households/me")
+      .then(({ households }) =>
+        Promise.all(
+          households.map((h) =>
+            api<ReviewQueue>(`/api/v1/households/${h.id}/training/review?limit=0`).then((q) => !gone && publishReviewCount(h.id, q.count)),
+          ),
+        ),
+      )
+      .catch(() => {}); // a badge is a nicety: never an error on the page
+    return () => {
+      gone = true;
+    };
+  }, [api, signedIn, page, refreshNonce]);
+  return useReviewCount();
+}
+
+function Badge({ count }: { count: number }) {
+  if (!count) return null;
+  return (
+    <span className="nav-badge" aria-label={`, ${count} photo${count === 1 ? " needs" : "s need"} a look`}>
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
 export function Header({ page }: { page: Page }) {
   const { signedIn, user, logout } = useAuth();
   const { refresh } = useApp();
   const [moreOpen, setMoreOpen] = useState(false);
+  const toReview = useReviewBadge(signedIn, page);
+  const badges: Partial<Record<Page, number>> = { teach: toReview };
   const name = user?.name || user?.email || "";
   const current = (p: Page) => (p === page ? ("page" as const) : undefined);
 
@@ -69,6 +106,7 @@ export function Header({ page }: { page: Page }) {
                   <a key={n.page} href={`#/${n.page}`} aria-current={current(n.page)} className={n.secondary ? "nav-secondary" : undefined}>
                     <Icon name={n.icon} />
                     {n.label}
+                    <Badge count={badges[n.page] ?? 0} />
                   </a>
                 ))}
               </div>
@@ -76,6 +114,7 @@ export function Header({ page }: { page: Page }) {
             <button type="button" className="more-tab" aria-haspopup="dialog" aria-controls="more-sheet" onClick={() => setMoreOpen(true)}>
               <Icon name="more" />
               More
+              {toReview > 0 && <span className="nav-dot" aria-hidden="true" />}
             </button>
           </nav>
 
@@ -93,14 +132,14 @@ export function Header({ page }: { page: Page }) {
             </button>
           </div>
 
-          <MoreSheet open={moreOpen} onClose={() => setMoreOpen(false)} page={page} />
+          <MoreSheet open={moreOpen} onClose={() => setMoreOpen(false)} page={page} badges={badges} />
         </>
       )}
     </header>
   );
 }
 
-function MoreSheet({ open, onClose, page }: { open: boolean; onClose(): void; page: Page }) {
+function MoreSheet({ open, onClose, page, badges }: { open: boolean; onClose(): void; page: Page; badges: Partial<Record<Page, number>> }) {
   const { refresh } = useApp();
   const { logout } = useAuth();
   const secondary = NAV.flatMap((g) => g.items).filter((n) => n.secondary);
@@ -117,7 +156,10 @@ function MoreSheet({ open, onClose, page }: { open: boolean; onClose(): void; pa
           <a key={n.page} href={`#/${n.page}`} aria-current={n.page === page ? "page" : undefined} onClick={onClose}>
             <Icon name={n.icon} />
             <span>
-              <strong>{n.label}</strong>
+              <strong>
+                {n.label}
+                <Badge count={badges[n.page] ?? 0} />
+              </strong>
               <small>{n.blurb}</small>
             </span>
           </a>

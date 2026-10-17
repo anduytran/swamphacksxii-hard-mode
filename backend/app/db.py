@@ -15,6 +15,7 @@ import asyncpg
 from .config import Settings
 from .db_observations import ObservationsMixin
 from .db_places import PlacesMixin
+from .db_review import ReviewMixin
 from .db_training import TrainingMixin, TrainingModelsMixin
 from .rag import ChunkHit
 
@@ -60,7 +61,7 @@ ACTIVITY_COUNTS_DAYS = 90
 _COLUMNS = "id, device_id, created_at, transcript, scene, source, image IS NOT NULL AS has_image"
 
 
-class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixin):
+class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixin, ReviewMixin):
     def __init__(self, settings: Settings):
         self.dsn = settings.database_url
         self.dims = settings.embedding_dimensions
@@ -177,6 +178,7 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
             await self.init_observations_schema(conn)
             await self.init_training_schema(conn)
             await self.init_training_models_schema(conn)
+            await self.init_review_schema(conn)
             # Anonymous hourly counts that outlive the 72-hour purge (see delete_older_than):
             # no words, photos or item names, just how many questions / put-downs per hour.
             await conn.execute(
