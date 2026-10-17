@@ -242,6 +242,9 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
 
     async def keyword_hits(self, device_ids: list[str] | None, text: str, hours: int, limit: int) -> list[ChunkHit]:
         """Chunks sharing words with the question (Postgres full-text, any word, stemmed)."""
+        # Keyword matching only finds memories in the question's language (and stems as English):
+        # a Spanish question won't keyword-match an English note. Vector search covers that
+        # case, since gemini-embedding-2 is multilingual.
         rows = await self.pool.fetch(
             """
             WITH q AS (

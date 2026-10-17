@@ -82,6 +82,8 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
    cd /opt/lastscene/stt && sudo curl -fLO https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip && sudo unzip vosk-model-small-en-us-0.15.zip
    ```
    Time it on the Pi before relying on it: `arecord -f S16_LE -r 16000 -c 1 -d 4 said.wav`, then `STT_ENGINE=moonshine /opt/lastscene/venv/bin/python lastscene_device.py --transcribe said.wav` (no network or Auth0 needed). On a Mac, one thread, Moonshine took 40–90 ms per 2 s clip with ~285 MB peak memory; the Zero 2 W has 512 MB in all, so check `free -m` with the service running. If the model is missing or hears nothing, the clip goes to the server's speech-to-text instead; `STT_FALLBACK=false` turns that off.
+
+   **Households in another language** (set on the dashboard's Household page): Moonshine and Vosk as set up here are English-only, so set `STT_ENGINE=server` (the default) and the server's Gemini speech-to-text hears any language. Answers then come back spoken in the household's language. Saying "Last Scene" still wakes it in any language.
 4. Copy this folder to the Pi and set up config:
    ```bash
    sudo useradd --system --groups gpio,video,audio lastscene

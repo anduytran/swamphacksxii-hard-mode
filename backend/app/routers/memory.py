@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from ..db import MemoryDB
 from ..deps import get_ai, get_db, get_geo
 from ..geo import Geolocator, locate_and_record, record_public, resolve_location
 from ..intent import classify, strip_wake_phrase
+from ..languages import is_english, normalize, phrase
 from ..pipeline import ingest_image, ingest_speech, retrieve
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
@@ -140,6 +142,15 @@ async def _save_memory(
     return {"id": record.id, "timestamp": record.created_at.isoformat(), "transcript": transcript}
 
 
+async def _language(db: MemoryDB, device_id: str) -> str:
+    """The language of the device's household ("en" if unclaimed, or if the lookup fails)."""
+    try:
+        return normalize(await db.household_language(device_id))
+    except Exception:
+        log.exception("Looking up the language for %s failed", device_id)
+        return "en"
+
+
 async def _spoken_answer(
     background: BackgroundTasks, db: MemoryDB, ai: AIServices, geo: Geolocator, settings: Settings,
     device_id: str, question: str, where: Whereabouts, extra_headers: dict | None = None,
@@ -156,21 +167,23 @@ async def _spoken_answer(
     record_args = None
     answered_by = "fixed"
     if question:
-        embedding = await ai.embed(question, query=True)
+        embedding, language = await asyncio.gather(ai.embed(question, query=True), _language(db, device_id))
         lap("embed")
         memories = await retrieve(db, ai, question, [device_id], settings.query_lookback_hours, embedding=embedding)
         lap("retrieve")
-        answer = template_answer(question, memories) if settings.template_answers else None
+        # Template answers are English sentences; other languages always go to the model.
+        use_template = settings.template_answers and is_english(language)
+        answer = template_answer(question, memories) if use_template else None
         answered_by = "template"
         if answer is None:
-            answer = await ai.answer(question, memories)
+            answer = await ai.answer(question, memories, language)
             answered_by = "llm"
         lap("answer")
         record_args = (db, ai, geo, device_id, question, answer, where)
         if settings.enrich_in_background:
             background.add_task(_record_query, *record_args)
     else:
-        answer = DIDNT_CATCH
+        answer = phrase(DIDNT_CATCH, await _language(db, device_id))
 
     speech = await ai.speak(answer)
     lap("speak")

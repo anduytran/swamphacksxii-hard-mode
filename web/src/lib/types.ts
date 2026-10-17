@@ -138,6 +138,7 @@ export interface Household {
   id: string;
   name: string;
   share_public: boolean;
+  language: string; // BCP-47, the wearer's spoken answers (see lib/languages.ts)
   role: "owner" | "member";
   members: { display_name: string; role: "owner" | "member"; is_you: boolean }[];
   devices: { client_id: string; label: string | null; last_seen: string | null }[];

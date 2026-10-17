@@ -50,7 +50,7 @@ class OfflineAI:
     async def describe_scene(self, *a):
         return None
 
-    async def answer(self, q, m):
+    async def answer(self, q, m, language="en"):
         return "ok"
 
     async def speak(self, t):
@@ -120,6 +120,9 @@ def test_setup_for_someone_else_then_places_and_public_map(setup):
     assert c.patch(f"/api/v1/households/{hh}", json={"share_public": True}).status_code == 403  # sister isn't owner
     c.who["user"] = f"it-{RUN}-owner"
     assert c.patch(f"/api/v1/households/{hh}", json={"share_public": True}).status_code == 200
+    assert c.get("/api/v1/households/me").json()["households"][0]["language"] == "en"  # the default
+    assert c.patch(f"/api/v1/households/{hh}", json={"language": "es"}).status_code == 200
+    assert c.get("/api/v1/households/me").json()["households"][0]["language"] == "es"
     log(c, "leaving my umbrella here", "aa:aa:aa:aa:aa:02")
 
     ours = c.get("/api/v1/dashboard/places").json()

@@ -36,7 +36,7 @@ class OfflineAI:
     async def extract_items(self, text):
         return []
 
-    async def answer(self, q, memories):
+    async def answer(self, q, memories, language="en"):
         self.answered = memories
         return "ok"
 

@@ -87,6 +87,11 @@ class FakeDB:
     async def household_of_device(self, device_id):
         return None
 
+    language = None  # the device's household language; None = unclaimed
+
+    async def household_language(self, device_id):
+        return self.language
+
     async def missing_grid(self, device_ids, days):
         """Hourly (asked, put down) counts from the in-memory queries and items."""
         trunc = lambda t: t.replace(minute=0, second=0, microsecond=0)
@@ -158,12 +163,13 @@ class FakeAI:
     async def describe_scene(self, image, content_type, transcript):
         return self.scene
 
-    async def caregiver_summary(self, facts):
-        self.summary_facts = facts
+    async def caregiver_summary(self, facts, language="en"):
+        self.summary_facts, self.summary_language = facts, language
         return "Keys came up most this week."
 
-    async def answer(self, question, memories):
+    async def answer(self, question, memories, language="en"):
         self.answered_with = (question, memories)
+        self.answered_in = language
         return "On the kitchen counter."
 
     async def speak(self, text):

@@ -12,6 +12,7 @@ from ..config import Settings, get_settings
 from ..db import ACTIVITY_COUNTS_DAYS, ItemSighting, MemoryDB, QueryRecord
 from ..deps import get_ai, get_db
 from ..home_map import floor_plan, room_for
+from ..languages import normalize
 from ..geo import home_place_id, place_label
 from ..pipeline import retrieve
 
@@ -224,12 +225,14 @@ async def summary(
         f"Most often put down: {counts(data['most_logged'])}. "
         f"Asked about but never logged: {', '.join(never_logged) or 'none'}."
     )
-    cache_key = f"{sorted(devices)}|{facts}"
+    # In the household language (a caregiver in several households gets the first one's).
+    language = normalize(await db.household_language(devices[0])) if devices else "en"
+    cache_key = f"{sorted(devices)}|{language}|{facts}"
     cached = _summary_cache.get(cache_key)
     if cached and time.monotonic() - cached[0] < _SUMMARY_TTL_SECONDS:
         return {"summary": cached[1]}
     try:
-        text = await ai.caregiver_summary(facts)
+        text = await ai.caregiver_summary(facts, language)
     except Exception:
         log.exception("Caregiver summary failed")
         return {"summary": None}
