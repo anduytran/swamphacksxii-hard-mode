@@ -6,6 +6,7 @@ language tasks.
 """
 
 import functools
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,8 +20,10 @@ from pydantic import BaseModel, create_model
 from .config import Settings
 from .home_map import FloorPlan, floor_plan
 from .rag import ITEM, TEXT, RetrievedMemory
-from .gemini import GeminiAI
+from .gemini import GeminiAI, using
 from .limits import Limiter, RateLimited, Rule, per, provider_busy
+
+log = logging.getLogger(__name__)
 from . import languages
 
 ANSWER_SYSTEM_PROMPT = """\
@@ -235,29 +238,68 @@ def humanize_ago(then: datetime, now: datetime | None = None) -> str:
 
 
 def limited(stage: str):
-    """Guard a provider call with the shared rate limits for `stage` (see AIServices.rules):
-    a slot is taken first, and a provider "too many requests" cools its bucket down for every
-    server instance. Either way the caller gets RateLimited."""
+    """Guard a provider call with the shared rate limits for `stage` (see AIServices.rules), and
+    fall back through Gemini models (AIServices.models): if a model is at its cap, cooling down,
+    overloaded (429/503), down (5xx) or unknown (404), the next one is tried. A provider "too many
+    requests" cools that model down on every server instance. If none can take the call, the
+    caller gets RateLimited (or the last real error)."""
 
     def wrap(fn):
         @functools.wraps(fn)
         async def run(self, *args, **kwargs):
-            rules = self.rules(stage)
-            if self.limiter and rules:
-                await self.limiter.take(rules)
-            try:
-                return await fn(self, *args, **kwargs)
-            except RateLimited:
-                raise
-            except Exception as exc:
-                if self.limiter and rules and (wait := provider_busy(exc)) is not None:
-                    await self.limiter.cool_down(rules[0].bucket, wait)
-                    raise RateLimited(rules[0].bucket, wait, "provider busy") from exc
-                raise
+            chain = self.models(stage) or [None]
+            last: Exception | None = None
+            for model in chain:
+                rules = self.rules(stage, model)
+                try:
+                    if self.limiter and rules:
+                        await self.limiter.take(rules)
+                    with using(model, tts=stage == "tts"):
+                        return await fn(self, *args, **kwargs)
+                except RateLimited as busy:
+                    last = busy
+                except Exception as exc:
+                    if (wait := provider_busy(exc)) is not None:
+                        if self.limiter and rules:
+                            await self.limiter.cool_down(rules[0].bucket, wait)
+                        last = RateLimited(rules[0].bucket if rules else stage, wait, "provider busy")
+                    elif model is not None and _worth_another_model(exc):
+                        last = exc
+                    else:
+                        raise
+                if model is not None and model != chain[-1]:
+                    log.warning("%s: %s unavailable (%s); trying the next model", stage, model, type(last).__name__)
+            raise last
 
         return run
 
     return wrap
+
+
+def _worth_another_model(exc: Exception) -> bool:
+    """A Google-side failure another model might not have: 5xx, or a model that isn't there (404)."""
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    return code == 404 or (isinstance(code, int) and 500 <= code < 600)
+
+
+def model_list(primary: str, fallbacks: str) -> list[str]:
+    """GEMINI_MODEL then GEMINI_FALLBACK_MODELS (comma-separated), without repeats."""
+    seen: list[str] = []
+    for m in [primary, *fallbacks.split(",")]:
+        if (m := m.strip()) and m not in seen:
+            seen.append(m)
+    return seen
+
+
+def model_limits(spec: str) -> dict[str, tuple[int, int]]:
+    """"a=15/900,b=10/250" -> {"a": (15, 900), "b": (10, 250)}; malformed entries are skipped."""
+    limits = {}
+    for part in spec.split(","):
+        name, _, caps = part.strip().partition("=")
+        rpm, _, rpd = caps.partition("/")
+        if name and rpm.strip().isdigit() and rpd.strip().isdigit():
+            limits[name.strip()] = (int(rpm), int(rpd))
+    return limits
 
 
 class AIServices:
@@ -266,18 +308,36 @@ class AIServices:
         self.limiter = limiter  # None: no shared limits (tests, scripts)
         self._speech_cache: dict[tuple, bytes] = {}
 
-    def rules(self, stage: str) -> list[Rule]:
-        """The limits a call for `stage` counts against: the provider and model it goes to.
-        stt | tts | embed | text | vision | maps."""
+    def _provider(self, stage: str) -> str:
         s = self.s
-        provider = {"stt": s.stt_provider, "tts": s.tts_provider, "embed": s.embedding_provider,
-                    "text": s.llm_provider, "vision": s.vision_provider, "maps": "gemini"}[stage]
+        return {"stt": s.stt_provider, "tts": s.tts_provider, "embed": s.embedding_provider,
+                "text": s.llm_provider, "vision": s.vision_provider, "maps": "gemini"}[stage]
+
+    def models(self, stage: str) -> list[str]:
+        """The Gemini models a `stage` call tries, in order; [] when it doesn't go to Gemini.
+        Embeddings never fall back: another model's vectors wouldn't match the stored ones."""
+        s = self.s
+        if self._provider(stage) != "gemini":
+            return []
+        if stage == "tts":
+            return model_list(s.gemini_tts_model, s.gemini_tts_fallback_models)
+        if stage == "embed":
+            return [s.gemini_embedding_model]
+        return model_list(s.gemini_model, s.gemini_fallback_models)
+
+    def rules(self, stage: str, model: str | None = None) -> list[Rule]:
+        """The limits a call for `stage` counts against: the provider and model it goes to
+        (by default the first model it tries). stt | tts | embed | text | vision | maps."""
+        s = self.s
+        provider = self._provider(stage)
         if provider == "gemini":
+            model = model or self.models(stage)[0]
             if stage == "tts":
-                return per(f"gemini:{s.gemini_tts_model}", s.gemini_tts_rpm, s.gemini_tts_rpd)
+                return per(f"gemini:{model}", s.gemini_tts_rpm, s.gemini_tts_rpd)
             if stage == "embed":
-                return per(f"gemini:{s.gemini_embedding_model}", s.gemini_embedding_rpm, s.gemini_embedding_rpd)
-            return per(f"gemini:{s.gemini_model}", s.gemini_rpm, s.gemini_rpd)
+                return per(f"gemini:{model}", s.gemini_embedding_rpm, s.gemini_embedding_rpd)
+            rpm, rpd = model_limits(s.gemini_model_limits).get(model, (s.gemini_rpm, s.gemini_rpd))
+            return per(f"gemini:{model}", rpm, rpd)
         if provider == "openai":
             return per("openai", s.openai_rpm, s.openai_rpd)
         if provider == "claude":
@@ -448,6 +508,11 @@ class AIServices:
 
     async def caregiver_summary(self, facts: str, language: str = languages.DEFAULT_LANGUAGE) -> str | None:
         return await self._generate(f"{SUMMARY_SYSTEM_PROMPT}\n{languages.instruction(language)}", facts)
+
+    @limited("vision")
+    async def look(self, system: str, contents: list, schema: type[BaseModel]) -> BaseModel | None:
+        """A photo question with a JSON answer (e.g. Teach's suggested boxes), within the limits."""
+        return await self.gemini.generate_json(system, contents, schema, fast=True)
 
     @limited("maps")
     async def name_place(self, lat: float, lng: float) -> dict | None:

@@ -33,8 +33,13 @@ class Settings(BaseSettings):
     vision_provider: str = "gemini"  # gemini | none     (describe each photo)
 
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.8-flash"
-    gemini_tts_model: str = "gemini-3.8-flash-tts"
+    # The cheapest models with the biggest free quotas first. When one is at its limit, cooling
+    # down, overloaded or down, the call moves on to the next (AIServices). Each model has its own
+    # quota at Google and its own caps here (GEMINI_MODEL_LIMITS).
+    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_fallback_models: str = "gemini-3-flash-preview,gemini-2.5-flash,gemini-3.8-flash"
+    gemini_tts_model: str = "gemini-3.8-flash-lite-tts"
+    gemini_tts_fallback_models: str = "gemini-3.8-flash-tts,gemini-2.5-flash-preview-tts"
     gemini_tts_voice: str = "Kore"
     gemini_embedding_model: str = "gemini-embedding-2"
     # Live conversation mode: the wearable talks with Gemini Live using a one-use token from
@@ -59,8 +64,13 @@ class Settings(BaseSettings):
     # (*_RPM) and per day (*_RPD, from midnight Pacific like Gemini's quotas); 0 = no cap.
     # Gemini's quotas are per Google Cloud project; AI Studio shows your project's. Keep these
     # a little under them. Over a cap, questions get a spoken "busy", memories are still saved.
-    gemini_rpm: int = 10  # GEMINI_MODEL: answers, photo descriptions, transcription, items, place names
-    gemini_rpd: int = 20  # Google's free tier for gemini-3.8-flash, seen in its 429 on Oct 17; raise on a paid tier
+    # Per model, "model=per_minute/per_day". Only gemini-3.8-flash's 20/day is confirmed (Google's own
+    # 429 on Oct 17); the others are kept under published free-tier figures until AI Studio confirms.
+    gemini_model_limits: str = (
+        "gemini-3.1-flash-lite=15/900,gemini-3-flash-preview=10/250,gemini-2.5-flash=10/250,gemini-3.8-flash=10/18"
+    )
+    gemini_rpm: int = 10  # any text model not listed above
+    gemini_rpd: int = 20
     gemini_tts_rpm: int = 10
     gemini_tts_rpd: int = 200
     gemini_embedding_rpm: int = 100

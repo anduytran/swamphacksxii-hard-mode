@@ -6,6 +6,8 @@ VISION_PROVIDER).
 """
 
 import io
+from contextlib import contextmanager
+from contextvars import ContextVar
 import re
 import wave
 
@@ -45,6 +47,22 @@ def _embed_input(text: str, query: bool) -> str:
     return f"task: search result | query: {text}" if query else f"title: none | text: {text}"
 
 
+# The model this call should use, set by AIServices while it walks its fallback list
+# (GEMINI_MODEL, then GEMINI_FALLBACK_MODELS). Unset: the configured primary model.
+_text_model: ContextVar[str | None] = ContextVar("gemini_text_model", default=None)
+_tts_model: ContextVar[str | None] = ContextVar("gemini_tts_model", default=None)
+
+
+@contextmanager
+def using(model: str | None, *, tts: bool = False):
+    var = _tts_model if tts else _text_model
+    token = var.set(model)
+    try:
+        yield
+    finally:
+        var.reset(token)
+
+
 class GeminiAI:
     def __init__(self, settings: Settings):
         self.s = settings
@@ -59,7 +77,7 @@ class GeminiAI:
 
     async def transcribe(self, audio: bytes, content_type: str | None) -> str:
         response = await self.client.aio.models.generate_content(
-            model=self.s.gemini_model,
+            model=self._model(),
             contents=[
                 types.Part.from_bytes(data=audio, mime_type=content_type or "audio/wav"),
                 "Transcribe this speech verbatim. Reply with only the words spoken, "
@@ -87,12 +105,18 @@ class GeminiAI:
             raise ValueError(f"Asked for {len(texts)} embeddings, got {len(result.embeddings)}")
         return [list(e.values) for e in result.embeddings]
 
+    def _model(self) -> str:
+        return _text_model.get() or self.s.gemini_model
+
+    def _tts(self) -> str:
+        return _tts_model.get() or self.s.gemini_tts_model
+
     def _thinking(self, fast: bool) -> types.ThinkingConfig | None:
-        return least_thinking(self.s.gemini_model) if fast else None
+        return least_thinking(self._model()) if fast else None
 
     async def generate(self, system: str, prompt: str, *, fast: bool = False) -> str:
         response = await self.client.aio.models.generate_content(
-            model=self.s.gemini_model,
+            model=self._model(),
             contents=prompt,
             config=types.GenerateContentConfig(system_instruction=system, thinking_config=self._thinking(fast)),
         )
@@ -102,7 +126,7 @@ class GeminiAI:
         self, system: str, contents: list, schema: type[BaseModel], *, fast: bool = False
     ) -> BaseModel | None:
         response = await self.client.aio.models.generate_content(
-            model=self.s.gemini_model,
+            model=self._model(),
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system,
@@ -115,7 +139,7 @@ class GeminiAI:
 
     async def speak(self, text: str) -> bytes:
         response = await self.client.aio.models.generate_content(
-            model=self.s.gemini_tts_model,
+            model=self._tts(),
             # The style prefix stays English (the TTS model reads it as direction, not words to say);
             # the text after it goes through unchanged and is spoken in whatever language it's in.
             contents=f"Say warmly and calmly: {text}",
@@ -138,7 +162,7 @@ class GeminiAI:
 
         English prompts only (a limit of the tool). store=False: nothing kept server-side."""
         interaction = await self.client.aio.interactions.create(
-            model=self.s.gemini_model,
+            model=self._model(),
             input=PLACE_NAME_PROMPT,
             tools=[{"type": "google_maps", "latitude": lat, "longitude": lng}],
             store=False,

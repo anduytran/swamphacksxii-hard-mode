@@ -109,7 +109,13 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
     async def model_usage(settings) -> dict | None:
         """Calls today (since midnight Pacific, when Gemini's daily quotas reset) per model cap."""
         ai = app.state.ai
-        caps = {r.bucket: r.limit for stage in ("text", "tts", "embed") for r in ai.rules(stage) if r.window == "day"}
+        caps = {
+            r.bucket: r.limit
+            for stage in ("text", "tts", "embed")
+            for model in (ai.models(stage) or [None])  # every model in the fallback lists
+            for r in ai.rules(stage, model)
+            if r.window == "day"
+        }
         if not caps:
             return None
         start = Rule("x", 1, "day").span(datetime.now(timezone.utc))[0]

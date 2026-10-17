@@ -51,11 +51,10 @@ async def suggest_box(ai, image: bytes, content_type: str, name: str, aliases: l
     from google.genai import types
 
     also = f" (also called {', '.join(aliases)})" if aliases else ""
-    parsed = await ai.gemini.generate_json(
+    parsed = await ai.look(
         SUGGEST_SYSTEM_PROMPT.format(name=name, aliases=also),
         [types.Part.from_bytes(data=image, mime_type=content_type), f"Where is the {name}?"],
         BoxSuggestion,
-        fast=True,
     )
     if parsed is None:
         return None, ""

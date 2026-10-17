@@ -8,7 +8,8 @@ from urllib.parse import unquote
 
 import pytest
 
-from app.ai import BUSY, AIServices, limited
+from app.ai import BUSY, AIServices, limited, model_limits
+from app.gemini import _text_model
 from app.config import Settings
 from app.limits import Limiter, MemorySlots, RateLimited, Rule, per, provider_busy
 from tests.test_api import CAREGIVER, DEVICE, client, log  # noqa: F401  (client is a fixture)
@@ -94,6 +95,9 @@ class Flaky(AIServices):
 
 
 def settings(**kw):
+    """One model, capped at 2 a minute, unless a test asks for fallbacks."""
+    kw.setdefault("gemini_fallback_models", "")
+    kw.setdefault("gemini_model_limits", "")
     return Settings(_env_file=None, gemini_rpm=2, gemini_rpd=100, **kw)
 
 
@@ -127,11 +131,86 @@ def test_other_errors_pass_through_untouched():
 
 def test_rules_follow_the_provider_and_model():
     ai = AIServices(settings(vision_provider="none", tts_provider="openai", openai_rpm=7, openai_rpd=70))
-    assert {r.bucket for r in ai.rules("text")} == {"gemini:gemini-3.8-flash"}
+    assert {r.bucket for r in ai.rules("text")} == {"gemini:gemini-3.1-flash-lite"}
     assert {r.bucket for r in ai.rules("embed")} == {"gemini:gemini-embedding-2"}
     assert [(r.bucket, r.limit) for r in ai.rules("tts")] == [("openai", 7), ("openai", 70)]
     assert ai.rules("vision") == []  # VISION_PROVIDER=none makes no call
     assert {r.bucket for r in AIServices(settings(llm_provider="claude")).rules("text")} == {"claude"}
+
+
+# ---------------------------------------------------------------- model fallback
+
+class Models(AIServices):
+    """Records which model each attempt used; `fail` maps a model to the error it raises."""
+
+    def __init__(self, settings, limiter=None, fail=None):
+        super().__init__(settings, limiter)
+        self.fail, self.tried = fail or {}, []
+
+    @limited("text")
+    async def ask(self):
+        model = _text_model.get()
+        self.tried.append(model)
+        if model in self.fail:
+            raise self.fail[model]
+        return model
+
+
+def chain(**kw):
+    return settings(gemini_model="lite", gemini_fallback_models="flash, older ,lite", **kw)
+
+
+def err(code):
+    return type("APIError", (Exception,), {"code": code, "details": {}})()
+
+
+def test_the_cheap_model_is_used_first():
+    ai = Models(chain())
+    assert run(ai.ask()) == "lite" and ai.tried == ["lite"]
+
+
+def test_falls_back_when_a_model_is_busy_down_or_missing():
+    ai = Models(chain(), Limiter(MemorySlots()), fail={"lite": err(429), "flash": err(500)})
+    assert run(ai.ask()) == "older" and ai.tried == ["lite", "flash", "older"]
+    ai = Models(chain(), fail={"lite": err(404)})
+    assert run(ai.ask()) == "flash"
+
+
+def test_a_model_at_its_cap_is_skipped_without_a_call():
+    ai = Models(chain(gemini_model_limits="lite=1/100"), Limiter(MemorySlots()))
+    assert run(ai.ask()) == "lite"
+    assert run(ai.ask()) == "flash" and ai.tried == ["lite", "flash"]  # lite was never called again
+
+
+def test_a_busy_model_stays_skipped_on_other_instances():
+    store = MemorySlots()
+    run(Models(chain(), Limiter(store), fail={"lite": err(429)}).ask())
+    other = Models(chain(), Limiter(store))
+    assert run(other.ask()) == "flash" and other.tried == ["flash"]
+
+
+def test_when_every_model_is_out_the_caller_hears_busy():
+    ai = Models(chain(), Limiter(MemorySlots()), fail={m: err(429) for m in ("lite", "flash", "older")})
+    with pytest.raises(RateLimited):
+        run(ai.ask())
+
+
+def test_real_mistakes_are_not_retried_on_other_models():
+    ai = Models(chain(), fail={"lite": err(400)})
+    with pytest.raises(Exception) as bad:
+        run(ai.ask())
+    assert getattr(bad.value, "code", None) == 400 and ai.tried == ["lite"]
+
+
+def test_embeddings_never_switch_models_and_tts_has_its_own_list():
+    ai = AIServices(Settings(_env_file=None))
+    assert ai.models("embed") == ["gemini-embedding-2"]
+    assert ai.models("tts")[0] == "gemini-3.8-flash-lite-tts" and "gemini-3.8-flash-tts" in ai.models("tts")
+    assert ai.models("text")[0] == "gemini-3.1-flash-lite"
+
+
+def test_model_limits_parse():
+    assert model_limits("a=15/900, b=10/250,bad,c=x/1") == {"a": (15, 900), "b": (10, 250)}
 
 
 # ---------------------------------------------------------------- routes
