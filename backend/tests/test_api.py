@@ -39,6 +39,7 @@ class FakeDB:
         self.items: list[ItemSighting] = []
         self.queries: list[QueryRecord] = []
         self.chunks: list[ChunkHit] = []
+        self.query_devices: list[str] = []
 
     async def insert(self, device_id, transcript, image, image_type):
         rec = MemoryRecord(str(len(self.rows)), device_id, datetime.now(timezone.utc), transcript, image is not None)
@@ -57,17 +58,17 @@ class FakeDB:
         for kind, content, _embedding in chunks:
             self.chunks.append(ChunkHit(len(self.chunks), memory_id, kind, content, rec.created_at))
 
-    def _device_chunks(self, device_id):
-        ids = {r.id for r in self.rows if device_id is None or r.device_id == device_id}
+    def _device_chunks(self, device_ids):
+        ids = {r.id for r in self.rows if device_ids is None or r.device_id in device_ids}
         return [c for c in self.chunks if c.memory_id in ids]
 
-    async def vector_hits(self, device_id, embedding, hours, limit):
-        found = sorted(self._device_chunks(device_id), key=lambda c: c.chunk_id, reverse=True)[:limit]
+    async def vector_hits(self, device_ids, embedding, hours, limit):
+        found = sorted(self._device_chunks(device_ids), key=lambda c: c.chunk_id, reverse=True)[:limit]
         return [ChunkHit(c.chunk_id, c.memory_id, c.kind, c.content, c.created_at, distance=0.5) for c in found]
 
-    async def keyword_hits(self, device_id, text, hours, limit):
+    async def keyword_hits(self, device_ids, text, hours, limit):
         words = set(re.findall(r"[a-z]+", text.lower())) - {"where", "are", "my", "is", "the", "did", "i"}
-        found = [c for c in self._device_chunks(device_id) if words & set(re.findall(r"[a-z]+", c.content.lower()))]
+        found = [c for c in self._device_chunks(device_ids) if words & set(re.findall(r"[a-z]+", c.content.lower()))]
         return [ChunkHit(c.chunk_id, c.memory_id, c.kind, c.content, c.created_at) for c in found[:limit]]
 
     async def chunks_for(self, memory_ids):
@@ -77,8 +78,23 @@ class FakeDB:
                 out.setdefault(c.memory_id, []).append(ChunkHit(c.chunk_id, c.memory_id, c.kind, c.content, c.created_at))
         return out
 
-    async def recent(self, hours):
-        return sorted(self.rows, key=lambda r: r.created_at, reverse=True)
+    # Households: the test caregiver's household holds the test device.
+    household_devices = ["dev1@clients"]
+
+    async def device_ids_for(self, user_sub):
+        return list(self.household_devices)
+
+    async def household_of_device(self, device_id):
+        return None
+
+    async def remember_pairing_code(self, device_id, code):
+        self.pairing = (device_id, code)
+
+    def _scoped(self, rows, device_ids):
+        return [r for r in rows if device_ids is None or r.device_id in device_ids]
+
+    async def recent(self, hours, device_ids=None):
+        return sorted(self._scoped(self.rows, device_ids), key=lambda r: r.created_at, reverse=True)
 
     async def add_items(self, memory_id, items):
         rec = next(r for r in self.rows if r.id == memory_id)
@@ -92,14 +108,18 @@ class FakeDB:
         self.purged_hours = hours
         return 0
 
-    async def item_sightings(self, hours):
-        return sorted(self.items, key=lambda s: s.created_at, reverse=True)
+    async def item_sightings(self, hours, device_ids=None):
+        mine = {r.id for r in self._scoped(self.rows, device_ids)}
+        return sorted([s for s in self.items if s.memory_id in mine], key=lambda s: s.created_at, reverse=True)
 
     async def log_query(self, device_id, question, answer, item):
         self.queries.append(QueryRecord(datetime.now(timezone.utc), question, answer, item))
+        self.query_devices.append(device_id)
+        return str(len(self.queries))
 
-    async def recent_queries(self, hours):
-        return sorted(self.queries, key=lambda q: q.created_at, reverse=True)
+    async def recent_queries(self, hours, device_ids=None):
+        rows = [q for q, d in zip(self.queries, self.query_devices) if device_ids is None or d in device_ids]
+        return sorted(rows, key=lambda q: q.created_at, reverse=True)
 
 
 class FakeAI:
@@ -409,3 +429,20 @@ def test_home_map_places_items_in_rooms_and_traces_moves(client):
     assert trip["name"] == "keys" and trip["rooms"] == ["Kitchen", "Hallway"]
     assert len(trip["path"]) == len(trip["timestamps"]) > 2
     assert trip["timestamps"] == sorted(trip["timestamps"])
+
+
+def test_dashboard_only_shows_the_callers_household(client):
+    log(client, "I am putting my keys on the counter")
+    client.app_state.db.household_devices = []  # caregiver belongs to no household with this device
+    assert client.get("/api/v1/dashboard/history", headers=CAREGIVER).json() == []
+    assert client.get("/api/v1/dashboard/items", headers=CAREGIVER).json()["items"] == []
+    assert client.get("/api/v1/dashboard/search?q=keys", headers=CAREGIVER).json()["results"] == []
+
+
+def test_device_pairing_code_is_remembered(client):
+    client.post(
+        "/api/v1/memory/log",
+        headers={**DEVICE, "X-Pairing-Code": "ABCD-1234"},
+        files={"audio": ("a.wav", b"I am putting my keys down", "audio/wav"), "image": ("i.jpg", b"\xff\xd8", "image/jpeg")},
+    )
+    assert client.app_state.db.pairing == ("dev1@clients", "ABCD-1234")

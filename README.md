@@ -32,6 +32,14 @@ deploy/           systemd unit + crontab for the Vultr instance
 | `GET /api/v1/dashboard/insights` | caregiver user token | – | counts, most-asked / most-logged items, questions about items never logged, activity, recent Q&A (72h) |
 | `GET /api/v1/dashboard/summary` | caregiver user token | – | `{summary}`: 2–3 sentences written by Gemini from the insights (cached 10 min) |
 | `GET /api/v1/admin/purge` | `Authorization: Bearer $CRON_SECRET` | – | runs the 72h purge (Vercel Cron, daily 03:15 UTC) |
+| `GET /api/v1/dashboard/map` | caregiver | – | House floor plan: rooms, item spots, movement trips |
+| `GET /api/v1/dashboard/places` | caregiver | – | The household's places (private included) and located memories |
+| `GET /api/v1/dashboard/search?q=` | caregiver | – | Hybrid retrieval with match explanations (one embedding call) |
+| `GET /api/v1/households/me` · `POST /api/v1/households` | caregiver | `{name}` | Households you belong to, with members, devices and places · create one |
+| `POST /api/v1/households/{id}/devices` | owner | `{client_id, pairing_code, label}` | Claim a wearable; places its earlier memories |
+| `POST /api/v1/households/{id}/invites` · `POST /api/v1/invites/accept` | owner · caregiver | – · `{code}` | One-use family invite |
+| `PATCH /api/v1/households/{id}` · `.../places/{place}` | owner · member | `{share_public}` · `{name, kind}` | Public-map opt-in · name a place, mark it public/private |
+| `GET /api/v1/public/lost-map` | none | – | Anonymous public cells (k ≥ 3 households) |
 | `GET /api/v1/images/{id}?exp=…&sig=…` | signed link from the dashboard endpoints (15 min) | – | the photo |
 
 Queries only search the calling device's own memories from the last 72h (top 3 by cosine distance).
@@ -130,6 +138,26 @@ crontab deploy/lastscene.cron
 ```
 
 Put it behind HTTPS (Caddy or nginx + Let's Encrypt). Auth0 requires HTTPS origins for the SPA outside localhost, and the device's token should never travel over plain HTTP.
+
+## Households, places and the public map
+
+LastScene is usually set up by a family member **for** the person who wears it.
+
+1. **Household page → Set up for someone** creates a household; the creator is its owner.
+2. **Add a wearable** with the device's Auth0 Client ID and the pairing code on its label (`PAIRING_CODE` in `device.env`). The device must have connected once; the first code it sends is the one that claims it (trust on first use). A wrong code and an unknown device get the same error.
+3. **Invite someone** gives a one-use code (72 h) that family members enter under **Join a household**.
+
+**Positions.** The Pi Zero 2 W has no GPS. With `LOCATION_SOURCE=wifi` it sends the access points it can hear with each memory and question; the server resolves them with Google's Geolocation API (`GOOGLE_GEOLOCATION_API_KEY`) and stores only the resulting coordinates, never the scan. `LOCATION_SOURCE=fixed` sends `HOME_LAT`/`HOME_LNG` instead (also used as a fallback).
+
+**Places** are built automatically: each position joins the household's nearest place (within its radius or the fix's accuracy) or starts a new one. The most-visited place is labelled Home until someone names places. Indoors, rooms still come from the spoken words and the photo (the **House** floor plan); GPS-level places drive **Map → Our places**.
+
+**Privacy model.**
+
+| Data | Who sees it |
+|---|---|
+| Memories, photos, questions, private places (homes, by default every place) | Members of the wearer's household only. Every dashboard endpoint is scoped to the caller's household devices. |
+| Places a member marked **public** (shops, parks, transit) | Feed the anonymous public map only if the owner turned on **Share anonymous counts** (off by default), and only for memories from then on. |
+| Public map (`/#/public`, no login) | Item names and counts per ~100 m cell, from the last 90 days, shown only where **3 or more households** contributed. No words, photos, device or household ids, or exact positions. |
 
 ## Where the ML lives
 

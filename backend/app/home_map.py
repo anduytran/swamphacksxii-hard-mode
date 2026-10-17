@@ -52,7 +52,7 @@ ROOMS = (
     Room("living", "Living room", 60, 0, 40, 40, ("living", "couch", "sofa", "armrest", "armchair", "tv", "coffee table", "fireplace", "charger")),
     Room("study", "Study", 60, 40, 40, 30, ("study", "office", "desk", "bookshelf", "computer", "printer")),
 )
-UNKNOWN = Room("unknown", "Not placed", 106, 0, 18, 70, ())
+UNKNOWN = Room("unknown", "Elsewhere", 106, 0, 18, 70, ())  # away from home, or unmatched
 BY_ID = {r.id: r for r in (*ROOMS, UNKNOWN)}
 
 

@@ -13,6 +13,7 @@ from datetime import datetime
 import asyncpg
 
 from .config import Settings
+from .db_places import PlacesMixin
 from .rag import ChunkHit
 
 
@@ -53,7 +54,7 @@ class QueryRecord:
 _COLUMNS = "id, device_id, created_at, transcript, scene, image IS NOT NULL AS has_image"
 
 
-class MemoryDB:
+class MemoryDB(PlacesMixin):
     def __init__(self, settings: Settings):
         self.dsn = settings.database_url
         self.dims = settings.embedding_dimensions
@@ -166,6 +167,7 @@ class MemoryDB:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS query_logs_created_at_idx ON query_logs (created_at DESC)"
             )
+            await self.init_places_schema(conn)
 
     async def insert(
         self, device_id: str, transcript: str, image: bytes | None, image_type: str | None
@@ -195,7 +197,7 @@ class MemoryDB:
             )
 
     async def vector_hits(
-        self, device_id: str | None, embedding: list[float], hours: int, limit: int
+        self, device_ids: list[str] | None, embedding: list[float], hours: int, limit: int
     ) -> list[ChunkHit]:
         """Chunks closest in meaning to the question (cosine distance)."""
         rows = await self.pool.fetch(
@@ -205,18 +207,18 @@ class MemoryDB:
             FROM memory_chunks c
             JOIN memory_logs m ON m.id = c.memory_id
             WHERE m.created_at > now() - make_interval(hours => $2)
-              AND ($3::text IS NULL OR m.device_id = $3)
+              AND ($3::text[] IS NULL OR m.device_id = ANY($3::text[]))
             ORDER BY c.embedding <=> $1::vector
             LIMIT $4
             """,
             _vec(embedding),
             hours,
-            device_id,
+            device_ids,
             limit,
         )
         return [_hit(r, distance=r["distance"]) for r in rows]
 
-    async def keyword_hits(self, device_id: str | None, text: str, hours: int, limit: int) -> list[ChunkHit]:
+    async def keyword_hits(self, device_ids: list[str] | None, text: str, hours: int, limit: int) -> list[ChunkHit]:
         """Chunks sharing words with the question (Postgres full-text, any word, stemmed)."""
         rows = await self.pool.fetch(
             """
@@ -229,13 +231,13 @@ class MemoryDB:
             JOIN memory_logs m ON m.id = c.memory_id, q
             WHERE c.tsv @@ q.query
               AND m.created_at > now() - make_interval(hours => $2)
-              AND ($3::text IS NULL OR m.device_id = $3)
+              AND ($3::text[] IS NULL OR m.device_id = ANY($3::text[]))
             ORDER BY ts_rank_cd(c.tsv, q.query) DESC, m.created_at DESC
             LIMIT $4
             """,
             text,
             hours,
-            device_id,
+            device_ids,
             limit,
         )
         return [_hit(r) for r in rows]
@@ -255,15 +257,18 @@ class MemoryDB:
             out.setdefault(str(r["memory_id"]), []).append(_hit(r))
         return out
 
-    async def recent(self, hours: int) -> list[MemoryRecord]:
+    async def recent(self, hours: int, device_ids: list[str] | None = None) -> list[MemoryRecord]:
+        """device_ids=None means every device (internal use); dashboards pass the household's."""
         rows = await self.pool.fetch(
             f"""
             SELECT {_COLUMNS}
             FROM memory_logs
             WHERE created_at > now() - make_interval(hours => $1)
+              AND ($2::text[] IS NULL OR device_id = ANY($2::text[]))
             ORDER BY created_at DESC
             """,
             hours,
+            device_ids,
         )
         return [_record(r) for r in rows]
 
@@ -285,7 +290,7 @@ class MemoryDB:
                 [(memory_id, name, location) for name, location in items],
             )
 
-    async def item_sightings(self, hours: int) -> list[ItemSighting]:
+    async def item_sightings(self, hours: int, device_ids: list[str] | None = None) -> list[ItemSighting]:
         """Every item mention in the window, newest first."""
         rows = await self.pool.fetch(
             """
@@ -294,9 +299,11 @@ class MemoryDB:
             FROM memory_items i
             JOIN memory_logs m ON m.id = i.memory_id
             WHERE m.created_at > now() - make_interval(hours => $1)
+              AND ($2::text[] IS NULL OR m.device_id = ANY($2::text[]))
             ORDER BY m.created_at DESC
             """,
             hours,
+            device_ids,
         )
         return [
             ItemSighting(
@@ -311,24 +318,26 @@ class MemoryDB:
             for r in rows
         ]
 
-    async def log_query(self, device_id: str, question: str, answer: str, item: str | None) -> None:
-        await self.pool.execute(
-            "INSERT INTO query_logs (device_id, question, answer, item) VALUES ($1, $2, $3, $4)",
+    async def log_query(self, device_id: str, question: str, answer: str, item: str | None) -> str:
+        return await self.pool.fetchval(
+            "INSERT INTO query_logs (device_id, question, answer, item) VALUES ($1, $2, $3, $4) RETURNING id::text",
             device_id,
             question,
             answer,
             item,
         )
 
-    async def recent_queries(self, hours: int) -> list[QueryRecord]:
+    async def recent_queries(self, hours: int, device_ids: list[str] | None = None) -> list[QueryRecord]:
         rows = await self.pool.fetch(
             """
             SELECT created_at, question, answer, item
             FROM query_logs
             WHERE created_at > now() - make_interval(hours => $1)
+              AND ($2::text[] IS NULL OR device_id = ANY($2::text[]))
             ORDER BY created_at DESC
             """,
             hours,
+            device_ids,
         )
         return [QueryRecord(**dict(r)) for r in rows]
 

@@ -34,6 +34,8 @@
     <a href="#/timeline" data-page="timeline">Timeline</a>
     <a href="#/insights" data-page="insights">Insights</a>
     <a href="#/search" data-page="search">Search</a>
+    <a href="#/public" data-page="public">Public map</a>
+    <a href="#/household" data-page="household">Household</a>
   </nav>
 
   <main class="wrap">
@@ -41,7 +43,10 @@
       <p class="eyebrow">Caregiver dashboard</p>
       <h1 class="display">Where things were left.</h1>
       <p class="lede">See what the wearer put down, where, and what they've been asking about.</p>
-      <button id="login" type="button" class="primary">Log in</button>
+      <div class="signin-actions">
+        <button id="login" type="button" class="primary">Log in</button>
+        <a class="pill link-pill" href="#/public">Explore where people lose things →</a>
+      </div>
     </section>
 
     <p id="status" role="status"></p>
@@ -70,11 +75,25 @@
           <h1 class="display">Where things end up.</h1>
         </div>
         <div class="map-controls">
+          <div class="segmented" role="group" aria-label="Map view">
+            <button type="button" data-mode="house" aria-pressed="true">House</button>
+            <button type="button" data-mode="places" aria-pressed="false">Our places</button>
+          </div>
           <button id="map-play" type="button" class="pill" aria-pressed="true">Pause</button>
           <span id="map-clock" class="mono map-clock" aria-live="off"></span>
         </div>
       </div>
-      <div class="card map-card">
+      <div class="card map-card" id="places-card" hidden>
+        <div id="places-map" class="home-map geo-map" role="img" aria-label="Map of the household's places"></div>
+        <p class="attribution">© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</p>
+        <div class="legend map-legend">
+          <span><i class="dot dot-calm"></i>Private place (only your household sees it)</span>
+          <span><i class="dot dot-asked"></i>Public place</span>
+          <span><i class="dot dot-memory"></i>A memory</span>
+        </div>
+        <p class="hint places-hint">Places are found automatically from the wearable's Wi-Fi position. Name them and choose which are public on the <a href="#/household">Household</a> page.</p>
+      </div>
+      <div class="card map-card" id="house-card">
         <div id="home-map" class="home-map" role="img" aria-label="Floor plan showing where items were last seen"></div>
         <div class="legend map-legend">
           <span><i class="swatch room-swatch"></i>Room shade: questions about items last seen there</span>
@@ -168,6 +187,44 @@
         <ol id="questions" class="questions"></ol>
       </section>
     </section>
+    <!-- Public map: anonymous, aggregated, consented. Works without logging in. -->
+    <section id="page-public" class="page" hidden>
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Public · anonymous · opt-in</p>
+          <h1 class="display">Where people lose things.</h1>
+        </div>
+      </div>
+      <div class="card map-card">
+        <div id="public-map" class="home-map geo-map public-map" role="img" aria-label="3D map of public places where items are commonly lost"></div>
+        <p class="attribution">© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</p>
+        <div class="legend map-legend">
+          <span><i class="swatch room-swatch"></i>Column height and colour: items left or asked about there</span>
+        </div>
+      </div>
+      <div class="card privacy-card">
+        <h2>How this stays private</h2>
+        <ul>
+          <li>Only places a household marked <strong>public</strong> (shops, parks, transit), and only from households that opted in.</li>
+          <li>Homes and other private places never appear here.</li>
+          <li>Positions are rounded to about 100 m, and a spot only shows once <strong>at least <span id="public-k">3</span> households</strong> have contributed.</li>
+          <li>Only item names and counts: no words, photos, names or devices.</li>
+        </ul>
+      </div>
+      <ol id="public-list" class="public-list"></ol>
+    </section>
+
+    <!-- Household: setting LastScene up, often for someone else -->
+    <section id="page-household" class="page" hidden>
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Setup</p>
+          <h1 class="display" id="household-title">Your household.</h1>
+        </div>
+      </div>
+      <div id="household-body"></div>
+    </section>
+
     <!-- Search: the wearable's retrieval step, made visible -->
     <section id="page-search" class="page" hidden>
       <div class="page-head">

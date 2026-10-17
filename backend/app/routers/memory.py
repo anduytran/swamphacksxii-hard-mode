@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from urllib.parse import quote
 
 from fastapi import (
@@ -6,6 +7,8 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     File,
+    Form,
+    Header,
     HTTPException,
     Response,
     UploadFile,
@@ -16,7 +19,8 @@ from ..ai import AIServices
 from ..auth import Principal, require_device
 from ..config import Settings, get_settings
 from ..db import MemoryDB
-from ..deps import get_ai, get_db
+from ..deps import get_ai, get_db, get_geo
+from ..geo import Geolocator, locate_and_record, record_public, resolve_location
 from ..pipeline import ingest_image, ingest_speech, retrieve
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
@@ -36,10 +40,49 @@ async def _read(upload: UploadFile, limit: int, label: str) -> bytes:
     return data
 
 
-# Image-to-text indexing and question logging run after the response by default, so
-# the wearable isn't kept waiting (ENRICH_IN_BACKGROUND=false runs them before it).
+# Image-to-text indexing, positioning and question logging run after the response by
+# default, so the wearable isn't kept waiting (ENRICH_IN_BACKGROUND=false runs them first).
+@dataclass
+class Whereabouts:
+    """What the wearable sent about its position (see geo.resolve_location)."""
+
+    wifi: str | None = None
+    lat: float | None = None
+    lng: float | None = None
+    accuracy_m: float | None = None
+
+
+def whereabouts(
+    wifi: str | None = Form(None, description='JSON [{"bssid": "aa:bb:cc:dd:ee:ff", "signal": -60}, ...]'),
+    lat: float | None = Form(None),
+    lng: float | None = Form(None),
+    accuracy_m: float | None = Form(None),
+) -> Whereabouts:
+    return Whereabouts(wifi, lat, lng, accuracy_m)
+
+
+async def _locate(geo: Geolocator, db: MemoryDB, device_id: str, table: str, row_id: str, where: Whereabouts):
+    try:
+        loc = await resolve_location(geo, where.wifi, where.lat, where.lng, where.accuracy_m)
+        place, public = await locate_and_record(db, device_id, table, row_id, loc)
+        return loc, public
+    except Exception:
+        log.exception("Locating %s %s failed", table, row_id)
+        return None, False
+
+
+async def _enrich_memory(
+    db: MemoryDB, ai: AIServices, geo: Geolocator, device_id: str, memory_id: str,
+    transcript: str, image: bytes, image_type: str, where: Whereabouts,
+) -> None:
+    items = await ingest_image(db, ai, memory_id, transcript, image, image_type)
+    loc, public = await _locate(geo, db, device_id, "memory_logs", memory_id, where)
+    if public:  # an item left at a public place, in a household that shares
+        await record_public(db, device_id, loc, "left", [i.name for i in items])
+
+
 async def _record_query(
-    db: MemoryDB, ai: AIServices, device_id: str, question: str, answer: str
+    db: MemoryDB, ai: AIServices, geo: Geolocator, device_id: str, question: str, answer: str, where: Whereabouts
 ) -> None:
     try:
         items = await ai.extract_items(question)
@@ -47,9 +90,18 @@ async def _record_query(
         log.exception("Item extraction failed for question %r", question)
         items = []
     try:
-        await db.log_query(device_id, question, answer, items[0].name if items else None)
+        query_id = await db.log_query(device_id, question, answer, items[0].name if items else None)
     except Exception:
         log.exception("Failed to log question %r", question)
+        return
+    loc, public = await _locate(geo, db, device_id, "query_logs", query_id, where)
+    if public and items:  # someone realised something was missing while at a public place
+        await record_public(db, device_id, loc, "asked", [items[0].name])
+
+
+async def _note_pairing(db: MemoryDB, device_id: str, code: str | None) -> None:
+    if code:
+        await db.remember_pairing_code(device_id, code)
 
 
 @router.post("/log")
@@ -57,13 +109,17 @@ async def log_memory(
     background: BackgroundTasks,
     audio: UploadFile = File(...),
     image: UploadFile = File(...),
+    where: Whereabouts = Depends(whereabouts),
+    pairing_code: str | None = Header(None, alias="X-Pairing-Code"),
     device: Principal = Depends(require_device),
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
+    geo: Geolocator = Depends(get_geo),
     settings: Settings = Depends(get_settings),
 ):
     audio_bytes = await _read(audio, MAX_AUDIO_BYTES, "audio")
     image_bytes = await _read(image, MAX_IMAGE_BYTES, "image")
+    await _note_pairing(db, device.sub, pairing_code)
 
     transcript = await ai.transcribe(audio.filename, audio_bytes, audio.content_type)
     if not transcript:
@@ -73,11 +129,11 @@ async def log_memory(
     image_type = image.content_type if image.content_type in ALLOWED_IMAGE_TYPES else "image/jpeg"
     record = await db.insert(device.sub, transcript, image_bytes, image_type)
     await ingest_speech(db, ai, record.id, transcript)
-    image_args = (db, ai, record.id, transcript, image_bytes, image_type)
+    enrich_args = (db, ai, geo, device.sub, record.id, transcript, image_bytes, image_type, where)
     if settings.enrich_in_background:
-        background.add_task(ingest_image, *image_args)
+        background.add_task(_enrich_memory, *enrich_args)
     else:
-        await ingest_image(*image_args)
+        await _enrich_memory(*enrich_args)
     return {"id": record.id, "timestamp": record.created_at.isoformat(), "transcript": transcript}
 
 
@@ -85,25 +141,31 @@ async def log_memory(
 async def query_memory(
     background: BackgroundTasks,
     audio: UploadFile = File(...),
+    where: Whereabouts = Depends(whereabouts),
+    pairing_code: str | None = Header(None, alias="X-Pairing-Code"),
     device: Principal = Depends(require_device),
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
+    geo: Geolocator = Depends(get_geo),
     settings: Settings = Depends(get_settings),
 ):
     audio_bytes = await _read(audio, MAX_AUDIO_BYTES, "audio")
+    await _note_pairing(db, device.sub, pairing_code)
     question = await ai.transcribe(audio.filename, audio_bytes, audio.content_type)
 
+    record_args = None
     if question:
-        memories = await retrieve(db, ai, question, device.sub, settings.query_lookback_hours)
+        memories = await retrieve(db, ai, question, [device.sub], settings.query_lookback_hours)
         answer = await ai.answer(question, memories)
+        record_args = (db, ai, geo, device.sub, question, answer, where)
         if settings.enrich_in_background:
-            background.add_task(_record_query, db, ai, device.sub, question, answer)
+            background.add_task(_record_query, *record_args)
     else:
         answer = "Sorry, I didn't catch that. Could you ask again?"
 
     speech = await ai.speak(answer)
-    if question and not settings.enrich_in_background:
-        await _record_query(db, ai, device.sub, question, answer)
+    if record_args and not settings.enrich_in_background:
+        await _record_query(*record_args)
     return Response(
         content=speech,
         media_type=ai.speech_media_type,

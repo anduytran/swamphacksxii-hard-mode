@@ -81,6 +81,12 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
    ```
    Logs: `journalctl -u lastscene-device -f`.
 
+## Pairing and location
+
+- **Pairing code.** Generate one per device and put it on the case label with the Client ID; set it as `PAIRING_CODE` in `/etc/lastscene/device.env`. The device sends it with every request; a caregiver enters the Client ID + code on the dashboard's **Household** page to add the wearable to their household.
+- **Location (Wi-Fi positioning).** The Zero 2 W has no GPS. With `LOCATION_SOURCE=wifi` (default) it scans nearby access points (`nmcli`, falling back to `iw`, for which the service has `CAP_NET_ADMIN`) and sends BSSIDs + signal strengths; the server turns that into a position with Google's Geolocation API and keeps only the coordinates. Check what it would send with `python3 lastscene_device.py --where`. `LOCATION_SOURCE=fixed` with `HOME_LAT`/`HOME_LNG` tags every memory with one place instead; `none` sends nothing.
+- Memories spooled while offline keep the Wi-Fi scan from when they happened.
+
 ## Using it
 
 - **Hold REMEMBER**, say where you're putting something ("I'm putting my keys on the counter"), release. It takes a photo when you press, records while held, and uploads when you let go. The LED is solid while recording and blinks while sending.

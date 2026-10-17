@@ -2,7 +2,10 @@ let auth0Client;
 let audience;
 
 const $ = (id) => document.getElementById(id);
-const PAGES = ["items", "map", "timeline", "insights", "search"];
+const PAGES = ["items", "map", "timeline", "insights", "search", "public", "household"];
+// Pages anyone can open without logging in.
+const PUBLIC_PAGES = ["public"];
+let signedIn = false;
 const DEFAULT_PAGE = "items";
 
 async function init() {
@@ -38,14 +41,35 @@ async function init() {
   $("item-filter").oninput = filterItems;
   $("search-form").onsubmit = runSearch;
 
-  if (await auth0Client.isAuthenticated()) {
+  for (const btn of document.querySelectorAll(".segmented [data-mode]")) btn.onclick = () => setMapMode(btn.dataset.mode);
+  window.addEventListener("hashchange", () => route());
+
+  signedIn = await auth0Client.isAuthenticated();
+  if (signedIn) {
     const user = await auth0Client.getUser();
+    currentUser = user;
     $("user-name").textContent = user?.name || user?.email || "";
     $("user-bar").hidden = false;
     $("tabs").hidden = false;
-    window.addEventListener("hashchange", () => showPage(currentPage()));
-    await showPage(currentPage());
+    // Someone with no household yet starts at setup.
+    const { households } = await api("/api/v1/households/me");
+    if (!households.length && !["household", ...PUBLIC_PAGES].includes(currentPage())) {
+      window.location.hash = "#/household";
+      return;
+    }
+  }
+  await route();
+}
+
+let currentUser = null;
+
+async function route() {
+  const page = currentPage();
+  if (signedIn || PUBLIC_PAGES.includes(page)) {
+    $("logged-out").hidden = true;
+    await showPage(page);
   } else {
+    for (const p of PAGES) $(`page-${p}`).hidden = true;
     $("logged-out").hidden = false;
   }
 }
@@ -69,7 +93,10 @@ async function showPage(name, { force = false } = {}) {
   }
   if (!force && loaded[name] && Date.now() - loaded[name] < STALE_AFTER_MS) return;
   // Search has no loader: it only runs when the caregiver submits a question.
-  const loaders = { items: loadItems, map: loadMap, timeline: loadTimeline, insights: loadInsights, search: async () => {} };
+  const loaders = {
+    items: loadItems, map: loadMap, timeline: loadTimeline, insights: loadInsights,
+    search: async () => {}, public: loadPublic, household: loadHousehold,
+  };
   const status = $("status");
   status.textContent = "Loading…";
   try {
@@ -81,7 +108,7 @@ async function showPage(name, { force = false } = {}) {
   }
 }
 
-async function api(path) {
+async function api(path, { method = "GET", body } = {}) {
   let token;
   try {
     token = await auth0Client.getTokenSilently({ authorizationParams: { audience } });
@@ -92,7 +119,11 @@ async function api(path) {
     }
     throw err;
   }
-  const res = await fetch(path, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetch(path, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
     throw new Error(`${res.status} ${detail.detail || res.statusText}`);
@@ -291,7 +322,7 @@ function loadScript(src) {
   });
 }
 
-async function loadMap() {
+async function loadHouseMap() {
   const [data] = await Promise.all([api("/api/v1/dashboard/map"), loadScript(DECK_URL)]);
   setWindowHours(data.window_hours);
   renderMapTable(data);
@@ -344,7 +375,7 @@ function updatePlayButton() {
 function tickMap(now) {
   if (!mapState) return;
   const span = Math.max(mapState.data.span_hours, 1);
-  if (mapState.playing && !$("page-map").hidden) {
+  if (mapState.playing && mapMode === "house" && !$("page-map").hidden) {
     mapState.time = (mapState.time + ((now - mapState.lastFrame) / 1000) * (span / LOOP_SECONDS)) % (span + 2);
     drawMap();
   }
@@ -467,6 +498,345 @@ function renderMapTable(data) {
     ["Room", "Put down here", "Questions about items last here", "Items there now"],
     data.rooms.map((r) => [r.name, r.putdowns, r.lost, r.items.join(", ") || "–"])
   );
+}
+
+// ---------- Map modes: House (floor plan) | Our places (real map) ----------
+
+let mapMode = "house";
+
+async function loadMap() {
+  return mapMode === "house" ? loadHouseMap() : loadPlacesMap();
+}
+
+async function setMapMode(mode) {
+  mapMode = mode;
+  for (const btn of document.querySelectorAll(".segmented [data-mode]")) {
+    btn.setAttribute("aria-pressed", String(btn.dataset.mode === mode));
+  }
+  $("house-card").hidden = mode !== "house";
+  $("places-card").hidden = mode !== "places";
+  $("map-play").hidden = mode !== "house" || !mapState?.data.trips.length;
+  $("map-clock").hidden = mode !== "house";
+  loaded.map = 0;
+  await showPage("map");
+}
+
+// OpenStreetMap's standard tiles (no key; light use with attribution, per the OSM tile
+// policy), desaturated and tinted down to sit on the dark theme.
+const BASEMAP_URLS = ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"];
+
+function basemap() {
+  return new deck.TileLayer({
+    id: "basemap",
+    data: BASEMAP_URLS,
+    minZoom: 0,
+    maxZoom: 19,
+    tileSize: 256,
+    renderSubLayers: (props) => {
+      const [[west, south], [east, north]] = props.tile.boundingBox;
+      return new deck.BitmapLayer(props, {
+        data: null,
+        image: props.data,
+        bounds: [west, south, east, north],
+        desaturate: 1,
+        tintColor: [70, 66, 60],
+      });
+    },
+  });
+}
+
+function fitView(points, container, extra = {}) {
+  const width = container.clientWidth || 800;
+  const height = container.clientHeight || 480;
+  if (!points.length) return { longitude: -98, latitude: 38, zoom: 3, ...extra };
+  if (points.length === 1) return { longitude: points[0][0], latitude: points[0][1], zoom: 15, ...extra };
+  const lngs = points.map((p) => p[0]);
+  const lats = points.map((p) => p[1]);
+  const view = new deck.WebMercatorViewport({ width, height }).fitBounds(
+    [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+    { padding: Math.min(80, width / 6) }
+  );
+  return { longitude: view.longitude, latitude: view.latitude, zoom: Math.min(view.zoom, 16.5), ...extra };
+}
+
+const GEO_TOOLTIP_STYLE = { background: "#f3efe8", color: "#121110", fontSize: "13px", borderRadius: "6px", padding: "6px 8px" };
+let placesDeck = null;
+
+async function loadPlacesMap() {
+  const [data] = await Promise.all([api("/api/v1/dashboard/places"), loadScript(DECK_URL)]);
+  const places = data.households.flatMap((h) => h.places.map((p) => ({ ...p, household: h.name })));
+  const container = $("places-map");
+  if (!places.length) {
+    placesDeck?.finalize();
+    placesDeck = null;
+    return emptyState(container, "No places yet. They appear once the wearable sends Wi-Fi positions with its memories.");
+  }
+  const layers = [
+    basemap(),
+    new deck.ScatterplotLayer({
+      id: "place-areas",
+      data: places,
+      getPosition: (p) => [p.lng, p.lat],
+      getRadius: (p) => p.radius_m,
+      radiusUnits: "meters",
+      radiusMinPixels: 10,
+      getFillColor: (p) => (p.kind === "public" ? [...MAP_COLORS.asked, 90] : [...MAP_COLORS.calm, 70]),
+      getLineColor: (p) => (p.kind === "public" ? MAP_COLORS.asked : MAP_COLORS.calm),
+      stroked: true,
+      lineWidthUnits: "pixels",
+      getLineWidth: 2,
+      pickable: true,
+    }),
+    new deck.ScatterplotLayer({
+      id: "memories",
+      data: data.memories,
+      getPosition: (m) => [m.lng, m.lat],
+      getRadius: 4,
+      radiusUnits: "pixels",
+      getFillColor: [...MAP_COLORS.text, 220],
+      pickable: true,
+    }),
+    new deck.TextLayer({
+      id: "place-labels",
+      data: places,
+      getPosition: (p) => [p.lng, p.lat],
+      getText: (p) => (p.is_home ? `⌂ ${p.label}` : p.label),
+      getColor: MAP_COLORS.text,
+      getSize: 14,
+      getPixelOffset: [0, -22],
+      fontFamily: "Bricolage Grotesque, system-ui, sans-serif",
+      characterSet: "auto",
+      outlineWidth: 3,
+      outlineColor: [18, 17, 16, 255],
+      fontSettings: { sdf: true },
+    }),
+  ];
+  const getTooltip = ({ object, layer }) => {
+    if (!object) return null;
+    if (layer.id === "place-areas") {
+      return { text: `${object.label} · ${object.kind}\n${object.visits} memories here · ${object.household}`, style: GEO_TOOLTIP_STYLE };
+    }
+    if (layer.id === "memories") {
+      return { text: `“${object.transcript}”\n${object.items || "no item"} · ${timeAgo(object.timestamp)}`, style: GEO_TOOLTIP_STYLE };
+    }
+    return null;
+  };
+  if (!placesDeck) {
+    container.replaceChildren();
+    placesDeck = new deck.Deck({
+      parent: container,
+      initialViewState: fitView(places.map((p) => [p.lng, p.lat]), container),
+      controller: true,
+      getTooltip,
+      style: { position: "absolute", inset: "0" },
+    });
+  }
+  placesDeck.setProps({ layers, getTooltip });
+}
+
+// ---------- Public map (no login) ----------
+
+let publicDeck = null;
+
+async function loadPublic() {
+  const [data] = await Promise.all([fetch("/api/v1/public/lost-map").then((r) => r.json()), loadScript(DECK_URL)]);
+  $("public-k").textContent = data.min_households;
+  const container = $("public-map");
+  const cells = data.cells.map((c) => ({ ...c, total: c.left + c.asked }));
+  const maxTotal = Math.max(1, ...cells.map((c) => c.total));
+  const layers = [
+    basemap(),
+    new deck.ColumnLayer({
+      id: "public-cells",
+      data: cells,
+      diskResolution: 6,
+      radius: 60,
+      extruded: true,
+      getPosition: (c) => [c.lng, c.lat],
+      getElevation: (c) => c.total,
+      elevationScale: 220 / maxTotal,
+      getFillColor: (c) => [...MAP_COLORS.lost, 90 + Math.round((c.total / maxTotal) * 165)],
+      material: { ambient: 0.6, diffuse: 0.6, shininess: 20 },
+      pickable: true,
+    }),
+  ];
+  const getTooltip = ({ object }) =>
+    object && {
+      text: `${object.total} times here\n` + object.items.slice(0, 5).map((i) => `${capitalize(i.name)}: left ${i.left}, asked ${i.asked}`).join("\n"),
+      style: GEO_TOOLTIP_STYLE,
+    };
+  if (!publicDeck) {
+    container.replaceChildren();
+    publicDeck = new deck.Deck({
+      parent: container,
+      // Fit flat, then step back: a tilted camera shows less of the map than fitBounds assumes.
+      initialViewState: (() => {
+        const view = fitView(cells.map((c) => [c.lng, c.lat]), container, { pitch: 45, bearing: -15 });
+        return { ...view, zoom: Math.min(view.zoom, 15) - 0.8 };
+      })(),
+      controller: true,
+      getTooltip,
+      style: { position: "absolute", inset: "0" },
+    });
+  }
+  publicDeck.setProps({ layers, getTooltip });
+
+  const list = $("public-list");
+  if (!cells.length) {
+    return emptyState(list, `Nothing public yet. A spot appears once ${data.min_households} or more households have shared lost items there.`);
+  }
+  list.replaceChildren(
+    ...cells.slice(0, 10).map((c) => {
+      const li = el("li", { class: "public-row" },
+        el("span", { class: "mono public-where" }, `${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`),
+        el("span", { class: "public-items" }, c.items.slice(0, 4).map((i) => `${i.name} (${i.left + i.asked})`).join(", ")),
+        el("span", { class: "mono public-total" }, `${c.total}×`));
+      return li;
+    })
+  );
+}
+
+// ---------- Household setup ----------
+
+// Small DOM builder: el("div", {class: "x"}, "text", child) — text is never parsed as HTML.
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === false || v == null) continue;
+    if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else if (k === "class") node.className = v;
+    else node.setAttribute(k, v === true ? "" : v);
+  }
+  node.append(...children.flat().filter((c) => c != null && c !== false));
+  return node;
+}
+
+function field(label, input) {
+  return el("label", { class: "field" }, el("span", {}, label), input);
+}
+
+function formCard(title, hint, fields, submitLabel, onSubmit) {
+  const msg = el("p", { class: "form-msg", role: "status" });
+  const form = el("form", {
+    class: "card setup-card",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      msg.textContent = "";
+      const values = Object.fromEntries(new FormData(form).entries());
+      try {
+        msg.textContent = (await onSubmit(values)) || "";
+      } catch (err) {
+        msg.textContent = err.message.replace(/^\d+ /, "");
+        msg.classList.add("error");
+      }
+    },
+  }, el("h2", {}, title), hint && el("p", { class: "hint" }, hint), ...fields, el("button", { type: "submit", class: "primary" }, submitLabel), msg);
+  return form;
+}
+
+async function refreshHousehold() {
+  for (const k of Object.keys(loaded)) loaded[k] = 0;
+  await showPage("household", { force: true });
+}
+
+async function loadHousehold() {
+  const { households } = await api("/api/v1/households/me");
+  const body = $("household-body");
+  const myName = currentUser?.name || currentUser?.email || "";
+  if (!households.length) {
+    $("household-title").textContent = "Set up LastScene.";
+    body.replaceChildren(
+      el("p", { class: "lede" }, "LastScene is usually set up by a family member for the person who wears it."),
+      el("div", { class: "two-col" },
+        formCard("Set up for someone", "Creates a household. You can add the wearable and invite family next.", [
+          field("Household name", el("input", { name: "name", required: true, placeholder: "Mom's household", maxlength: 80 })),
+          field("Your name", el("input", { name: "display_name", value: myName, maxlength: 80 })),
+        ], "Create household", async (v) => {
+          await api("/api/v1/households", { method: "POST", body: { name: v.name, display_name: v.display_name || null } });
+          await refreshHousehold();
+        }),
+        formCard("Join a household", "Ask the person who set it up for an invite code.", [
+          field("Invite code", el("input", { name: "code", required: true, placeholder: "ABCD-1234-EF56", autocomplete: "off" })),
+          field("Your name", el("input", { name: "display_name", value: myName, maxlength: 80 })),
+        ], "Join", async (v) => {
+          await api("/api/v1/invites/accept", { method: "POST", body: { code: v.code, display_name: v.display_name || null } });
+          await refreshHousehold();
+        })
+      )
+    );
+    return;
+  }
+  $("household-title").textContent = households.length === 1 ? households[0].name : "Your households.";
+  body.replaceChildren(...households.map((h) => householdView(h)));
+}
+
+function householdView(h) {
+  const owner = h.role === "owner";
+  const base = `/api/v1/households/${h.id}`;
+
+  const devices = el("div", { class: "card setup-card" },
+    el("h2", {}, "Wearable"),
+    h.devices.length
+      ? el("ul", { class: "rows" }, h.devices.map((d) => el("li", {},
+          el("strong", {}, d.label || "Wearable"),
+          el("span", { class: "mono muted" }, d.client_id),
+          el("span", { class: "muted" }, d.last_seen ? `last heard ${timeAgo(d.last_seen)}` : "not heard from yet"))))
+      : el("p", { class: "hint" }, "No wearable yet. Turn it on and connect it to Wi-Fi, then enter its Client ID and the pairing code on its label."));
+  const claim = owner && formCard("Add a wearable", "The device must have connected at least once so LastScene knows its pairing code.", [
+    field("Client ID", el("input", { name: "client_id", required: true, autocomplete: "off", placeholder: "from the device label" })),
+    field("Pairing code", el("input", { name: "pairing_code", required: true, autocomplete: "off", placeholder: "ABCD-1234-EF56" })),
+    field("Name", el("input", { name: "label", placeholder: "Mom's wearable", maxlength: 80 })),
+  ], "Add wearable", async (v) => {
+    const r = await api(`${base}/devices`, { method: "POST", body: { client_id: v.client_id, pairing_code: v.pairing_code, label: v.label || null } });
+    await refreshHousehold();
+    return `Added. ${r.memories_placed} earlier memories were placed on the map.`;
+  });
+
+  const inviteOut = el("p", { class: "invite-code mono", role: "status" });
+  const people = el("div", { class: "card setup-card" },
+    el("h2", {}, "People"),
+    el("ul", { class: "rows" }, h.members.map((m) => el("li", {},
+      el("strong", {}, m.display_name + (m.is_you ? " (you)" : "")),
+      el("span", { class: "muted" }, m.role === "owner" ? "set this up" : "family")))),
+    owner && el("button", { type: "button", class: "pill", onclick: async () => {
+      const { code, expires_in_hours } = await api(`${base}/invites`, { method: "POST" });
+      inviteOut.textContent = `Share this code: ${code} (works once, for ${expires_in_hours} hours)`;
+    } }, "Invite someone"),
+    inviteOut);
+
+  const placeRows = h.places.map((p) => {
+    const save = async (patch) => {
+      await api(`${base}/places/${p.id}`, { method: "PATCH", body: patch });
+      for (const k of Object.keys(loaded)) loaded[k] = 0;
+    };
+    return el("li", { class: "place-row" },
+      el("input", { class: "place-name", value: p.name || "", placeholder: p.label, "aria-label": `Name for ${p.label}`, maxlength: 80,
+        onchange: (e) => save({ name: e.target.value.trim() || null }) }),
+      el("select", { "aria-label": `Who can see ${p.label}`, onchange: (e) => save({ kind: e.target.value }) },
+        el("option", { value: "private", selected: p.kind === "private" }, "Private"),
+        el("option", { value: "public", selected: p.kind === "public" }, "Public")),
+      el("span", { class: "mono muted" }, `${p.visits} memories`));
+  });
+  const places = el("div", { class: "card setup-card" },
+    el("h2", {}, "Places"),
+    el("p", { class: "hint" }, "Found automatically from the wearable's Wi-Fi position. Homes stay private. Mark shops, parks and transit public if you want them to count on the anonymous public map."),
+    placeRows.length ? el("ul", { class: "rows" }, placeRows) : el("p", { class: "hint" }, "No places yet."));
+
+  const share = el("input", { type: "checkbox", checked: h.share_public, disabled: !owner, onchange: async (e) => {
+    try {
+      await api(base, { method: "PATCH", body: { share_public: e.target.checked } });
+    } catch (err) {
+      e.target.checked = !e.target.checked;
+      alert(err.message);
+    }
+  } });
+  const sharing = el("div", { class: "card setup-card" },
+    el("h2", {}, "Public map"),
+    el("label", { class: "toggle" }, share, el("span", {}, "Share anonymous counts from our public places")),
+    el("p", { class: "hint" }, "Off by default. Only item names and counts from places marked public, rounded to ~100 m, and only where 3+ households contribute. Private places never leave this household. New memories count from the moment this is on."),
+    !owner && el("p", { class: "hint" }, "Only the person who set up the household can change this."));
+
+  return el("div", { class: "household" }, el("div", { class: "two-col" }, devices, claim || people), claim ? el("div", { class: "two-col" }, people, sharing) : sharing, places);
 }
 
 // ---------- Search page ----------

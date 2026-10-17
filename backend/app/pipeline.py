@@ -62,13 +62,13 @@ async def ingest_image(
 
 
 async def retrieve(
-    db: MemoryDB, ai: AIServices, question: str, device_id: str | None, hours: int, limit: int = 3
+    db: MemoryDB, ai: AIServices, question: str, device_ids: list[str] | None, hours: int, limit: int = 3
 ) -> list[RetrievedMemory]:
     """Hybrid search: vector + keyword candidates, fused and grouped by memory, with every
     chunk of the winning memories attached for the prompt."""
     embedding = await ai.embed(question, query=True)
-    vector = await db.vector_hits(device_id, embedding, hours, CANDIDATES_PER_SEARCH)
-    keyword = await db.keyword_hits(device_id, question, hours, CANDIDATES_PER_SEARCH)
+    vector = await db.vector_hits(device_ids, embedding, hours, CANDIDATES_PER_SEARCH)
+    keyword = await db.keyword_hits(device_ids, question, hours, CANDIDATES_PER_SEARCH)
     memories = fuse(vector, keyword, datetime.now(timezone.utc), limit)
     chunks = await db.chunks_for([m.memory_id for m in memories])
     for m in memories:

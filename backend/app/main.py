@@ -8,7 +8,8 @@ from fastapi.staticfiles import StaticFiles
 from .ai import AIServices
 from .config import Settings, get_settings
 from .db import MemoryDB
-from .routers import admin, dashboard, images, memory
+from .geo import Geolocator
+from .routers import admin, dashboard, households, images, memory, public
 
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 log = logging.getLogger("lastscene")
@@ -53,10 +54,13 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
     app = FastAPI(title="LastScene API", lifespan=lifespan if use_lifespan else None)
     app.state.db = MemoryDB(settings)
     app.state.ai = AIServices(settings)
+    app.state.geo = Geolocator(settings)
     app.include_router(memory.router)
     app.include_router(dashboard.router)
     app.include_router(images.router)
     app.include_router(admin.router)
+    app.include_router(households.router)
+    app.include_router(public.router)
 
     @app.get("/healthz")
     async def healthz():

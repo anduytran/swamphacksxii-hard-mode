@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     llm_model: str = "claude-opus-5-5"
     llm_effort: str = "low"
 
+    # Wi-Fi positioning: the wearable sends nearby access points; the server asks Google's
+    # Geolocation API where that is. Empty = positions only from the device (or none).
+    google_geolocation_api_key: str = ""
+
     # Run item extraction + photo description after the device's response (True) or
     # before it (False). Use False on serverless hosts that may freeze after responding.
     enrich_in_background: bool = True

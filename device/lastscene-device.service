@@ -10,7 +10,9 @@ Restart=always
 RestartSec=5
 # Dedicated user with just GPIO, camera and audio access
 User=lastscene
-SupplementaryGroups=gpio video audio
+SupplementaryGroups=gpio video audio netdev
+# Lets the iw fallback scan Wi-Fi without running as root
+AmbientCapabilities=CAP_NET_ADMIN
 
 [Install]
 WantedBy=multi-user.target

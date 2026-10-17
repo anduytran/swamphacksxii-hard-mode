@@ -12,9 +12,18 @@ from ..config import Settings, get_settings
 from ..db import ItemSighting, MemoryDB, QueryRecord
 from ..deps import get_ai, get_db
 from ..home_map import BY_ID, ROOMS, UNKNOWN, room_for
+from ..geo import home_place_id, place_label
 from ..pipeline import retrieve
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
+
+
+async def household_devices(
+    caregiver: Principal = Depends(require_caregiver), db: MemoryDB = Depends(get_db)
+) -> list[str]:
+    """Devices in the caller's households: the only data a caregiver may see."""
+    return await db.device_ids_for(caregiver.sub)
+
 log = logging.getLogger(__name__)
 
 
@@ -24,14 +33,14 @@ def _image_url(settings: Settings, memory_id: str) -> str:
 
 @router.get("/history")
 async def history(
-    caregiver: Principal = Depends(require_caregiver),
+    devices: list[str] = Depends(household_devices),
     db: MemoryDB = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
     hours = settings.dashboard_history_hours
-    records = await db.recent(hours)
+    records = await db.recent(hours, devices)
     items_by_memory: dict[str, list[dict]] = {}
-    for s in await db.item_sightings(hours):
+    for s in await db.item_sightings(hours, devices):
         items_by_memory.setdefault(s.memory_id, []).append({"name": s.name, "location": s.location})
     return [
         {
@@ -49,14 +58,14 @@ async def history(
 
 @router.get("/items")
 async def items(
-    caregiver: Principal = Depends(require_caregiver),
+    devices: list[str] = Depends(household_devices),
     db: MemoryDB = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
     """One entry per item: where it was last put, plus where it was before that."""
     window = settings.retention_hours
-    sightings = await db.item_sightings(window)
-    asked = Counter(q.item for q in await db.recent_queries(window) if q.item)
+    sightings = await db.item_sightings(window, devices)
+    asked = Counter(q.item for q in await db.recent_queries(window, devices) if q.item)
 
     by_name: dict[str, list[ItemSighting]] = {}
     for s in sightings:  # newest first, so each list starts with the latest sighting
@@ -90,11 +99,11 @@ def _was_answerable(q: QueryRecord, first_seen: dict[str, datetime]) -> bool:
     return q.item is not None and q.item in first_seen and first_seen[q.item] <= q.created_at
 
 
-async def _insights(db: MemoryDB, settings: Settings) -> dict:
+async def _insights(db: MemoryDB, settings: Settings, devices: list[str]) -> dict:
     window = settings.retention_hours
-    memories = await db.recent(window)
-    sightings = await db.item_sightings(window)
-    queries = await db.recent_queries(window)
+    memories = await db.recent(window, devices)
+    sightings = await db.item_sightings(window, devices)
+    queries = await db.recent_queries(window, devices)
 
     first_seen: dict[str, datetime] = {}
     for s in reversed(sightings):  # oldest first
@@ -138,11 +147,11 @@ async def _insights(db: MemoryDB, settings: Settings) -> dict:
 
 @router.get("/insights")
 async def insights(
-    caregiver: Principal = Depends(require_caregiver),
+    devices: list[str] = Depends(household_devices),
     db: MemoryDB = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    return await _insights(db, settings)
+    return await _insights(db, settings, devices)
 
 
 # One summary per process for a few minutes: it's an LLM call, and the data moves slowly.
@@ -152,13 +161,13 @@ _summary_cache: dict[str, tuple[float, str | None]] = {}
 
 @router.get("/summary")
 async def summary(
-    caregiver: Principal = Depends(require_caregiver),
+    devices: list[str] = Depends(household_devices),
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
     settings: Settings = Depends(get_settings),
 ):
     """A few plain sentences for the caregiver, written by the LLM (Gemini by default)."""
-    data = await _insights(db, settings)
+    data = await _insights(db, settings, devices)
     if not data["memories_logged"] and not data["questions_asked"]:
         return {"summary": None}
     def counts(rows: list[dict]) -> str:
@@ -172,7 +181,8 @@ async def summary(
         f"Most often put down: {counts(data['most_logged'])}. "
         f"Asked about but never logged: {', '.join(never_logged) or 'none'}."
     )
-    cached = _summary_cache.get(facts)
+    cache_key = f"{sorted(devices)}|{facts}"
+    cached = _summary_cache.get(cache_key)
     if cached and time.monotonic() - cached[0] < _SUMMARY_TTL_SECONDS:
         return {"summary": cached[1]}
     try:
@@ -180,7 +190,7 @@ async def summary(
     except Exception:
         log.exception("Caregiver summary failed")
         return {"summary": None}
-    _summary_cache[facts] = (time.monotonic(), text)
+    _summary_cache[cache_key] = (time.monotonic(), text)
     return {"summary": text}
 
 
@@ -188,7 +198,7 @@ async def summary(
 async def search(
     q: str = Query(..., min_length=1, max_length=300),
     limit: int = Query(5, ge=1, le=20),
-    caregiver: Principal = Depends(require_caregiver),
+    devices: list[str] = Depends(household_devices),
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
     settings: Settings = Depends(get_settings),
@@ -196,7 +206,7 @@ async def search(
     """The wearable's retrieval step, shown in full: which memories a question finds and
     which chunks matched, by meaning (vector) and by words (keyword). Embeds the query,
     so each search makes one embedding call."""
-    memories = await retrieve(db, ai, q, None, settings.retention_hours, limit)
+    memories = await retrieve(db, ai, q, devices, settings.retention_hours, limit)
     results = []
     for m in memories:
         matched = {h.chunk_id: h for h in m.matched}
@@ -242,14 +252,14 @@ def _curve(a: list[float], b: list[float], steps: int = 12) -> list[list[float]]
 
 @router.get("/map")
 async def home_map(
-    caregiver: Principal = Depends(require_caregiver),
+    devices: list[str] = Depends(household_devices),
     db: MemoryDB = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
     """Where each item is, which rooms things get lost in, and how items moved."""
     window = settings.retention_hours
-    sightings = await db.item_sightings(window)  # newest first
-    asked = Counter(q.item for q in await db.recent_queries(window) if q.item)
+    sightings = await db.item_sightings(window, devices)  # newest first
+    asked = Counter(q.item for q in await db.recent_queries(window, devices) if q.item)
 
     history: dict[str, list] = {}
     for s in reversed(sightings):  # oldest first
@@ -311,4 +321,38 @@ async def home_map(
         "rooms": used,
         "items": items,
         "trips": trips,
+    }
+
+
+@router.get("/places")
+async def our_places(
+    caregiver: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """The household's own map: its places (private ones included) and where each
+    memory happened. Only members see this."""
+    households = []
+    for h in await db.households_for(caregiver.sub):
+        places = await db.places_for(h.id)
+        home = home_place_id(places)
+        households.append(
+            {
+                "id": h.id,
+                "name": h.name,
+                "places": [
+                    {"id": p.id, "label": place_label(p, home, i), "kind": p.kind, "is_home": p.id == home,
+                     "lat": p.lat, "lng": p.lng, "radius_m": p.radius_m, "visits": p.visits}
+                    for i, p in enumerate(places, 1)
+                ],
+            }
+        )
+    memories = await db.located_memories(await db.device_ids_for(caregiver.sub), settings.retention_hours)
+    return {
+        "households": households,
+        "memories": [
+            {"lat": m["lat"], "lng": m["lng"], "accuracy_m": m["accuracy_m"], "place_id": m["place_id"],
+             "items": m["items"], "transcript": m["transcript"], "timestamp": m["created_at"].isoformat()}
+            for m in memories
+        ],
     }
