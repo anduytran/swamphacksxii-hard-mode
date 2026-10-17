@@ -1,15 +1,14 @@
-// Map: the house floor plan (where items are and get lost, with animated moves between
-// rooms) or the household's real places on a map. deck.gl; loaded as its own chunk.
+// Map: the indoor floor plan, a home or the Reitz Union one floor at a time (where items are
+// and get lost), or the household's real places on a map. deck.gl; loaded as its own chunk.
 import { OrthographicView } from "@deck.gl/core";
-import { TripsLayer } from "@deck.gl/geo-layers";
-import { PathLayer, PolygonLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
+import { PolygonLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import DeckGL from "@deck.gl/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DataTable } from "../components/Charts";
 import { EmptyState } from "../components/bits";
 import { useApi } from "../lib/api";
 import { useLoadStatus } from "../lib/app";
-import { capitalize, prefersReducedMotion, timeAgo } from "../lib/format";
+import { capitalize, timeAgo } from "../lib/format";
 import { basemap, fitView, GEO_TOOLTIP_STYLE, MAP_COLORS } from "../lib/mapLayers";
 import { useResource } from "../lib/resource";
 import type { HouseMap, MapItem, PlacesResponse, Room } from "../lib/types";
@@ -17,7 +16,6 @@ import { useSize } from "../lib/useSize";
 
 type Mode = "house" | "places";
 let lastMode: Mode = "house"; // survives switching pages
-const LOOP_SECONDS = 10; // one pass through the whole window
 const HOUSE_VIEW = new OrthographicView({ flipY: true }); // floor-plan units, y down
 
 export default function MapPage() {
@@ -32,42 +30,28 @@ export default function MapPage() {
   const active = mode === "house" ? house : places;
   useLoadStatus(active.loading, active.error, active.reload);
 
-  const [playing, setPlaying] = useState(() => !prefersReducedMotion());
-  const [clock, setClock] = useState("");
-  const hasTrips = mode === "house" && (house.data?.trips.length ?? 0) > 0;
-
   return (
     <section className="page">
       <div className="page-head">
         <div>
-          <p className="eyebrow">Home map · last {house.data?.window_hours ?? 72} hours</p>
+          <p className="eyebrow">{house.data?.plan?.name ?? "Floor"} map · last {house.data?.window_hours ?? 72} hours</p>
           <h1 className="display">Where things end up.</h1>
         </div>
         <div className="map-controls">
           <div className="segmented" role="group" aria-label="Map view">
             <button type="button" aria-pressed={mode === "house"} onClick={() => setMode("house")}>
-              House
+              Floor plan
             </button>
             <button type="button" aria-pressed={mode === "places"} onClick={() => setMode("places")}>
               Our places
             </button>
           </div>
-          {hasTrips && (
-            <button type="button" className="pill" aria-pressed={playing} onClick={() => setPlaying((p) => !p)}>
-              {playing ? "Pause" : "Play"}
-            </button>
-          )}
-          {mode === "house" && (
-            <span className="mono map-clock" aria-live="off">
-              {hasTrips ? clock : ""}
-            </span>
-          )}
         </div>
       </div>
 
       {mode === "house" ? (
         <div className="card map-card">
-          <HouseMapView data={house.data} playing={playing} onClock={setClock} onRetry={house.reload} />
+          <HouseMapView data={house.data} onRetry={house.reload} />
           <div className="legend map-legend">
             <span>
               <i className="swatch room-swatch" />
@@ -80,10 +64,6 @@ export default function MapPage() {
             <span>
               <i className="dot dot-calm" />
               Not asked about
-            </span>
-            <span>
-              <i className="trail-swatch" />
-              Moved between rooms
             </span>
           </div>
           <details>
@@ -126,61 +106,133 @@ export default function MapPage() {
 
 // ---------- House floor plan ----------
 
-function HouseMapView({ data, playing, onClock, onRetry }: { data?: HouseMap; playing: boolean; onClock(text: string): void; onRetry(): void }) {
+function HouseMapView({ data, onRetry }: { data?: HouseMap; onRetry(): void }) {
   const ref = useRef<HTMLDivElement>(null);
   const size = useSize(ref);
-  const [time, setTime] = useState(0);
+  const [zoom, setZoom] = useState(0); // for which room names fit
 
-  // Animate the trails: one pass through the whole window every LOOP_SECONDS.
+  // Floors: one frame each, stepped through with the buttons. "Elsewhere" shows on every floor.
+  const floors = useMemo(() => {
+    const halls = (data?.rooms ?? []).filter((r) => r.kind === "hall");
+    return [...new Set((data?.rooms ?? []).map((r) => r.level ?? 0))]
+      .sort((a, b) => a - b)
+      .map((level) => ({ level, name: halls.find((h) => h.level === level)?.name ?? `Floor ${level}` }));
+  }, [data]);
+  const levelOf = useMemo(() => new Map((data?.rooms ?? []).map((r) => [r.id, r.level ?? 0])), [data]);
+  // Open on the floor where something was put down most recently.
+  const [floor, setFloor] = useState<number | null>(null);
   useEffect(() => {
-    if (!playing || !data?.trips.length) return;
-    const span = Math.max(data.span_hours, 1);
-    let last = performance.now();
-    let frame = requestAnimationFrame(function tick(now) {
-      setTime((t) => (t + ((now - last) / 1000) * (span / LOOP_SECONDS)) % (span + 2));
-      last = now;
-      frame = requestAnimationFrame(tick);
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [playing, data]);
+    if (!data) return;
+    const latest = [...data.items].filter((i) => i.room !== "unknown").sort((a, b) => b.last_seen.localeCompare(a.last_seen))[0];
+    setFloor(latest ? (levelOf.get(latest.room) ?? 0) : (floors[0]?.level ?? 0));
+  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps -- once per data set
+  const index = Math.max(0, floors.findIndex((f) => f.level === floor));
+  const current = floors[index];
+  const onFloor = (roomId: string) => roomId === "unknown" || levelOf.get(roomId) === current?.level;
+  const view = useMemo<HouseMap | undefined>(
+    () => data && current && { ...data, rooms: data.rooms.filter((r) => onFloor(r.id)), items: data.items.filter((i) => onFloor(i.room)) },
+    [data, current], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const countOn = (level: number) => data?.items.filter((i) => i.room !== "unknown" && levelOf.get(i.room) === level).length ?? 0;
 
-  useEffect(() => {
-    if (!data?.trips.length || !data.start) return onClock("");
-    const at = new Date(Date.parse(data.start) + Math.min(time, data.span_hours) * 3.6e6);
-    onClock(at.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }));
-  }, [time, data, onClock]);
-
-  // Fit the floor plan (plus a margin) to the frame, once per data set.
+  // Fit this floor (plus a margin for item names at the edges) to the frame.
   const initialViewState = useMemo(() => {
-    if (!data?.rooms.length || !size) return null;
-    const xs = data.rooms.flatMap((r) => r.polygon.map((pt) => pt[0]));
-    const ys = data.rooms.flatMap((r) => r.polygon.map((pt) => pt[1]));
+    if (!view?.rooms.length || !size) return null;
+    const xs = view.rooms.flatMap((r) => r.polygon.map((pt) => pt[0]));
+    const ys = view.rooms.flatMap((r) => r.polygon.map((pt) => pt[1]));
     const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
-    const fit = Math.min(size.width / (maxX - minX + 10), size.height / (maxY - minY + 10));
-    return { target: [(minX + maxX) / 2, (minY + maxY) / 2, 0] as [number, number, number], zoom: Math.log2(fit), minZoom: 1, maxZoom: 6 };
-  }, [data, size !== null]); // fit once per data set, not on every resize
+    const fit = Math.min(size.width / ((maxX - minX) * 1.08 + 10), size.height / ((maxY - minY) * 1.04 + 10));
+    return { target: [(minX + maxX) / 2, (minY + maxY) / 2, 0] as [number, number, number], zoom: Math.log2(fit), minZoom: Math.log2(fit) - 1, maxZoom: 6 };
+  }, [view, size !== null]); // re-fit per floor, not on every resize
+  useEffect(() => {
+    if (initialViewState) setZoom(initialViewState.zoom);
+  }, [initialViewState]);
 
-  const layers = useMemo(() => (data ? houseLayers(data, playing, time) : []), [data, playing, time]);
+  const layers = useMemo(() => (view ? houseLayers(view, zoom) : []), [view, zoom]);
+  const step = (by: number) => setFloor(floors[Math.min(floors.length - 1, Math.max(0, index + by))].level);
 
   return (
-    <div ref={ref} id="home-map" className={data ? "home-map" : "home-map is-loading"} role="img" aria-label="Floor plan showing where items were last seen">
-      {data && !data.items.length ? (
-        <EmptyState
-          title="Nothing to map yet"
-          text="Items appear in their rooms once the wearable logs where they were put down."
-          checklist="Log a few items in different rooms"
-          cta={{ label: "Check again", onClick: onRetry }}
-        />
-      ) : (
-        initialViewState && (
-          <DeckGL views={HOUSE_VIEW} initialViewState={initialViewState} controller layers={layers} getTooltip={houseTooltip} />
-        )
+    <>
+      {floors.length > 1 && current && (
+        <div className="floor-stepper" role="group" aria-label="Floor">
+          <button type="button" className="icon-btn" onClick={() => step(-1)} disabled={index === 0} aria-label={`Down to ${floors[index - 1]?.name ?? "lower floor"}`}>
+            <span aria-hidden="true">↓</span>
+          </button>
+          <p aria-live="polite">
+            <strong>{current.name}</strong>
+            <span className="floor-count">
+              {index + 1} of {floors.length} · {countOn(current.level)} {countOn(current.level) === 1 ? "item" : "items"}
+            </span>
+          </p>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => step(1)}
+            disabled={index === floors.length - 1}
+            aria-label={`Up to ${floors[index + 1]?.name ?? "higher floor"}`}
+          >
+            <span aria-hidden="true">↑</span>
+          </button>
+        </div>
       )}
-    </div>
+      <div ref={ref} id="home-map" className={data ? "home-map" : "home-map is-loading"} role="img" aria-label={`Floor plan${current && floors.length > 1 ? ` of ${current.name}` : ""} showing where items were last seen`}>
+        {data && !data.items.length ? (
+          <EmptyState
+            title="Nothing to map yet"
+            text="Items appear in their rooms once the wearable logs where they were put down."
+            checklist="Log a few items in different rooms"
+            cta={{ label: "Check again", onClick: onRetry }}
+          />
+        ) : (
+          initialViewState && (
+            <DeckGL
+              views={HOUSE_VIEW}
+              initialViewState={initialViewState}
+              controller
+              layers={layers}
+              getTooltip={houseTooltip}
+              onViewStateChange={({ viewState }) => {
+                const z = Math.round((viewState as { zoom: number }).zoom * 4) / 4; // re-label in quarter steps
+                if (z !== zoom) setZoom(z);
+                return viewState;
+              }}
+            />
+          )
+        )}
+      </div>
+    </>
   );
 }
 
-function houseLayers(data: HouseMap, playing: boolean, time: number) {
+// Room names wrap at ~12 characters and only show where they fit at the current zoom (the
+// rest are in each room's tooltip).
+const LABEL_PX = { char: 6.8, line: 13 };
+
+function wrapName(name: string) {
+  const lines: string[] = [];
+  for (const word of name.toUpperCase().split(" ")) {
+    const last = lines.length - 1;
+    if (last >= 0 && lines[last].length + word.length < 12) lines[last] += ` ${word}`;
+    else lines.push(word);
+  }
+  return lines;
+}
+
+function bounds(r: Room) {
+  const xs = r.polygon.map((p) => p[0]);
+  const ys = r.polygon.map((p) => p[1]);
+  return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+}
+
+function houseLayers(data: HouseMap, zoom: number) {
+  const scale = 2 ** zoom; // pixels per floor-plan unit
+  const named = data.rooms
+    .filter((r) => r.kind !== "hall")
+    .map((r) => ({ room: r, box: bounds(r), lines: wrapName(r.name) }))
+    .filter(({ box, lines }) => {
+      const width = Math.max(...lines.map((l) => l.length)) * LABEL_PX.char + 8;
+      return width <= box.w * scale && lines.length * LABEL_PX.line + 6 <= box.h * scale;
+    });
   const maxLost = Math.max(1, ...data.rooms.map((r) => r.lost));
   const maxAsked = Math.max(1, ...data.items.map((i) => i.times_asked));
   return [
@@ -188,50 +240,28 @@ function houseLayers(data: HouseMap, playing: boolean, time: number) {
       id: "rooms",
       data: data.rooms,
       getPolygon: (r) => r.polygon,
-      getFillColor: (r) => (r.lost ? [...MAP_COLORS.asked, 40 + Math.round((r.lost / maxLost) * 150)] : [...MAP_COLORS.roomFill, 255]),
+      getFillColor: (r) =>
+        r.lost ? [...MAP_COLORS.asked, 60 + Math.round((r.lost / maxLost) * 150)] : [...(r.kind === "hall" ? MAP_COLORS.hallFill : MAP_COLORS.roomFill), 235],
       getLineColor: MAP_COLORS.roomLine,
       lineWidthUnits: "pixels",
-      getLineWidth: 2,
+      getLineWidth: 1.5,
       pickable: true,
       updateTriggers: { getFillColor: maxLost },
     }),
-    new TextLayer<Room>({
+    new TextLayer<(typeof named)[number]>({
       id: "room-names",
-      data: data.rooms,
-      getPosition: (r) => [r.polygon[0][0] + 2, r.polygon[0][1] + 3],
-      getText: (r) => r.name.toUpperCase(),
+      data: named,
+      getPosition: ({ box }) => [box.x, box.y],
+      getPixelOffset: [6, 6],
+      getText: ({ lines }) => lines.join("\n"),
       getColor: MAP_COLORS.label,
       getSize: 11,
+      lineHeight: LABEL_PX.line / 11,
       getTextAnchor: "start",
       getAlignmentBaseline: "top",
       fontFamily: "Geist Mono, monospace",
       characterSet: "auto",
     }),
-    playing
-      ? new TripsLayer({
-          id: "trails",
-          data: data.trips,
-          getPath: (t) => t.path,
-          getTimestamps: (t) => t.timestamps,
-          getColor: MAP_COLORS.trail,
-          widthUnits: "pixels",
-          getWidth: 3,
-          capRounded: true,
-          jointRounded: true,
-          trailLength: Math.max(data.span_hours / 4, 2),
-          currentTime: time,
-          fadeTrail: true,
-        })
-      : new PathLayer({
-          id: "trails",
-          data: data.trips,
-          getPath: (t) => t.path,
-          getColor: [...MAP_COLORS.trail, 150],
-          widthUnits: "pixels",
-          getWidth: 2,
-          capRounded: true,
-          jointRounded: true,
-        }),
     new ScatterplotLayer<MapItem>({
       id: "items",
       data: data.items,

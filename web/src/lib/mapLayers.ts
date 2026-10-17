@@ -10,6 +10,7 @@ export type RGBA = [number, number, number, number?];
 export const MAP_COLORS = {
   roomLine: [70, 68, 120],
   roomFill: [30, 29, 61], // dark --surface #1E1D3D
+  hallFill: [24, 23, 51], // corridors: between --map-ground and roomFill
   asked: [232, 104, 126], // --map-asked, rose: needs attention
   calm: [169, 165, 240], // --map-calm, periwinkle
   publicPlace: [245, 178, 60], // --map-public, the amber accent

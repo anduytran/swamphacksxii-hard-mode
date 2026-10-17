@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     # Vercel Cron sends "Authorization: Bearer <CRON_SECRET>" to the purge endpoint.
     cron_secret: str = ""
 
+    # Indoor floor plan on the dashboard map: "reitz_union" (the SwampHacks venue) or "home".
+    floor_plan: str = "reitz_union"
+
     # Data lifecycle
     retention_hours: int = 72
     query_lookback_hours: int = 72

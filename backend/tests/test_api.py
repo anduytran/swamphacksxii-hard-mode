@@ -171,7 +171,7 @@ class FakeAI:
 
 @pytest.fixture
 def client(monkeypatch):
-    settings = Settings(auth0_domain=DOMAIN, auth0_audience=AUDIENCE, image_url_secret="test-secret", _env_file=None)
+    settings = Settings(auth0_domain=DOMAIN, auth0_audience=AUDIENCE, image_url_secret="test-secret", floor_plan="home", _env_file=None)
     signing = SimpleNamespace(key=KEY.public_key())
     monkeypatch.setattr(
         auth, "_jwks_client", lambda domain: SimpleNamespace(get_signing_key_from_jwt=lambda t: signing)

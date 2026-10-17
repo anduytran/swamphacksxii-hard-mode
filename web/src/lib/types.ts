@@ -82,6 +82,8 @@ export interface SearchResult {
 export interface Room {
   id: string;
   name: string;
+  kind?: "room" | "hall"; // hall: a level's corridors, drawn under its rooms
+  level?: number; // floor, 0 = ground (several only on multi-floor plans)
   polygon: [number, number][];
   putdowns: number;
   lost: number;
@@ -107,6 +109,7 @@ export interface Trip {
 
 export interface HouseMap {
   window_hours: number;
+  plan?: { id: string; name: string }; // which floor plan the rooms come from
   start: string | null;
   span_hours: number;
   rooms: Room[];

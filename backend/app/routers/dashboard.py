@@ -11,7 +11,7 @@ from ..auth import Principal, require_caregiver
 from ..config import Settings, get_settings
 from ..db import ItemSighting, MemoryDB, QueryRecord
 from ..deps import get_ai, get_db
-from ..home_map import BY_ID, ROOMS, UNKNOWN, room_for
+from ..home_map import floor_plan, room_for
 from ..geo import home_place_id, place_label
 from ..pipeline import retrieve
 
@@ -291,8 +291,9 @@ async def home_map(
     for s in reversed(sightings):  # oldest first
         history.setdefault(s.name, []).append(s)
 
-    rooms = {r.id: {"id": r.id, "name": r.name, "polygon": r.polygon, "putdowns": 0, "lost": 0, "items": []} for r in (*ROOMS, UNKNOWN)}
-    places = {name: [room_for(s.location, s.scene) for s in seen] for name, seen in history.items()}
+    plan = floor_plan(settings.floor_plan)
+    rooms = {r.id: {"id": r.id, "name": r.name, "kind": r.kind, "level": r.level, "polygon": r.polygon, "putdowns": 0, "lost": 0, "items": []} for r in (*plan.rooms, plan.unknown)}
+    places = {name: [room_for(s.location, s.scene, plan=plan) for s in seen] for name, seen in history.items()}
     for name, rooms_visited in places.items():
         here = rooms_visited[-1]
         for room in rooms_visited:
@@ -301,7 +302,7 @@ async def home_map(
         rooms[here.id]["items"].append(name)
     # Items sharing a room get evenly spaced spots; past rooms use a stable per-item spot.
     position = {
-        name: BY_ID[room_id].slot(i, len(r["items"]))
+        name: plan.room(room_id).slot(i, len(r["items"]))
         for room_id, r in rooms.items()
         for i, name in enumerate(r["items"])
     }
@@ -339,9 +340,10 @@ async def home_map(
         if len(path) > 1:
             trips.append({"name": name, "path": path, "timestamps": stamps, "rooms": [p.name for p in visited]})
 
-    used = [r for r in rooms.values() if r["id"] != UNKNOWN.id or r["putdowns"]]
+    used = [r for r in rooms.values() if r["id"] != plan.unknown.id or r["putdowns"]]
     return {
         "window_hours": window,
+        "plan": {"id": plan.id, "name": plan.name},
         "start": start.isoformat() if start else None,  # trip timestamps are hours after this
         "span_hours": round((max(s.created_at for s in sightings) - start).total_seconds() / 3600, 3) if sightings else 0,
         "rooms": used,
