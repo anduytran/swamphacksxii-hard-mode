@@ -12,7 +12,17 @@ Two push-to-talk buttons:
       -> records while held, POSTs /api/v1/memory/query, plays the spoken answer
 
 Speech-to-text on the device (STT_ENGINE=moonshine, or vosk): the wearable sends the words,
-not the recording, so the audio never leaves it. If the local model is missing or hears nothing,
+not the recording, so the audio never leaves it.
+
+Item detection on the device (VISION_DIR = the repo's vision/ folder, with a model from the vision
+pipeline under LASTSCENE_DATA/models/current): the same process that listens also sees.
+  * A statement ("I'm putting my keys on the counter") gets its photo after the words: if a taught
+    item is mentioned and the photo doesn't show it, the camera tries 3 more times about 1 s apart
+    (a short low beep says "point me at it"), and the clearest photo of the item is sent.
+    Questions get no photo. Without on-device speech-to-text the photo is taken as before.
+  * Between conversations, a background loop grabs a frame every VISION_EVERY seconds (default 2)
+    and runs the detector only when the scene changed (lastscene_pipeline.gated), posting
+    observations like `python -m lastscene_pipeline.detect`. It pauses while you talk to the device. If the local model is missing or hears nothing,
 the clip goes to the server's speech-to-text instead (STT_FALLBACK=false turns that off).
 
 Authenticates with Auth0 Machine-to-Machine (client credentials) and caches the
@@ -32,10 +42,12 @@ import json
 import logging
 import math
 import os
+import re
 import struct
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -77,10 +89,19 @@ class Config:
     stt_engine: str = "server"  # moonshine | vosk | server (send the audio; the server transcribes)
     stt_model: str = ""  # model folder; empty = the default under /opt/lastscene/stt
     stt_fallback: bool = True  # local model missing or heard nothing: send the audio instead
+    camera: str = "auto"  # auto (a Camera Module if one is connected, else USB) | picam | usb
+    camera_index: int = 0  # USB: /dev/video<N>
+    vision_dir: str = ""  # the repo's vision/ folder; empty = no on-device item detection
+    min_confidence: float = 0.35  # the server drops detections under 0.35
+    capture_retries: int = 3  # extra photos when the item you named isn't in the first one
+    retry_gap_s: float = 1.0
+    vision_every: float = 2.0  # background: seconds between frames; 0 = voice commands only
+    motion_threshold: float = 4.0  # background: frame change (0-255) that counts as motion
+    scene_label: str = ""  # background: where the wearer usually is, sent with observations
 
     @classmethod
-    def from_env(cls) -> "Config":
-        env = os.environ
+    def from_env(cls, env=None) -> "Config":
+        env = os.environ if env is None else env
         return cls(
             api_url=env.get("API_URL", "http://localhost:8000").rstrip("/"),
             auth0_domain=env["AUTH0_DOMAIN"],
@@ -105,7 +126,24 @@ class Config:
             stt_engine=env.get("STT_ENGINE", "server").lower(),
             stt_model=env.get("STT_MODEL", ""),
             stt_fallback=env.get("STT_FALLBACK", "true").lower() not in ("0", "false", "no"),
+            camera=env.get("CAMERA", "auto").lower(),
+            camera_index=int(env.get("CAMERA_INDEX", 0)),
+            vision_dir=env.get("VISION_DIR", ""),
+            min_confidence=float(env.get("MIN_CONFIDENCE", 0.35)),
+            capture_retries=int(env.get("CAPTURE_RETRIES", 3)),
+            retry_gap_s=float(env.get("RETRY_GAP_SECONDS", 1.0)),
+            vision_every=float(env.get("VISION_EVERY", 2.0)),
+            motion_threshold=float(env.get("MOTION_THRESHOLD", 4.0)),
+            scene_label=env.get("SCENE_LABEL", ""),
         )
+
+    @classmethod
+    def local(cls, env=None) -> "Config":
+        """For the offline test modes: everything from the environment, Auth0 settings optional."""
+        env = dict(os.environ if env is None else env)
+        for key in ("AUTH0_DOMAIN", "AUTH0_AUDIENCE", "DEVICE_CLIENT_ID", "DEVICE_CLIENT_SECRET"):
+            env.setdefault(key, "")
+        return cls.from_env(env)
 
 
 # ---------------------------------------------------------------- location (Wi-Fi positioning)
@@ -576,22 +614,212 @@ class VoiceCapture:
             self._done.set()
 
 
+def jpeg_bytes(frame, quality: int = 88) -> bytes:
+    import cv2
+
+    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        raise RuntimeError("could not encode the photo")
+    return buf.tobytes()
+
+
 class Camera:
+    """A Raspberry Pi Camera Module (picamera2)."""
+
     def __init__(self):
         from picamera2 import Picamera2  # apt: python3-picamera2
 
         self.cam = Picamera2()
         # Small JPEGs upload fast and stay well under the API's 2 MB limit.
-        self.cam.configure(self.cam.create_still_configuration(main={"size": (1280, 960)}))
+        self.cam.configure(self.cam.create_still_configuration(main={"size": (1280, 960), "format": "RGB888"}))
         self.cam.start()
+        self._lock = threading.Lock()
         time.sleep(1)  # let auto-exposure settle once at boot
 
-    def capture_jpeg(self) -> bytes:
-        import io
+    def frame(self):
+        """The current view as a BGR array (picamera2's RGB888 is BGR in memory)."""
+        with self._lock:
+            return self.cam.capture_array()
 
-        buf = io.BytesIO()
-        self.cam.capture_file(buf, format="jpeg")
-        return buf.getvalue()
+    def capture_jpeg(self) -> bytes:
+        return jpeg_bytes(self.frame())
+
+
+class UsbCamera:
+    """A USB webcam (V4L2), kept open but read only when a frame is needed.
+
+    Opening takes ~1.1 s and auto-exposure needs a few frames, so the camera stays open; nothing is
+    decoded between photos. The frame waiting in the one-frame driver buffer is thrown away first:
+    on the Zero 2 W it was captured while the detector had the CPU, and the USB controller drops data
+    then (Oct 17, 2026, detector running between reads: 19 of 25 MJPEG 1280x720 frames corrupt, torn
+    bands in uncompressed ones too). Reading the next frame instead: 0 of 25 corrupt, ~90 ms a photo."""
+
+    def __init__(self, index: int = 0, size=(1280, 720)):
+        import cv2
+
+        self.cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
+        if not self.cap.isOpened():
+            raise RuntimeError(f"no USB camera at /dev/video{index}")
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, size[0])
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, size[1])
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self._lock = threading.Lock()
+        for _ in range(10):  # let auto-exposure settle once at start-up
+            self.cap.read()
+
+    def frame(self):
+        with self._lock:
+            self.cap.grab()  # the stale, possibly corrupt frame (see the class docstring)
+            for _ in range(3):
+                ok, image = self.cap.read()
+                if ok:
+                    return image
+                time.sleep(0.2)
+        raise RuntimeError("the USB camera returned no frame (unplugged?)")
+
+    def capture_jpeg(self) -> bytes:
+        return jpeg_bytes(self.frame())
+
+
+def make_camera(cfg: Config):
+    if cfg.camera in ("auto", "picam"):
+        try:
+            return Camera()
+        except Exception:
+            if cfg.camera == "picam":
+                raise
+            log.info("No Camera Module found; using the USB camera at /dev/video%d", cfg.camera_index)
+    return UsbCamera(cfg.camera_index)
+
+
+# ---------------------------------------------------------------- statement or question
+
+# The same rules as the server's backend/app/intent.py (kept in step by test_device.py), so the device
+# knows before it uploads whether the words need a photo: the server rejects a statement without one.
+WAKE_PHRASES = (
+    "hey last scene", "hey lastscene", "hey last seen", "okay last scene", "ok last scene",
+    "last scene", "lastscene", "last seen", "hey jarvis",
+)
+_QUESTION_START = re.compile(
+    r"^(where|what|when|which|who|whose|how|why|did|do|does|have|has|had|is|are|was|were|can|could|would|will|"
+    r"should|tell me|remind me|help me find|find|show me|any idea|got any idea)\b"
+)
+_QUESTION_ANYWHERE = re.compile(
+    r"\b(where('s| is| are| was| were| did| do| have| has)\b|where did i\b|have you seen|did i (leave|put|take|lock|turn)\b|"
+    r"do you know where\b|can you find\b|i can'?t find\b|i lost\b|i'?ve lost\b)"
+)
+
+
+def strip_wake_phrase(text: str) -> str:
+    t = text.strip()
+    low = re.sub(r"[^\w\s']", "", t.lower())
+    for phrase in WAKE_PHRASES:
+        if low.startswith(phrase):
+            words = len(phrase.split())
+            return re.sub(r"^\W*" + r"\W+".join([r"\w+"] * words) + r"[\W]*", "", t, count=1).strip()
+    return t
+
+
+def intent_of(transcript: str) -> str:
+    """'ask' or 'remember'."""
+    low = strip_wake_phrase(transcript).lower().strip()
+    if not low:
+        return "remember"
+    if low.endswith("?") or _QUESTION_START.match(low) or _QUESTION_ANYWHERE.search(low):
+        return "ask"
+    return "remember"
+
+
+# ---------------------------------------------------------------- item detection on the device
+
+class Vision:
+    """The vision pipeline's detector, loaded once and shared by voice commands and the background loop.
+
+    Imports lastscene_pipeline from VISION_DIR; the model is LASTSCENE_DATA/models/current (reloaded when
+    `fetch` or `train` moves it). Class names and aliases come from the model's classes.json."""
+
+    def __init__(self, cfg: Config, camera, paused=lambda: False):
+        if cfg.vision_dir and cfg.vision_dir not in sys.path:
+            sys.path.insert(0, cfg.vision_dir)
+        from lastscene_pipeline.common import data_dir, read_json
+        from lastscene_pipeline.detect import ReloadingDetector, load_classes
+        from lastscene_pipeline.runtime import load_detector
+
+        self.cfg, self.camera, self.paused = cfg, camera, paused
+        self.root = data_dir()
+        pointer = self.root / "models" / "current"
+
+        def build(model_dir):
+            return load_detector(model_dir, load_classes(model_dir, self.root), cfg.min_confidence, "onnx", 4)
+
+        self.detector = ReloadingDetector(pointer, None, build, log=log.info)
+        self._read_json = read_json
+        self.stats = None
+
+    @property
+    def names(self) -> dict[str, list[str]]:
+        """class name -> the words people use for it (the name itself, plural, and Teach aliases)."""
+        items = {}
+        model_dir = self.detector.model_dir
+        vocab = self._read_json(model_dir / "classes.json") if model_dir and (model_dir / "classes.json").exists() else {}
+        aliases = {i.get("name"): i.get("aliases") or [] for i in vocab.get("items", [])}
+        for name in getattr(self.detector.inner, "classes", []):
+            words = {name.lower(), *(a.lower() for a in aliases.get(name, []))}
+            items[name] = sorted(words | {w + "s" for w in words if not w.endswith("s")})
+        return items
+
+    def targets(self, words: str | None) -> list[str]:
+        """The taught items the words mention ("my pin", "the swamphacks pins"), in class-name form."""
+        if not words:
+            return []
+        low = strip_wake_phrase(words).lower()
+        return [name for name, said in self.names.items()
+                if any(re.search(r"\b" + re.escape(w) + r"\b", low) for w in said)]
+
+    def photo_for(self, words: str | None, on_retry=lambda attempt: None, sleep=time.sleep):
+        """(frame, detection or None, attempts). With a taught item named, up to 1 + capture_retries
+        photos until one shows it at >= min_confidence; otherwise a single photo."""
+        targets = self.targets(words)
+        attempts = 1 + (self.cfg.capture_retries if targets else 0)
+        frame = None
+        for attempt in range(attempts):
+            if attempt:
+                on_retry(attempt)
+                sleep(self.cfg.retry_gap_s)
+            frame = self.camera.frame()
+            if not targets:
+                return frame, None, 1
+            hits = [d for d in self.detector.detect(frame) if d.label in targets and d.conf >= self.cfg.min_confidence]
+            if hits:
+                return frame, max(hits, key=lambda d: d.conf), attempt + 1
+        return frame, None, attempts
+
+    def start_background(self, dry_run: bool = False, stop=lambda: False) -> threading.Thread:
+        """The detect loop on motion-gated frames from the shared camera, on a daemon thread."""
+        from lastscene_pipeline.detect import build_parser, run
+        from lastscene_pipeline.gated import GatedFrames
+
+        gate = GatedFrames(self.camera.frame, every=self.cfg.vision_every, threshold=self.cfg.motion_threshold,
+                           paused=self.paused, stop=stop)
+        self.stats = gate.stats
+        argv = ["--source", "wearable", "--fps", str(1 / self.cfg.vision_every), "--min-confidence",
+                str(self.cfg.min_confidence), "--sync-every", "0", "--no-console"]
+        if self.cfg.scene_label:
+            argv += ["--scene-label", self.cfg.scene_label]
+        if dry_run:
+            argv.append("--dry-run")
+        args = build_parser().parse_args(argv)
+
+        def loop():
+            try:
+                run(args, frames=gate, detector=self.detector)
+            except Exception:
+                log.exception("Background item detection stopped")
+
+        thread = threading.Thread(target=loop, name="lastscene-vision", daemon=True)
+        thread.start()
+        return thread
 
 
 # ---------------------------------------------------------------- device loop
@@ -607,7 +835,7 @@ class Device:
         self.cfg = cfg
         self.api = ApiClient(cfg)
         self.spool = Spool(cfg.spool_dir)
-        self.camera = Camera()
+        self.camera = make_camera(cfg)
         self.led = LED(cfg.led_pin)
         self.remember = Button(cfg.remember_pin, pull_up=True, bounce_time=0.05)
         self.ask = Button(cfg.ask_pin, pull_up=True, bounce_time=0.05)
@@ -620,6 +848,15 @@ class Device:
             except Exception:  # package or model missing: the server transcribes instead
                 log.exception("On-device speech-to-text %r unavailable; %s", cfg.stt_engine,
                               "sending audio to the server" if cfg.stt_fallback else "nothing can be sent")
+
+        # Item detection: one detector for voice commands and the background loop, paused while busy.
+        self.vision: Vision | None = None
+        if cfg.vision_dir:
+            try:
+                self.vision = Vision(cfg, self.camera, paused=self.busy.locked)
+                log.info("Item detection on the device: %s", self.vision.detector.name)
+            except Exception:  # vision code or model missing: photos are still taken, just not checked
+                log.exception("On-device item detection unavailable (VISION_DIR=%s)", cfg.vision_dir)
 
         self.remember.when_pressed = lambda: self._begin("remember")
         self.remember.when_released = lambda: self._end("remember")
@@ -655,6 +892,19 @@ class Device:
             raise NothingHeard()
         return None
 
+    def _photo(self, words: str | None) -> bytes:
+        """The photo for a memory. With item detection: retried until the item the words name is in it."""
+        if self.vision is None:
+            return self.camera.capture_jpeg()
+        t0 = time.monotonic()
+        frame, hit, attempts = self.vision.photo_for(
+            words, on_retry=lambda n: n == 1 and play_wav(self.cfg.audio_out, tone(523, 80)))  # "point me at it"
+        if hit is not None:
+            log.info("Photo shows %s (%.2f) after %d attempt(s), %.1f s", hit.label, hit.conf, attempts, time.monotonic() - t0)
+        elif attempts > 1:
+            log.info("Item not seen in %d photos (%.1f s); sending the last one", attempts, time.monotonic() - t0)
+        return jpeg_bytes(frame)
+
     def _on_frame(self, frame: bytes) -> None:
         """Every 80 ms of microphone audio, when the wake phrase is on."""
         if self.stream_rec.active:  # a button is held
@@ -669,7 +919,8 @@ class Device:
             return
         try:
             self.led.on()
-            photo = self.camera.capture_jpeg()
+            # Without device speech-to-text the words come too late to choose: photograph now, as before.
+            photo = self.camera.capture_jpeg() if self.stt is None else None
             play_wav(self.cfg.audio_out, tone(880))  # "I'm listening" (before recording, so it isn't heard)
             pcm = self.voice.listen(Endpointer(max_s=self.cfg.wake_max_seconds), self.cfg.wake_max_seconds + 3)
             if pcm is None:
@@ -683,6 +934,8 @@ class Device:
             except NothingHeard:
                 play_wav(self.cfg.audio_out, tone(440))
                 return
+            if photo is None and (words is None or intent_of(words) == "remember"):
+                photo = self._photo(words)  # a statement needs its photo; a question gets none
             where = whereabouts(self.cfg)
             try:
                 intent, result = self.api.voice(wav, photo, where, words)
@@ -690,9 +943,12 @@ class Device:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
                     log.warning("Server rejected voice clip: %s", exc.response.text)
                     play_wav(self.cfg.audio_out, tone(440))
-                else:
+                elif photo is not None:
                     self.spool.add(wav, photo, where, kind="voice", transcript=words)
                     log.warning("Offline; voice clip spooled for later")
+                else:
+                    log.warning("Offline; a question can't be answered later, so it isn't kept")
+                    play_wav(self.cfg.audio_out, tone(440))
                 return
             if intent == "ask":
                 self.led.on()
@@ -711,7 +967,8 @@ class Device:
         if not self.busy.acquire(blocking=False):
             return
         try:
-            photo = self.camera.capture_jpeg() if mode == "remember" else None
+            # With item detection the photo waits for the words (to know what to look for).
+            photo = self.camera.capture_jpeg() if mode == "remember" and self.vision is None else None
             # With the wake phrase on, the mic is already open: record from the shared stream.
             rec = self.stream_rec if self.mic else Recorder(self.cfg.audio_in, self.cfg.max_record_seconds)
             rec.start()
@@ -737,6 +994,8 @@ class Device:
             except NothingHeard:
                 play_wav(self.cfg.audio_out, tone(440))
                 return
+            if mode == "remember" and photo is None:
+                photo = self._photo(words)
             where = whereabouts(self.cfg)  # a Wi-Fi scan takes a second or two
             if mode == "remember":
                 try:
@@ -760,6 +1019,9 @@ class Device:
             self.busy.release()
 
     def run(self) -> None:
+        if self.vision is not None and self.cfg.vision_every > 0:
+            self.vision.start_background()
+            log.info("Watching for taught items every %.1f s when the scene changes", self.cfg.vision_every)
         if self.mic:
             self.mic.start()
             log.info("Listening for the wake phrase (%s)", self.cfg.wake_word)
@@ -783,6 +1045,12 @@ def main() -> None:
     parser.add_argument("--where", action="store_true", help="print the location fields this device would send")
     parser.add_argument("--transcribe", metavar="WAV", nargs="+",
                         help="transcribe 16 kHz mono WAVs with STT_ENGINE on this device and time it; no network")
+    parser.add_argument("--capture", metavar="WORDS",
+                        help='take the photo a statement would get ("I put my keys here"), with retries, and save '
+                             "capture.jpg; needs VISION_DIR; no network")
+    parser.add_argument("--watch", metavar="SECONDS", type=float,
+                        help="run background item detection for SECONDS, printing observations instead of posting "
+                             "them, then report frames grabbed / passed / skipped; needs VISION_DIR; no network")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -796,6 +1064,29 @@ def main() -> None:
             t0 = time.monotonic()
             text = stt.transcribe(wav)
             print(f"{path}: {time.monotonic() - t0:.2f} s for {len(wav_pcm(wav)) / 2 / RATE:.1f} s of audio: {text!r}")
+        return
+
+    if args.capture or args.watch:  # camera + model only
+        cfg = Config.local()
+        camera = make_camera(cfg)
+        t0 = time.monotonic()
+        vision = Vision(cfg, camera)
+        print(f"detector {vision.detector.name} loaded in {time.monotonic() - t0:.1f} s; items {vision.names}")
+        if args.capture:
+            print(f"intent: {intent_of(args.capture)}; looking for: {vision.targets(args.capture) or 'nothing named'}")
+            if intent_of(args.capture) == "ask":
+                print("a question: the device takes no photo")
+                return
+            t0 = time.monotonic()
+            frame, hit, attempts = vision.photo_for(args.capture, on_retry=lambda n: print(f"  retry {n}"))
+            Path("capture.jpg").write_bytes(jpeg_bytes(frame))
+            print(f"{'found ' + hit.label + f' ({hit.conf:.2f})' if hit else 'not found'} after {attempts} attempt(s) "
+                  f"in {time.monotonic() - t0:.1f} s; saved capture.jpg")
+        else:
+            deadline = time.monotonic() + args.watch
+            c0 = time.process_time()
+            vision.start_background(dry_run=True, stop=lambda: time.monotonic() >= deadline).join(args.watch + 30)
+            print(json.dumps({**vision.stats, "cpu_s": round(time.process_time() - c0, 1), "seconds": args.watch}))
         return
 
     cfg = Config.from_env()

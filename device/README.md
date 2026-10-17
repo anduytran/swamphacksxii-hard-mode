@@ -102,6 +102,53 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
    ```
    Logs: `journalctl -u lastscene-device -f`.
 
+## Item detection on the device
+
+With `VISION_DIR` set, the service also runs the vision pipeline's detector (`vision/lastscene_pipeline`, the
+INT8 model from `train`/`fetch` under `LASTSCENE_DATA/models/current`), sharing one camera and one detector:
+
+1. **You speak.** Wake phrase or REMEMBER button, then the words are transcribed on the Pi.
+2. **A question** ("Where are my keys?") is sent with no photo. The device uses the server's own rules
+   (`backend/app/intent.py`, mirrored and tested in `test_device.py`), because the server rejects a statement
+   without a photo.
+3. **A statement** ("I'm putting my pin on the desk") gets its photo *after* the words. If it names a taught item
+   (class name, plural, or Teach alias) and the photo doesn't show it at `MIN_CONFIDENCE`, the camera tries
+   `CAPTURE_RETRIES` (3) more times `RETRY_GAP_SECONDS` (1 s) apart, with a short low beep on the first retry
+   ("point me at it"), and sends the first photo that shows it, or the last one. No taught item named: one photo.
+4. **Between conversations**, a frame every `VISION_EVERY` seconds (2) goes to the detector only if the scene
+   changed (`lastscene_pipeline/gated.py`), plus 6 s after a change so a just-placed item is seen at rest, and
+   once a minute regardless. Sightings are posted as observations, as `python -m lastscene_pipeline.detect` does.
+   It pauses while you talk to the device.
+
+Try it without uploading anything (camera + model only):
+```bash
+export VISION_DIR=~/swamphacksxii-hard-mode/vision LASTSCENE_DATA=~/lastscene-data
+python3 lastscene_device.py --capture "I'm putting my pin on the desk"   # retries, saves capture.jpg
+python3 lastscene_device.py --watch 120                                  # background loop, observations printed
+```
+
+**Measured on a Pi Zero 2 W** (Oct 17, 2026; USB camera, 1-class Pin model, YOLO11s INT8 at 320 px):
+
+| | |
+|---|---|
+| Statement photo, item not in view (1 + 3 retries) | 6.0–6.5 s, then the last photo is sent |
+| One attempt (grab + detect) | ~0.75 s |
+| Questions | no photo, no detector run |
+| Detector, alone / with speech-to-text in the same process | 0.64 s / 1.13 s a frame (paused during conversations: 0.69 s) |
+| Speech-to-text, 3.5 s clip, detector paused vs running | 2.8 s vs 4.5–5.4 s |
+| Peak memory, one process (speech-to-text + detector) | 250–290 MB (two processes: ~355 MB) |
+| Frame change every 2 s: still view / busy room | 0.3–1.4 / 2.4–44 (median 9.7); the gate threshold is 4 |
+| Background loop, 2 min facing a busy room | 56 of 60 frames checked, ~0.9 CPU cores, 50 °C |
+
+- **USB camera:** the frame waiting in the driver's buffer is discarded before each photo. With the detector
+  running between reads, the Zero 2 W's USB controller drops camera data: 19 of 25 MJPEG 1280x720 frames came out
+  corrupt (torn bands; uncompressed frames tear too, silently). Reading the next frame instead: 0 of 25, ~90 ms.
+- **ONNX Runtime** runs without spin-waiting on boards under 1 GB (`runtime.load_detector`'s low-memory mode):
+  4% slower alone (0.64 vs 0.615 s), but 21% less CPU, which is what speech-to-text needs. FP32 was slower
+  (0.72 s), 3 threads slower (0.74 s), and the pip wheel has no XNNPACK provider.
+- **Memory is the limit:** free memory dipped to 16–67 MB during a 15 s clip with both models loaded. Keep
+  `MAX_RECORD_SECONDS` short, or set `VISION_DIR=` empty on a board that also runs other things.
+
 ## Pairing and location
 
 - **Pairing code.** Generate one per device and put it on the case label with the Client ID; set it as `PAIRING_CODE` in `/etc/lastscene/device.env`. The device sends it with every request; a caregiver enters the Client ID + code on the dashboard's **Household** page to add the wearable to their household.
@@ -111,7 +158,7 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
 ## Using it
 
 - **Say "Last Scene"**, wait for the beep, then speak: "I'm putting my keys on the counter" is saved with a photo (high beep), "Where are my keys?" is answered out loud. It records until you stop talking (up to `WAKE_MAX_SECONDS`). Audio stays on the Pi until the phrase is heard; only what's said after the beep is sent (as text, with `STT_ENGINE` set). If it triggers by mistake, raise `WAKE_THRESHOLD`; if it misses you, lower it. `WAKE_WORD` points at the "Last Scene" model (training: [wake/README.md](wake/README.md)); `WAKE_WORD=hey_jarvis` works right away for testing, with "Hey Jarvis" as the phrase.
-- **Hold REMEMBER**, say where you're putting something ("I'm putting my keys on the counter"), release. It takes a photo when you press, records while held, and uploads when you let go. The LED is solid while recording and blinks while sending.
+- **Hold REMEMBER**, say where you're putting something ("I'm putting my keys on the counter"), release. It takes a photo when you press (with item detection on: after the words, retried until the item you named is in it), records while held, and uploads when you let go. The LED is solid while recording and blinks while sending.
 - **Hold ASK**, ask ("Where are my keys?"), release. The answer plays through the speaker.
 - With no Wi-Fi, memories are kept in `/var/lib/lastscene/spool` and uploaded automatically once it's back. Questions need a connection.
 
