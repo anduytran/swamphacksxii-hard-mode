@@ -6,6 +6,7 @@ VISION_PROVIDER).
 """
 
 import io
+import re
 import wave
 
 from google import genai
@@ -16,6 +17,32 @@ from .config import Settings
 
 # Gemini TTS returns raw 16-bit mono PCM at 24 kHz; we wrap it as WAV for the wearable.
 TTS_SAMPLE_RATE = 24000
+
+
+def least_thinking(model: str) -> types.ThinkingConfig | None:
+    """The least thinking `model` accepts, for calls where the wearer is waiting.
+
+    None means leave the model's default: it doesn't think, or we don't know it.
+    Gemini 3 takes thinking_level (Flash goes down to MINIMAL, Pro only to LOW); 2.5 takes
+    thinking_budget in tokens (Flash can turn it off with 0, Pro needs at least 128,
+    Flash-Lite doesn't think unless asked).
+    """
+    name = model.lower().removeprefix("models/")
+    if m := re.match(r"gemini-(\d+)(?:\.\d+)?-", name):
+        if int(m.group(1)) >= 3:
+            return types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW if "pro" in name else types.ThinkingLevel.MINIMAL)
+    if name.startswith("gemini-2.5-flash-lite"):
+        return None
+    if name.startswith("gemini-2.5-flash"):
+        return types.ThinkingConfig(thinking_budget=0)
+    if name.startswith("gemini-2.5-pro"):
+        return types.ThinkingConfig(thinking_budget=128)
+    return None
+
+
+def _embed_input(text: str, query: bool) -> str:
+    # gemini-embedding-2 has no task_type; it uses these prefixes instead.
+    return f"task: search result | query: {text}" if query else f"title: none | text: {text}"
 
 
 class GeminiAI:
@@ -35,24 +62,38 @@ class GeminiAI:
         return (response.text or "").strip()
 
     async def embed(self, text: str, *, query: bool) -> list[float]:
-        # gemini-embedding-2 has no task_type; it uses these prefixes instead.
-        content = f"task: search result | query: {text}" if query else f"title: none | text: {text}"
+        [embedding] = await self.embed_many([text], query=query)
+        return embedding
+
+    async def embed_many(self, texts: list[str], *, query: bool = False) -> list[list[float]]:
+        """One batchEmbedContents request for all of them, one vector per text.
+
+        Each text goes in its own Content: the SDK merges a plain list of strings into a
+        single Content for gemini-embedding-2, which would give one vector for all of them.
+        """
         result = await self.client.aio.models.embed_content(
             model=self.s.gemini_embedding_model,
-            contents=content,
+            contents=[types.Content(role="user", parts=[types.Part(text=_embed_input(t, query))]) for t in texts],
             config=types.EmbedContentConfig(output_dimensionality=self.s.embedding_dimensions),
         )
-        return list(result.embeddings[0].values)
+        if len(result.embeddings) != len(texts):
+            raise ValueError(f"Asked for {len(texts)} embeddings, got {len(result.embeddings)}")
+        return [list(e.values) for e in result.embeddings]
 
-    async def generate(self, system: str, prompt: str) -> str:
+    def _thinking(self, fast: bool) -> types.ThinkingConfig | None:
+        return least_thinking(self.s.gemini_model) if fast else None
+
+    async def generate(self, system: str, prompt: str, *, fast: bool = False) -> str:
         response = await self.client.aio.models.generate_content(
             model=self.s.gemini_model,
             contents=prompt,
-            config=types.GenerateContentConfig(system_instruction=system),
+            config=types.GenerateContentConfig(system_instruction=system, thinking_config=self._thinking(fast)),
         )
         return (response.text or "").strip()
 
-    async def generate_json(self, system: str, contents: list, schema: type[BaseModel]) -> BaseModel | None:
+    async def generate_json(
+        self, system: str, contents: list, schema: type[BaseModel], *, fast: bool = False
+    ) -> BaseModel | None:
         response = await self.client.aio.models.generate_content(
             model=self.s.gemini_model,
             contents=contents,
@@ -60,6 +101,7 @@ class GeminiAI:
                 system_instruction=system,
                 response_mime_type="application/json",
                 response_schema=schema,
+                thinking_config=self._thinking(fast),
             ),
         )
         return response.parsed

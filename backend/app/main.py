@@ -15,6 +15,13 @@ from .routers import admin, dashboard, households, images, memory, observations,
 # The built dashboard (cd web && npm run build; Vercel builds it during each deploy).
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "web" / "dist"
 log = logging.getLogger("lastscene")
+# Our own INFO lines (e.g. the per-stage timings of each spoken answer) reach the host's
+# logs; nothing configures logging on Vercel, where they'd otherwise be dropped.
+if not log.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    log.addHandler(_handler)
+    log.setLevel(logging.INFO)
 
 
 def missing_settings(s: Settings) -> list[str]:

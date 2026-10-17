@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     # integration contract proposes 720 (30 days) once the team agrees.
     last_seen_retention_hours: int = 72
 
+    # Answer "where are my keys?" from a template when one memory clearly has the item and
+    # its place, skipping the language model (the wearer then only waits for speech).
+    template_answers: bool = True
+
     # Run item extraction + photo description after the device's response (True) or
     # before it (False). Use False on serverless hosts that may freeze after responding.
     enrich_in_background: bool = True
