@@ -94,6 +94,7 @@ export interface MapItem {
   name: string;
   room: string;
   room_name: string;
+  room_source?: "photo" | "words"; // photo: the room the camera showed; words: matched from what was said
   location: string | null;
   last_seen: string;
   mentions: number;

@@ -40,6 +40,7 @@ class FakeDB:
         self.queries: list[QueryRecord] = []
         self.chunks: list[ChunkHit] = []
         self.query_devices: list[str] = []
+        self.room_ids: dict[str, str | None] = {}  # memory_logs.room_id
 
     async def insert(self, device_id, transcript, image, image_type):
         rec = MemoryRecord(str(len(self.rows)), device_id, datetime.now(timezone.utc), transcript, image is not None)
@@ -109,10 +110,12 @@ class FakeDB:
     async def add_items(self, memory_id, items):
         rec = next(r for r in self.rows if r.id == memory_id)
         for name, location in items:
-            self.items.append(ItemSighting(name, location, rec.id, rec.created_at, rec.transcript, rec.has_image, rec.scene))
+            self.items.append(ItemSighting(name, location, rec.id, rec.created_at, rec.transcript, rec.has_image, rec.scene,
+                                           self.room_ids.get(rec.id)))
 
-    async def set_scene(self, memory_id, scene):
+    async def set_scene(self, memory_id, scene, room_id=None):
         next(r for r in self.rows if r.id == memory_id).scene = scene
+        self.room_ids[memory_id] = room_id
 
     async def delete_older_than(self, hours):
         self.purged_hours = hours
@@ -469,6 +472,25 @@ def test_home_map_places_items_in_rooms_and_traces_moves(client):
     assert trip["name"] == "keys" and trip["rooms"] == ["Kitchen", "Hallway"]
     assert len(trip["path"]) == len(trip["timestamps"]) > 2
     assert trip["timestamps"] == sorted(trip["timestamps"])
+
+
+def test_home_map_prefers_the_room_the_photo_showed(client):
+    ai, db = client.app_state.ai, client.app_state.db
+    ai.scene = SceneText("Keys on a bed.", [ItemMention("keys", "kitchen counter")], "", room="bedroom")
+    log(client, "I am putting my keys on the kitchen counter")  # the words say kitchen, the photo bedroom
+    ai.scene = SceneText("A dark photo.", [ItemMention("wallet", "kitchen counter")], "", room=None)
+    log(client, "I am putting my wallet on the kitchen counter")  # photo can't tell: the words decide
+    ai.scene = SceneText("A ballroom.", [ItemMention("phone", "hallway table")], "", room="grand_ballroom")
+    log(client, "I am putting my phone on the hallway table")  # a Reitz Union room on the home plan: ignored
+    ai.scene = None
+    log(client, "I am putting my glasses on the nightstand")  # no photo text at all
+
+    items = {i["name"]: i for i in client.get("/api/v1/dashboard/map", headers=CAREGIVER).json()["items"]}
+    assert db.room_ids == {"0": "bedroom", "1": None, "2": "grand_ballroom"}
+    assert (items["keys"]["room"], items["keys"]["room_source"]) == ("bedroom", "photo")
+    assert (items["wallet"]["room"], items["wallet"]["room_source"]) == ("kitchen", "words")
+    assert (items["phone"]["room"], items["phone"]["room_source"]) == ("hallway", "words")
+    assert (items["glasses"]["room"], items["glasses"]["room_source"]) == ("bedroom", "words")
 
 
 def test_dashboard_only_shows_the_callers_household(client):

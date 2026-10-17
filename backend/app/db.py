@@ -43,6 +43,7 @@ class ItemSighting:
     transcript: str
     has_image: bool
     scene: str | None = None
+    room_id: str | None = None  # the floor plan room the photo showed (describe_scene), if any
 
 
 @dataclass
@@ -111,6 +112,7 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
             await conn.execute("ALTER TABLE memory_logs ADD COLUMN IF NOT EXISTS image bytea")
             await conn.execute("ALTER TABLE memory_logs ADD COLUMN IF NOT EXISTS image_type text")
             await conn.execute("ALTER TABLE memory_logs ADD COLUMN IF NOT EXISTS scene text")
+            await conn.execute("ALTER TABLE memory_logs ADD COLUMN IF NOT EXISTS room_id text")
             # Retrieval moved to memory_chunks; the per-memory vector is no longer written.
             await conn.execute("ALTER TABLE memory_logs ALTER COLUMN embedding DROP NOT NULL")
             await conn.execute(
@@ -301,9 +303,12 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
         )
         return (row["image"], row["image_type"] or "image/jpeg") if row else None
 
-    async def set_scene(self, memory_id: str, scene: str) -> None:
-        """What the camera saw, for the dashboard (its chunk is what search uses)."""
-        await self.pool.execute("UPDATE memory_logs SET scene = $2 WHERE id = $1::uuid", memory_id, scene)
+    async def set_scene(self, memory_id: str, scene: str, room_id: str | None = None) -> None:
+        """What the camera saw, for the dashboard (its chunk is what search uses), and
+        the floor plan room it showed, for the map."""
+        await self.pool.execute(
+            "UPDATE memory_logs SET scene = $2, room_id = $3 WHERE id = $1::uuid", memory_id, scene, room_id
+        )
 
     async def add_items(self, memory_id: str, items: list[tuple[str, str]]) -> None:
         if items:
@@ -316,7 +321,7 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
         """Every item mention in the window, newest first."""
         rows = await self.pool.fetch(
             """
-            SELECT i.name, i.location, m.id AS memory_id, m.created_at, m.transcript, m.scene,
+            SELECT i.name, i.location, m.id AS memory_id, m.created_at, m.transcript, m.scene, m.room_id,
                    m.image IS NOT NULL AS has_image
             FROM memory_items i
             JOIN memory_logs m ON m.id = i.memory_id
@@ -336,6 +341,7 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
                 transcript=r["transcript"],
                 has_image=r["has_image"],
                 scene=r["scene"],
+                room_id=r["room_id"],
             )
             for r in rows
         ]

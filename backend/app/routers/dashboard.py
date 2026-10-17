@@ -11,7 +11,8 @@ from ..auth import Principal, require_caregiver
 from ..config import Settings, get_settings
 from ..db import ACTIVITY_COUNTS_DAYS, ItemSighting, MemoryDB, QueryRecord
 from ..deps import get_ai, get_db
-from ..home_map import floor_plan, room_for
+from ..home_map import FloorPlan, floor_plan, room_for
+from ..rooms import Room
 from ..geo import home_place_id, place_label
 from ..pipeline import retrieve
 
@@ -296,6 +297,13 @@ def _curve(a: list[float], b: list[float], steps: int = 12) -> list[list[float]]
     ]
 
 
+def room_and_source(s: ItemSighting, plan: FloorPlan) -> tuple[Room, str]:
+    """The room the photo showed ("photo"), else the one the words name ("words"). A room
+    id from another floor plan (FLOOR_PLAN changed since) is ignored."""
+    photo = next((r for r in plan.rooms if r.id == s.room_id), None) if s.room_id else None
+    return (photo, "photo") if photo else (room_for(s.location, s.scene, plan=plan), "words")
+
+
 @router.get("/map")
 async def home_map(
     devices: list[str] = Depends(household_devices),
@@ -313,7 +321,7 @@ async def home_map(
 
     plan = floor_plan(settings.floor_plan)
     rooms = {r.id: {"id": r.id, "name": r.name, "kind": r.kind, "level": r.level, "polygon": r.polygon, "putdowns": 0, "lost": 0, "items": []} for r in (*plan.rooms, plan.unknown)}
-    places = {name: [room_for(s.location, s.scene, plan=plan) for s in seen] for name, seen in history.items()}
+    places = {name: [room_and_source(s, plan)[0] for s in seen] for name, seen in history.items()}
     for name, rooms_visited in places.items():
         here = rooms_visited[-1]
         for room in rooms_visited:
@@ -337,6 +345,7 @@ async def home_map(
                 "name": name,
                 "room": here.id,
                 "room_name": here.name,
+                "room_source": room_and_source(latest, plan)[1],
                 "location": latest.location,
                 "last_seen": latest.created_at.isoformat(),
                 "mentions": len(seen),
