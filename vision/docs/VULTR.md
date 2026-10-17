@@ -5,8 +5,14 @@ LastScene API, and destroys the server. Wearables pick the model up with `python
 
 ## One-time setup (you, in the Vultr console)
 
-1. **Account → API → Enable API**, then **Access Control**: allow only your own IP address (or your
-   phone hotspot's). The key controls the whole account, so a leaked key is useless from anywhere else.
+1. **Account → API → Enable API**, then **Access Control**: allow only your own IPv4 address (or your
+   phone hotspot's; `curl -4 https://ifconfig.me` shows it). The key controls the whole account, so a
+   leaked key is useless from anywhere else.
+   Vultr checks the address each request actually comes from, and on a network with IPv6 that can be an
+   IPv6 address even though your IPv4 one is allowed (seen Oct 17 on a Verizon hotspot: `401 Unauthorized IP
+   address: 2600:1006:...`). So the runner talks to Vultr over IPv4 only. On a network without IPv4, set
+   `VULTR_IPV4_ONLY=0` in the env file and allow the IPv6 address instead. If Vultr still refuses, the error
+   names the address it saw: add that one. A hotspot's address can change when it reconnects.
 2. Put the key in your env file (`vision/.env`, from `.env.example`; gitignored) as `VULTR_API_KEY=...`, next
    to the pipeline's device credentials (as for `sync`): `API_URL`, `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`,
    `DEVICE_CLIENT_ID`, `DEVICE_CLIENT_SECRET`, `PAIRING_CODE`. Keep it readable only by you (`chmod 600 .env`).

@@ -6,7 +6,8 @@
 
 Needs the pipeline's device credentials and VULTR_API_KEY, both in the --env-file (kept out of git); an
 older ~/.lastscene/vultr.env (--vultr-env) still works. Turn on Vultr's API access control and allow only
-your own IP for that key: it controls the whole account and is never sent to the server.
+your own IPv4 address for that key: it controls the whole account and is never sent to the server. The
+Vultr calls go over IPv4 only (VULTR_IPV4_ONLY=0 lets them use IPv6, for a network without IPv4).
 
 Guardrails, all checked before a server is created (any one failing means nothing is created):
   * not on or after the day before the credit expires (VULTR_CREDIT_EXPIRES, default 2026-11-17)
@@ -25,13 +26,18 @@ import argparse
 import base64
 import math
 import os
+import re
 import signal
+import socket
 import sys
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3 import HTTPSConnectionPool
+from urllib3.connection import HTTPSConnection
 
 from lastscene_pipeline import EXIT_CONFIG, EXIT_NETWORK, EXIT_NOTHING, EXIT_OK
 from lastscene_pipeline.common import Api, PipelineError, load_env_file, run_main
@@ -71,13 +77,52 @@ class Guardrails:
         return worst
 
 
-class Vultr:
-    """The few Vultr API v2 calls this needs. The key is only ever sent to api.vultr.com."""
+class _IPv4HTTPSConnection(HTTPSConnection):
+    """Connects to the host's IPv4 address only. urllib3 uses IPv6 too whenever the machine has it, and
+    Vultr's API access control checks the address a request actually comes from: on Oct 17 a Pi on a
+    Verizon hotspot got 401 "Unauthorized IP address: 2600:1006:..." although its IPv4 address was allowed."""
 
-    def __init__(self, key: str, session=None, timeout: float = 30):
+    def _new_conn(self):
+        host = self._dns_host
+        self._dns_host = socket.getaddrinfo(host, self.port, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+        try:
+            return super()._new_conn()
+        finally:
+            self._dns_host = host  # TLS still checks the certificate against the hostname
+
+
+class _IPv4HTTPSPool(HTTPSConnectionPool):
+    ConnectionCls = _IPv4HTTPSConnection
+
+
+class IPv4OnlyAdapter(HTTPAdapter):
+    """For the Vultr session alone: urllib3's global settings, and so the LastScene API calls, stay as they are."""
+
+    def init_poolmanager(self, *args, **kwargs):
+        super().init_poolmanager(*args, **kwargs)
+        self.poolmanager.pool_classes_by_scheme = {**self.poolmanager.pool_classes_by_scheme, "https": _IPv4HTTPSPool}
+
+
+def _not_allowed(method: str, path: str, text: str) -> str:
+    """Vultr's 401 for a request from an address that isn't on the key's access-control list."""
+    seen = re.search(r"address:?\s*([0-9A-Fa-f:.]{3,})", text)
+    where = "Account -> API -> Access Control in the Vultr console"
+    if seen:
+        address = seen[1].rstrip(".")
+        return f"Vultr {method} {path}: 401, the API key isn't allowed from {address} (the address Vultr saw); add it under {where}"
+    return f"Vultr {method} {path}: 401 {text[:200]}; add this machine's address under {where}"
+
+
+class Vultr:
+    """The few Vultr API v2 calls this needs. The key is only ever sent to api.vultr.com, over IPv4 unless
+    ipv4_only is off."""
+
+    def __init__(self, key: str, session=None, timeout: float = 30, ipv4_only: bool = True):
         if not key:
             raise PipelineError(EXIT_CONFIG, "VULTR_API_KEY is not set (add it to the --env-file)")
         self.http = session or requests.Session()
+        if ipv4_only and session is None:
+            self.http.mount("https://", IPv4OnlyAdapter())
         self.headers = {"Authorization": f"Bearer {key}"}
         self.timeout = timeout
 
@@ -87,6 +132,8 @@ class Vultr:
         except requests.RequestException as exc:
             raise PipelineError(EXIT_NETWORK, f"Vultr {method} {path}: {type(exc).__name__}") from None
         if r.status_code not in ok:
+            if r.status_code == 401 and "unauthorized ip address" in r.text.lower():
+                raise PipelineError(EXIT_CONFIG, _not_allowed(method, path, r.text))
             raise PipelineError(EXIT_NETWORK if r.status_code >= 500 or r.status_code == 429 else EXIT_CONFIG,
                                 f"Vultr {method} {path}: {r.status_code} {r.text[:200]}")
         return r.json() if r.content else {}
@@ -311,7 +358,8 @@ def main():
         load_env_file(args.env_file)
     if Path(args.vultr_env).is_file():
         load_env_file(args.vultr_env)
-    runner = Runner(Vultr(os.environ.get("VULTR_API_KEY", "")), Api() if args.command == "run" else None, Guardrails())
+    vultr = Vultr(os.environ.get("VULTR_API_KEY", ""), ipv4_only=os.environ.get("VULTR_IPV4_ONLY") != "0")
+    runner = Runner(vultr, Api() if args.command == "run" else None, Guardrails())
     if args.command == "status":
         return runner.status()
     if args.command == "cleanup":
