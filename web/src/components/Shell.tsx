@@ -6,6 +6,7 @@ import { useAuth } from "../lib/auth";
 import { initials } from "../lib/format";
 import { Dialog } from "./Dialog";
 import { DisplayButton } from "./DisplaySettings";
+import { Navbar } from "../pages/landing/Navbar";
 import { BrandMark, Icon, type IconName } from "./Icons";
 
 interface NavItem {
@@ -43,11 +44,13 @@ const NAV: { group: string; items: NavItem[] }[] = [
 ];
 
 export function Header({ page }: { page: Page }) {
-  const { signedIn, user, login, logout } = useAuth();
+  const { signedIn, user, logout } = useAuth();
   const { refresh } = useApp();
   const [moreOpen, setMoreOpen] = useState(false);
   const name = user?.name || user?.email || "";
   const current = (p: Page) => (p === page ? ("page" as const) : undefined);
+
+  if (!signedIn) return <Navbar />;
 
   return (
     <header className="site-header">
@@ -55,18 +58,6 @@ export function Header({ page }: { page: Page }) {
         <BrandMark />
         <span>LastScene</span>
       </a>
-
-      {!signedIn && (
-        <div className="guest-actions">
-          <a className="nav-link" href="#/public">
-            Public map
-          </a>
-          <DisplayButton />
-          <button id="login-header" type="button" className="pill" onClick={login}>
-            Log in
-          </button>
-        </div>
-      )}
 
       {signedIn && (
         <>
