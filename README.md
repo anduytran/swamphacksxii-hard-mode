@@ -12,7 +12,7 @@ backend/          FastAPI service
   app/signing.py      short-lived signed photo links for the dashboard
   app/ai.py           every AI stage, routed per stage to Gemini (default), OpenAI or Claude
   app/gemini.py       Gemini: speech-to-text, embeddings, answers, extraction, vision, TTS
-  app/routers/        /api/v1/memory/{log,query}, /api/v1/dashboard/history, /api/v1/images/{id}
+  app/routers/        memory, observations (vision pipeline), dashboard, households, public, images, admin (see API)
   app/retention.py    72h purge job (run from cron)
   scripts/device_sim.py  pretend-wearable client for end-to-end testing
 frontend/         plain HTML/JS caregiver dashboard: Items, Timeline, Insights pages (auth0-spa-js)
@@ -23,28 +23,93 @@ deploy/           systemd unit + crontab for the Vultr instance
 
 ## API
 
-| Endpoint | Auth | Body | Returns |
+Base URL `https://www.lastscene.photo` (the bare domain redirects there). Interactive docs at `/docs`, schema at `/openapi.json`.
+
+Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, scope `write:memories`), optionally with an `X-Pairing-Code` header so a caregiver can claim the device. **caregiver** = the dashboard user's Auth0 token. **owner** / **member** = caregiver who owns / belongs to that household. Everything a device or caregiver sees is scoped to its household.
+
+### Wearable (device)
+
+| Endpoint | Body | Returns |
+|---|---|---|
+| `POST /api/v1/memory/log` | multipart `audio`, `image` (JPEG/PNG); optional location `wifi` (JSON `[{bssid, signal}]`) or `lat`, `lng`, `accuracy_m` | `{id, timestamp, transcript}` |
+| `POST /api/v1/memory/query` | multipart `audio` (+ same optional location fields) | spoken answer (`audio/wav`); `X-Question` / `X-Answer` headers hold the URL-encoded text |
+
+### Vision pipeline (device)
+
+| Endpoint | Body | Returns |
+|---|---|---|
+| `POST /api/v1/observations` | multipart `image` (uncropped frame) + `observation` (JSON string, below) + optional `audio` | 201 `{memory_id, items, duplicate: false}` |
+| `DELETE /api/v1/observations/{observation_id}` | – | `{deleted, items}`; each item's last-seen rolls back to its previous sighting |
+| `GET /api/v1/items/last-seen` | – | `{items: [LastSeen, …]}` for the household |
+| `GET /api/v1/items/{label}/last-seen` | – | one `LastSeen` (label is case-insensitive), 404 if never seen |
+| `POST /api/v1/items/{label}/found` | optional `{found_at, observation_id}` | `{label, found_at}` |
+
+`observation` JSON:
+
+```json
+{
+  "observation_id": "6f1c…-uuid",
+  "captured_at": "2026-10-17T14:03:12.481Z",
+  "source": "auto",
+  "pipeline": {"name": "lastscene-vision", "version": "0.3.0", "detector": "yolo-world", "matcher": "orb"},
+  "image_size": {"width": 1280, "height": 720},
+  "scene": {"id": "kitchen-01", "label": "kitchen counter", "match_score": 0.82},
+  "objects": [
+    {"label": "keys", "confidence": 0.71, "bbox": [0.42, 0.55, 0.08, 0.06], "track_id": "keys-3", "event": "placed"}
+  ]
+}
+```
+
+- `captured_at` must carry a timezone; `bbox` is normalised `[x, y, w, h]` (top-left origin) and must lie inside the frame; `event` is one of `placed`, `seen`, `moved`, `picked_up`.
+- Status codes: 201 stored · 200 same `observation_id` again from the same device (`duplicate: true`, safe to retry) · 409 that id belongs to another device · 422 invalid JSON/fields, no object ≥ `MIN_DETECTION_CONFIDENCE`, or `captured_at` > 5 min ahead · 429 more than one observation per `OBSERVATION_MIN_INTERVAL_SECONDS` (has `Retry-After`).
+
+`LastSeen`:
+
+```json
+{
+  "label": "keys", "memory_id": "…", "observation_id": "…", "source": "auto",
+  "captured_at": "2026-10-17T14:03:12.481000+00:00",
+  "scene": {"id": "kitchen-01", "label": "kitchen counter"},
+  "bbox": [0.42, 0.55, 0.08, 0.06], "confidence": 0.71, "maybe": false,
+  "image_size": {"width": 1280, "height": 720},
+  "image_url": "https://www.lastscene.photo/api/v1/images/ls-…?exp=…&sig=…",
+  "found_at": null
+}
+```
+
+### Dashboard (caregiver)
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v1/dashboard/history` | `[{id, device_id, timestamp, source, transcript, scene, summary, detections, image_url, items}]`, newest first |
+| `GET /api/v1/dashboard/items` | `{window_hours, items}`: per item its last location, photo + `detection` box, earlier spots, mentions, times asked |
+| `GET /api/v1/dashboard/insights` | counts, most-asked / most-logged items, unanswered questions, recent Q&A, activity |
+| `GET /api/v1/dashboard/summary` | `{summary}`: 2–3 sentences from Gemini (cached 10 min) |
+| `GET /api/v1/dashboard/search?q=` | `{query, results}`: hybrid vector + keyword retrieval with per-chunk match explanations |
+| `GET /api/v1/dashboard/map` | house floor plan: rooms, item spots, movement trips |
+| `GET /api/v1/dashboard/places` | the household's places (private included) and located memories |
+
+### Households (caregiver)
+
+| Endpoint | Who | Body | Returns |
 |---|---|---|---|
-| `POST /api/v1/memory/log` | device M2M token with `write:memories` | multipart `audio`, `image` (JPEG) | `{id, timestamp, transcript}` |
-| `POST /api/v1/memory/query` | device M2M token with `write:memories` | multipart `audio` | spoken answer (`audio/wav` by default); `X-Question` / `X-Answer` headers hold the URL-encoded text |
-| `GET /api/v1/dashboard/history` | caregiver user token | – | `[{id, device_id, timestamp, transcript, image_url}]`, last 24h, newest first |
-| `GET /api/v1/dashboard/items` | caregiver user token | – | one entry per item: last location, photo, earlier spots, times asked (72h) |
-| `GET /api/v1/dashboard/insights` | caregiver user token | – | counts, most-asked / most-logged items, questions about items never logged, activity, recent Q&A (72h) |
-| `GET /api/v1/dashboard/summary` | caregiver user token | – | `{summary}`: 2–3 sentences written by Gemini from the insights (cached 10 min) |
-| `GET /api/v1/admin/purge` | `Authorization: Bearer $CRON_SECRET` | – | runs the 72h purge (Vercel Cron, daily 03:15 UTC) |
-| `GET /api/v1/dashboard/map` | caregiver | – | House floor plan: rooms, item spots, movement trips |
-| `GET /api/v1/dashboard/places` | caregiver | – | The household's places (private included) and located memories |
-| `GET /api/v1/dashboard/search?q=` | caregiver | – | Hybrid retrieval with match explanations (one embedding call) |
-| `GET /api/v1/households/me` · `POST /api/v1/households` | caregiver | `{name}` | Households you belong to, with members, devices and places · create one |
-| `POST /api/v1/households/{id}/devices` | owner | `{client_id, pairing_code, label}` | Claim a wearable; places its earlier memories |
-| `POST /api/v1/households/{id}/invites` · `POST /api/v1/invites/accept` | owner · caregiver | – · `{code}` | One-use family invite |
-| `PATCH /api/v1/households/{id}` · `.../places/{place}` | owner · member | `{share_public}` · `{name, kind}` | Public-map opt-in · name a place, mark it public/private |
-| `GET /api/v1/public/lost-map` | none | – | Anonymous public cells (k ≥ 3 households) |
-| `POST /api/v1/observations` | device token | multipart `image` + `observation` JSON (+ optional `audio`) | Automatic memory from the vision pipeline: 201 `{memory_id, items}`; same `observation_id` again → 200 |
-| `DELETE /api/v1/observations/{id}` | device token | – | Undo a wrong detection; last-seen rolls back |
-| `GET /api/v1/items/last-seen` · `/items/{label}/last-seen` | device token | – | Last-seen frame (signed link), box, scene, time per item in the household |
-| `POST /api/v1/items/{label}/found` | device token | `{found_at?}` | Mark an item found |
-| `GET /api/v1/images/{id}?exp=…&sig=…` | signed link from the dashboard endpoints (15 min) | – | the photo |
+| `GET /api/v1/households/me` | caregiver | – | `{households}` with members, devices, places |
+| `POST /api/v1/households` | caregiver | `{name, display_name?}` | `{id}` |
+| `POST /api/v1/households/{id}/devices` | owner | `{client_id, pairing_code, label?}` | `{device_id, memories_placed}` |
+| `POST /api/v1/households/{id}/invites` | owner | – | `{code, expires_in_hours}` (one use) |
+| `POST /api/v1/invites/accept` | caregiver | `{code}` | `{household_id}` |
+| `PATCH /api/v1/households/{id}` | owner | `{share_public}` | public-map opt-in |
+| `PATCH /api/v1/households/{id}/places/{place_id}` | member | `{name?, kind?}` (`kind`: `private` or `public`) | `{places}` |
+
+### Public, photos and ops
+
+| Endpoint | Auth | Returns |
+|---|---|---|
+| `GET /api/v1/public/lost-map` | none | anonymous ~100 m cells (k ≥ 3 households) |
+| `GET /api/v1/images/{id}?exp=…&sig=…` | signed link from the endpoints above (15 min) | the photo (`ls-…` ids are last-seen frames) |
+| `GET /api/v1/admin/purge` | `Authorization: Bearer $CRON_SECRET` | `{deleted, retention_hours, last_seen_deleted}` (Vercel Cron, daily 03:15 UTC) |
+| `GET /healthz` | none | `{ok, missing_settings}` |
+| `GET /config.json` | none | public Auth0 values for the dashboard |
 
 Queries only search the calling device's own memories from the last 72h (top 3 by cosine distance).
 
