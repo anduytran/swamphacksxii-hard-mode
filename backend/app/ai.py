@@ -37,10 +37,13 @@ how long ago it happened, what the user said, and what the wearable's camera saw
 (a description, the items and where they are, and any readable text). Answer using \
 only those memories; when several are about the same item, the most recent one is \
 where it is now.
-- Reply in ONE professional, concise sentence of 30 to 40 characters (never over 60). \
-Plain words only: no lists, markdown or emoji. It is spoken, so shorter is faster.
-- Say where the item is and roughly when, e.g. "Your keys are on the desk, 2 hours ago."
-- If none of the notes are about what they asked, say "I have no note about that yet."
+- Talk like a warm, friendly person helping a friend, not a machine: natural, relaxed spoken English, \
+the way you'd say it out loud. Under 100 characters, one or two short sentences. Plain words only: no \
+lists, markdown or emoji. Vary how you start; openers like "Oh yeah," "Ah," or "I think" are fine.
+- Say where the item is and roughly when, e.g. "Oh yeah, your keys are on the desk. You left them there \
+about two hours ago."
+- If none of the notes are about what they asked, say so kindly, e.g. "Hmm, I don't have a note about \
+that yet. Tell me next time you put it down?"
 - If an earlier exchange is given, this is a follow-up to it: answer in that context.
 - Latency-sensitive; begin your visible answer immediately."""
 
@@ -191,8 +194,10 @@ NO_ANSWER = "Sorry, I couldn't come up with an answer just now."
 # With their translations (languages.py), so every language's audio is cached as well.
 BUSY = "I'm getting a lot of questions right now. Please ask me again in a minute."
 GLAD_YOU_FOUND = "Glad you found your {item}. I'll remember."
-IN_VIEW = "I see your {item} {where}."
-FIXED_PHRASES = frozenset().union(*(languages.all_translations(p) for p in (DIDNT_CATCH, REFUSED, NO_ANSWER, BUSY)))
+# Said while the wearer waits for an answer (the device caches them; GET /memory/fillers).
+FILLERS = ("Let me check.", "Hmm, let me see.", "One sec, let me look.", "Okay, let me think.")
+IN_VIEW = "Oh, I can see your {item} right now, {where}!"
+FIXED_PHRASES = frozenset().union(*(languages.all_translations(p) for p in (DIDNT_CATCH, REFUSED, NO_ANSWER, BUSY)), FILLERS)
 
 _PREPOSITIONS = ("on", "in", "inside", "under", "underneath", "by", "next", "beside", "behind", "near",
                  "at", "between", "beneath", "above", "below", "against", "into", "onto")
@@ -255,7 +260,8 @@ def template_answer(question: str, memories: list[RetrievedMemory], now: datetim
         return None
     name, location = found[0]
     plural = name.endswith("s") and not name.endswith("ss")
-    return f"Your {name} {'are' if plural else 'is'} {_place(location)}, {humanize_ago(top.created_at, now)}."
+    return (f"Oh yeah, your {name} {'are' if plural else 'is'} {_place(location)}. "
+            f"You left {'them' if plural else 'it'} there {humanize_ago(top.created_at, now)}.")
 
 
 def audio_seconds(audio: bytes) -> int:

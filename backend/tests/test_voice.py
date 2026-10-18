@@ -178,7 +178,7 @@ def test_ask_says_so_when_the_item_is_in_view_now(client):  # noqa: F811
     resp = wake_clip(client, "Last Scene, where are my keys", decipher=Command(intent="ask", item="keys"),
                      look=PhotoCheck(visible=True, best_photo=1, where="on the desk next to the laptop."))
     assert resp.headers["x-intent"] == "ask" and resp.headers["x-answered-by"] == "camera"
-    assert unquote(resp.headers["x-answer"]) == "I see your keys on the desk next to the laptop."
+    assert unquote(resp.headers["x-answer"]) == "Oh, I can see your keys right now, on the desk next to the laptop!"
     assert client.app_state.db.rows == []
 
 
@@ -365,7 +365,7 @@ def test_live_shows_each_wake_command_with_its_decision_and_steps(client):  # no
     assert {"transcribe", "decide", "photos", "save"} <= set(saved["steps"]) and saved["total_ms"] >= 0
     (answered,) = live(client, after=2)  # only what's new
     assert answered["outcome"] == "answered" and answered["answered_by"] == "camera"
-    assert answered["answer"] == "I see your keys on the desk."
+    assert answered["answer"] == "Oh, I can see your keys right now, on the desk!"
 
 
 def test_live_shows_the_rules_deciding_and_errors(client):  # noqa: F811
@@ -531,3 +531,13 @@ def test_a_sure_wake_counts_when_speech_to_text_misses_the_phrase(client):  # no
     unsure = client.post("/api/v1/memory/voice", headers=DEVICE, files=files,
                          data={"wake": "true", "client": '{"wake_score": 0.7}'})
     assert unsure.json()["intent"] == "ignored"
+
+
+def test_fillers_are_spoken_phrases_for_the_device_to_keep(client):  # noqa: F811
+    from app.ai import FILLERS
+
+    first = client.get("/api/v1/memory/fillers/0", headers=DEVICE)
+    assert first.status_code == 200 and first.headers["content-type"].startswith("audio/")
+    assert unquote(first.headers["x-text"]) == FILLERS[0]
+    assert client.get(f"/api/v1/memory/fillers/{len(FILLERS)}", headers=DEVICE).status_code == 404
+    assert client.get("/api/v1/memory/fillers/0", headers=CAREGIVER).status_code == 403

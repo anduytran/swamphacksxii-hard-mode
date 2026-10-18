@@ -19,7 +19,7 @@ from fastapi import (
     status,
 )
 
-from ..ai import BUSY, DIDNT_CATCH, GLAD_YOU_FOUND, IN_VIEW, AIServices, served, template_answer
+from ..ai import BUSY, DIDNT_CATCH, FILLERS, GLAD_YOU_FOUND, IN_VIEW, AIServices, served, template_answer
 from ..auth import Principal, require_device
 from ..config import Settings, get_settings
 from ..db import MemoryDB
@@ -635,6 +635,21 @@ async def _run_pending(db: MemoryDB, ai: AIServices, geo: Geolocator, settings: 
     elif pending["type"] == "query":
         await _record_query(db, ai, geo, device_id, pending["question"], pending["answer"], where)
     return done
+
+
+@router.get("/fillers/{index}")
+async def filler(
+    index: int,
+    device: Principal = Depends(require_device),
+    ai: AIServices = Depends(get_ai),
+):
+    """A short phrase ("Let me check.") in the wearable's voice, said while the wearer waits for an answer. The
+    device fetches each once (0, 1, ... until a 404) and keeps it; the text is in X-Text."""
+    if not 0 <= index < len(FILLERS):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No more fillers")
+    text = FILLERS[index]
+    return Response(content=await ai.speak(text), media_type=ai.speech_media_type,
+                    headers={"X-Text": quote(text), "Cache-Control": "private, max-age=86400"})
 
 
 @router.post("/followup/{event_id}")

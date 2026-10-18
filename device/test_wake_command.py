@@ -111,7 +111,7 @@ def test_a_question_takes_no_photos_after_speaking(quiet):
 
 def test_a_false_wake_is_silent(quiet):
     device(Api(answer=("ignored", {"intent": "ignored"})))._wake_command(b"")
-    assert quiet == [dev.tone(880)]  # only the "listening" beep: nothing after a false wake
+    assert quiet == [dev.tone(880), dev.STOPPED]  # listening, stopped; nothing after a false wake
 
 
 def test_answers_and_found_are_played(quiet):
@@ -226,7 +226,7 @@ def test_the_command_sends_the_device_timings(quiet):
     device(api)._wake_command(b"\x07\x00" * 100)
     assert api.client["photos"] == 1 and api.client["ended"] == "silence"
     assert set(api.client) >= {"recorded_s", "wake_score", "preroll_s"}
-    assert api.followed.wait(2) and list(api.followed_up[1]) == ["speech_end", "sent", "reply", "played"]
+    assert api.followed.wait(2) and list(api.followed_up[1]) == ["speech_end", "sent", "stop_beep", "reply", "played"]
 
 
 def test_a_late_beep_doesnt_set_the_peak_and_cut_the_speech_short():
@@ -267,3 +267,42 @@ def test_never_ends_before_3_seconds_even_on_a_drop_or_silence():
     nothing = dev.Endpointer(max_s=5, min_s=3, timeout_s=3)
     feed(nothing, [50] * 60)
     assert nothing.reason == "nothing"
+
+
+class SlowApi(Api):
+    def __init__(self, delay, **kw):
+        super().__init__(**kw)
+        self.delay = delay
+
+    def voice(self, *a, **k):
+        threading.Event().wait(self.delay)
+        return super().voice(*a, **k)
+
+
+def test_a_filler_plays_only_while_a_slow_answer_is_on_its_way(quiet, tmp_path):
+    fillers = dev.Fillers(tmp_path)
+    fillers.clips = [b"RIFFlet-me-check"]
+    slow = device(SlowApi(0.8, answer=("ask", b"RIFFanswer")))
+    slow.fillers = fillers
+    slow._wake_command(b"")
+    assert quiet[-3:] == [dev.STOPPED, b"RIFFlet-me-check", b"RIFFanswer"]
+    quiet.clear()
+    fast = device(Api(answer=("ask", b"RIFFanswer")))
+    fast.fillers = fillers
+    fast._wake_command(b"")
+    assert b"RIFFlet-me-check" not in quiet and quiet[-1] == b"RIFFanswer"
+
+
+def test_fillers_are_fetched_once_and_kept(tmp_path):
+    asked = []
+
+    def fetch(i):
+        asked.append(i)
+        return (f"phrase {i}", b"RIFF%d" % i) if i < 2 else None
+
+    f = dev.Fillers(tmp_path / "fillers", fetch)
+    f.load()
+    assert f.clips == [b"RIFF0", b"RIFF1"] and asked == [0, 1, 2]
+    again = dev.Fillers(tmp_path / "fillers", fetch)
+    again.load()
+    assert again.clips == [b"RIFF0", b"RIFF1"] and asked == [0, 1, 2]  # from the folder, nothing fetched

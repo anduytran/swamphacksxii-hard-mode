@@ -343,6 +343,15 @@ class ApiClient:
         self.last = {"heard": body.get("heard", ""), "steps": steps, "followup": body.get("followup")}
         return body.get("intent", "remember"), body
 
+    def filler(self, index: int) -> tuple[str, bytes] | None:
+        """Filler phrase `index` ("Let me check.") in the wearable's voice: (text, WAV), or None past the last."""
+        resp = self.http.get(f"{self.cfg.api_url}/api/v1/memory/fillers/{index}",
+                             headers={"Authorization": f"Bearer {self.token()}"})
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return unquote(resp.headers.get("x-text", "")), resp.content
+
     def followup(self, event_id, timeline: dict | None = None, jpegs: list[bytes] | None = None) -> dict:
         """Run the slow work a deferred voice command left on the server: save a statement with the photo that
         shows the item (`jpegs`), index it, log a question. With the device's timeline (seconds since the
@@ -532,6 +541,9 @@ def wav_bytes(pcm: bytes, rate: int = RATE) -> bytes:
     return header + b"data" + struct.pack("<I", len(pcm)) + pcm
 
 
+FILLER_AFTER_S = 0.4  # after the "stopped" beep: a filler plays only if the reply isn't in by then
+
+
 def tone(freq: float = 880, ms: int = 120, volume: float = 0.25) -> bytes:
     """A short beep (WAV) that says "I'm listening" / "saved"."""
     n = RATE * ms // 1000
@@ -540,6 +552,14 @@ def tone(freq: float = 880, ms: int = 120, volume: float = 0.25) -> bytes:
         int(32767 * volume * math.sin(2 * math.pi * freq * i / RATE) * min(1, i / fade, (n - i) / fade)) for i in range(n)
     ))
     return wav_bytes(samples.tobytes())
+
+
+def chime(*freqs: float, ms: int = 70) -> bytes:
+    """Short notes one after another, as one WAV (wav_bytes' header is 44 bytes)."""
+    return wav_bytes(b"".join(tone(f, ms)[44:] for f in freqs))
+
+
+STOPPED = chime(784, 523)  # two falling notes: "got it, I stopped listening" (rising 880 = "listening")
 
 
 def rms(frame: bytes) -> float:
@@ -1191,6 +1211,44 @@ def optional_missing(msg: str, *args) -> None:
     log.debug("Details", exc_info=True)
 
 
+class Fillers:
+    """Short spoken phrases ("Let me check.", "Hmm, let me see.") played while the wearer waits for an answer,
+    in the same voice as the answers. Fetched from the server once and kept in `folder`, so they play at once
+    (delete the folder to fetch them again)."""
+
+    def __init__(self, folder: Path, fetch=None):
+        self.folder, self.fetch = folder, fetch
+        self.clips: list[bytes] = sorted_clips(folder)
+
+    def load(self) -> None:
+        if self.clips or self.fetch is None:
+            return
+        try:
+            self.folder.mkdir(parents=True, exist_ok=True)
+            for index in range(20):
+                got = self.fetch(index)
+                if got is None:
+                    break
+                text, wav = got
+                (self.folder / f"{index:02d}.wav").write_bytes(wav)
+                log.info("Filler %d ready: %s", index, text)
+            self.clips = sorted_clips(self.folder)
+        except Exception as exc:  # no fillers is fine: the beeps still say what's happening
+            log.warning("Filler phrases unavailable: %s", exc)
+
+    def pick(self) -> bytes | None:
+        import random
+
+        return random.choice(self.clips) if self.clips else None
+
+
+def sorted_clips(folder: Path) -> list[bytes]:
+    try:
+        return [p.read_bytes() for p in sorted(folder.glob("*.wav"))]
+    except OSError:
+        return []
+
+
 class NothingHeard(Exception):
     """Local speech-to-text heard nothing and STT_FALLBACK=false: send nothing."""
 
@@ -1204,6 +1262,8 @@ class Device:
             optional_missing("speaker_eq.py not next to lastscene_device.py; sound plays without AUDIO_GAIN_DB/SPEAKER_EQ")
         self.api = ApiClient(cfg)
         self.spool = Spool(cfg.spool_dir)
+        self.fillers = Fillers(cfg.spool_dir.parent / "fillers", self.api.filler)
+        threading.Thread(target=self.fillers.load, daemon=True).start()
         self.camera = make_camera(cfg)
         self.led = LED(cfg.led_pin)
         self.remember = Button(cfg.remember_pin, pull_up=True, bounce_time=0.05)
@@ -1465,8 +1525,30 @@ class Device:
                   "wake_score": round(float(score), 2), "preroll_s": round(len(preroll) / 2 / RATE, 2)}
         sent = time.monotonic()
         timeline["sent"] = round(sent - t0, 2)
+        reply: dict = {}
+        arrived = threading.Event()
+
+        def ask_server() -> None:
+            try:
+                reply["value"] = self.api.voice(wav, shots, where, wake=True, defer=True, client=client)
+            except Exception as exc:
+                reply["error"] = exc
+            finally:
+                arrived.set()
+
+        threading.Thread(target=ask_server, daemon=True).start()
+        # While the server works: "got it, stopped listening", then a filler ("Let me check.") if it's slow.
+        play_wav(self.cfg.audio_out, STOPPED)
+        timeline["stop_beep"] = round(time.monotonic() - t0, 2)
+        fillers = getattr(self, "fillers", None)
+        if not arrived.wait(FILLER_AFTER_S) and fillers is not None and (clip := fillers.pick()) is not None:
+            play_wav(self.cfg.audio_out, clip)
+            timeline["filler"] = round(time.monotonic() - t0, 2)
+        arrived.wait(120)
         try:
-            intent, result = self.api.voice(wav, shots, where, wake=True, defer=True, client=client)
+            if "error" in reply:
+                raise reply["error"]
+            intent, result = reply["value"]
         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
             not_needed.set()
             if rejected(exc):

@@ -152,16 +152,16 @@ def memory(minutes_ago: int, *items: str, score: float = 0.03) -> RetrievedMemor
 def test_template_answer_from_the_one_clear_memory():
     memories = [memory(20, "keys: kitchen counter"), memory(90, "wallet: shelf")]
     assert template_answer("Where are my keys?", memories, NOW) == (
-        "Your keys are on the kitchen counter, 20 minutes ago."
+        "Oh yeah, your keys are on the kitchen counter. You left them there 20 minutes ago."
     )
 
 
 @pytest.mark.parametrize(
     "item, said",
     [
-        ("wallet: my coat pocket", "Your wallet is in your coat pocket, about 2 hours ago."),
-        ("reading glasses: under the sofa", "Your reading glasses are under the sofa, about 2 hours ago."),
-        ("phone: kitchen drawer", "Your phone is in the kitchen drawer, about 2 hours ago."),
+        ("wallet: my coat pocket", "Oh yeah, your wallet is in your coat pocket. You left it there about 2 hours ago."),
+        ("reading glasses: under the sofa", "Oh yeah, your reading glasses are under the sofa. You left them there about 2 hours ago."),
+        ("phone: kitchen drawer", "Oh yeah, your phone is in the kitchen drawer. You left it there about 2 hours ago."),
     ],
 )
 def test_template_answer_wording(item, said):

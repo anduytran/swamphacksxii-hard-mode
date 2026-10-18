@@ -560,7 +560,7 @@ def test_a_confident_question_is_answered_without_the_language_model(client):
     log(client, "I am putting my keys on the kitchen counter")
     log(client, "I am putting my wallet on the shelf")
     resp = ask(client, "Where are my keys?")
-    assert unquote(resp.headers["x-answer"]) == "Your keys are on the kitchen counter, just now."
+    assert unquote(resp.headers["x-answer"]) == "Oh yeah, your keys are on the kitchen counter. You left them there just now."
     assert resp.headers["x-answered-by"] == "template"
     assert client.app_state.ai.answered_with is None
     assert [t.split(";")[0] for t in resp.headers["server-timing"].split(", ")] == ["transcribe", "embed", "retrieve", "answer", "speak"]
