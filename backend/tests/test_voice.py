@@ -357,13 +357,13 @@ def test_live_shows_each_wake_command_with_its_decision_and_steps(client):  # no
               decipher=Command(intent="remember", item="keys"), look=PhotoCheck(visible=True, best_photo=2))
     wake_clip(client, "Last Scene, where are my keys", decipher=Command(intent="ask", item="keys"),
               look=PhotoCheck(visible=True, best_photo=1, where="on the desk"))
-    saved, ignored = live(client)[1], live(client)[2]
-    assert ignored["outcome"] == "ignored" and ignored["heard"] == "so the last thing I said was"
+    assert len(live(client)) == 2  # the false wake isn't recorded at all
+    saved = live(client)[1]
     assert saved["kind"] == "wake" and saved["outcome"] == "saved" and saved["intent"] == "remember"
     assert saved["item"] == "keys" and saved["decided_by"] == "model" and saved["photos"] == 4
     assert saved["saved_photo"] == 2 and saved["image_url"] and saved["memory_id"]
     assert {"transcribe", "decide", "photos", "save"} <= set(saved["steps"]) and saved["total_ms"] >= 0
-    (answered,) = live(client, after=2)  # only what's new
+    (answered,) = live(client, after=1)  # only what's new
     assert answered["outcome"] == "answered" and answered["answered_by"] == "camera"
     assert answered["answer"] == "Oh, I can see your keys right now, on the desk!"
 
@@ -582,3 +582,10 @@ def test_a_slow_photo_check_never_holds_up_the_answer(client):  # noqa: F811
     resp = client.post("/api/v1/memory/voice", headers=DEVICE, files=files, data={"wake": "true"})
     assert time.monotonic() - started < 2 and resp.headers["x-answered-by"] != "camera"
     assert "answered without it" in live(client)[0]["photo_error"]
+
+
+def test_a_false_wake_leaves_nothing_on_the_server(client, caplog):  # noqa: F811
+    resp = wake_clip(client, "my brother is acting weird today", decipher=Command(intent="remember", item="keys"))
+    assert resp.json() == {"intent": "ignored"}  # not even the words come back
+    assert live(client) == [] and client.app_state.db.rows == []
+    assert "brother" not in caplog.text

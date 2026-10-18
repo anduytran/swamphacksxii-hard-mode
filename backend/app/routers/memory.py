@@ -223,6 +223,8 @@ async def _traced(background: BackgroundTasks, db: MemoryDB, device_id: str, tra
         trace.set(error=type(exc).__name__)
         await _record_trace(db, device_id, trace.done())
         raise
+    if getattr(trace, "private", False):  # a false wake: not recorded anywhere, not even on the Live page
+        return response
     steps = trace.event["steps"]  # for the device's own log
     if isinstance(response, Response):
         response.headers["Server-Timing"] = ", ".join(f"{k};dur={v}" for k, v in steps.items())
@@ -493,8 +495,11 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
             trace.set(wake_trusted=True)
         if words is None:
             log.info("Wake model fired, but speech-to-text didn't hear the wake phrase: ignored")
-            trace.set(outcome="ignored", intent="ignored")
-            return {"intent": "ignored", "heard": heard}
+            # A false wake: whatever was said wasn't meant for us, so none of it is kept, logged or returned.
+            trace.set(outcome="ignored", intent="ignored", heard=None)
+            trace.event.pop("heard", None)
+            trace.private = True
+            return {"intent": "ignored"}
     else:
         words = strip_wake_phrase(heard or "")
     trace.set(words=words)

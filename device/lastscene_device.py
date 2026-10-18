@@ -1637,7 +1637,7 @@ class Device:
         elif intent == "remember":
             log.info("Heard \"%s\" -> saving \"%s\" once the photos are in", heard, result.get("transcript"))
         elif intent == "ignored":
-            log.info("Heard \"%s\": no \"Last Scene\" in it, ignored", heard)
+            log.info("False wake: speech-to-text heard no \"Last Scene\"; nothing kept")
         else:
             log.info("Heard \"%s\": not a request", heard)
         log.info("Timeline (s since wake): %s | listen %.1f, upload+server %.1f, play %.1f",
