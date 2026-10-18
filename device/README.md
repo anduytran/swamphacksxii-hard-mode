@@ -138,6 +138,8 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
 
 The bonnet's speaker plays spoken answers: set `AUDIO_OUT_DEVICE=plughw:1,0` and check it with `python3 play_scale.py -D plughw:1,0` (a C major scale; `--loop` repeats it until Ctrl-C), or `audio_check.sh --mic` for the speaker and mic together.
 
+The speaker comes up muted: the codec's `Speaker Channel Switch` is off, so playback succeeds and nothing is heard. `audio_check.sh` turns it and the DAC-to-speaker path on; then `sudo alsactl store` keeps them across reboots for the client.
+
 **Voice Bonnet mic:** its mics are analog, and on a fresh boot nothing routes them to the recorder (recordings are silent). Turn the route on, then `sudo alsactl store` to keep it across reboots, and set `AUDIO_IN_DEVICE=plughw:1,0`:
 ```bash
 for s in "Sto1 ADC MIXL ADC1" "Sto1 ADC MIXR ADC1" "RECMIXL BST1" "RECMIXR BST1" "RECMIXL BST2" "RECMIXR BST2"; do amixer -c 1 -q sset "$s" on; done

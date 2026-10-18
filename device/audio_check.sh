@@ -26,6 +26,17 @@ info() { printf '        %s\n' "$*"; }
 echo "Output: $OUT    Input: $IN"
 
 echo "Speaker"
+# The Voice Bonnet's speaker comes up muted ("Speaker Channel Switch" off) with its DAC-to-speaker path
+# off, so ALSA plays without error and nothing is heard. Turning them on needs no root.
+card=$(sed -n 's/^plughw:\([0-9]*\),.*/\1/p' <<<"$OUT")
+if [ -n "$card" ] && grep -q voicebonnet "/proc/asound/card$card/id" 2>/dev/null; then
+    for s in "DAC1 MIXL DAC1" "DAC1 MIXR DAC1" "Stereo DAC MIXL DAC L1" "Stereo DAC MIXR DAC R1" \
+             "SPK MIXL DAC L1" "SPK MIXR DAC R1" "SPKVOL L" "SPKVOL R" "SPOL MIX SPKVOL L" "SPOR MIX SPKVOL R" \
+             "Speaker Channel" "Speaker"; do
+        amixer -c "$card" -q sset "$s" on
+    done
+    amixer -c "$card" -q sset "Speaker ClassD" 5
+fi
 if python3 "$HERE/play_scale.py" -D "$OUT" 2>/dev/null; then ok "played a C major scale on $OUT (did you hear it?)"
 else bad "playback on $OUT failed"; fi
 
