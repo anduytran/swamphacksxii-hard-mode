@@ -5,7 +5,7 @@ import { useApi } from "../lib/api";
 import { useApp } from "../lib/app";
 import { capitalize, clockTime, timeAgo } from "../lib/format";
 import { getCached, invalidateAll, setCached } from "../lib/resource";
-import type { Insights, Item, ItemsResponse, Question, Sighting, SightingsResponse } from "../lib/types";
+import type { Direction, Insights, Item, ItemsResponse, Question, Sighting, SightingsResponse } from "../lib/types";
 import { latestInsights } from "../pages/Insights";
 import { ItemChips, Sk } from "./bits";
 import { Dialog } from "./Dialog";
@@ -120,6 +120,7 @@ function Detail({ name, item, questions, onClose }: { name: string; item: Item |
       <div className="chips">
         <ItemChips item={item} />
       </div>
+      <FromWearer name={name} />
       <section className="detail-section">
         <h3>Where it's been</h3>
         <ol className="trail">
@@ -234,6 +235,72 @@ export function SightingList({ name, list, confirming, busy, onAsk, onTrash }: {
           </li>
         ))}
       </ul>
+    </section>
+  );
+}
+
+/** Where the item's LastScene is from the wearer now, refreshed while the drawer is open. */
+function FromWearer({ name }: { name: string }) {
+  const api = useApi();
+  const [dir, setDir] = useState<Direction | null>(null);
+  useEffect(() => {
+    let stop = false;
+    const load = () =>
+      api<Direction>(`/api/v1/dashboard/items/${encodeURIComponent(name)}/direction`)
+        .then((d) => !stop && setDir(d))
+        .catch(() => {});
+    load();
+    const t = window.setInterval(load, 15000);
+    return () => {
+      stop = true;
+      window.clearInterval(t);
+    };
+  }, [api, name]);
+  return dir ? <DirectionView dir={dir} /> : null;
+}
+
+const FLOORS: Record<string, string> = { "1": "1 floor up", "-1": "1 floor down" };
+
+export function DirectionView({ dir }: { dir: Direction }) {
+  if (!dir.known) return null;
+  const wearerAt = dir.wearer_room || dir.wearer_place;
+  const itemAt = dir.item_room || dir.item_place;
+  const floors = dir.floors ? FLOORS[String(dir.floors)] ?? `${Math.abs(dir.floors)} floors ${dir.floors > 0 ? "up" : "down"}` : null;
+  const facts = [
+    dir.lastscene_at && `LastScene ${timeAgo(dir.lastscene_at)}`,
+    dir.wearer_at && `wearer placed ${timeAgo(dir.wearer_at)}`,
+    dir.accuracy_m ? `±${dir.accuracy_m} m` : null,
+  ].filter(Boolean);
+  return (
+    <section className="detail-section direction" aria-live="polite">
+      <h3>From the wearer now</h3>
+      <div className="direction-body">
+        {dir.here ? (
+          <span className="direction-here" aria-hidden="true">●</span>
+        ) : dir.bearing !== null && dir.bearing !== undefined ? (
+          <svg className="direction-arrow" viewBox="-50 -50 100 100" role="img" aria-label={`Toward ${dir.compass}`}>
+            <circle r="46" className="direction-ring" />
+            <text y="-34" textAnchor="middle" className="direction-n">N</text>
+            <path d="M0 -30 L14 14 L0 6 L-14 14 Z" transform={`rotate(${dir.bearing})`} className="direction-needle" />
+          </svg>
+        ) : null}
+        <div className="direction-text">
+          <strong>
+            {dir.here
+              ? `Here${itemAt ? `, ${itemAt}` : ""}`
+              : [dir.meters !== null && dir.meters !== undefined ? `${dir.meters} m ${dir.compass ?? ""}`.trim() : null, floors]
+                  .filter(Boolean)
+                  .join(" · ") || "Somewhere else"}
+          </strong>
+          {(wearerAt || itemAt) && !dir.here && (
+            <span className="muted">
+              {wearerAt ? `Wearer: ${wearerAt}` : "Wearer: room unknown"} → {itemAt ? `It: ${itemAt}` : "it: room unknown"}
+            </span>
+          )}
+          {dir.sentence && <span className="quote">“{dir.sentence}”</span>}
+          {facts.length > 0 && <time className="mono">{facts.join(" · ")}</time>}
+        </div>
+      </div>
     </section>
   );
 }

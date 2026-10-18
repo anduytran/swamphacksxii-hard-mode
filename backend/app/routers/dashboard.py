@@ -10,11 +10,12 @@ from ..ai import AIServices
 from ..auth import Principal, require_caregiver
 from ..config import Settings, get_settings
 from ..db import ACTIVITY_COUNTS_DAYS, ItemSighting, MemoryDB, QueryRecord
-from ..deps import caregiver_ai_limit, get_ai, get_db
+from ..deps import caregiver_ai_limit, get_ai, get_db, get_geo
 from ..home_map import FloorPlan, floor_plan, room_for
 from ..languages import normalize
 from ..rooms import Room
 from ..geo import home_place_id, place_label
+from ..lastscene import relative_to_item
 from ..pipeline import retrieve
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
@@ -517,6 +518,44 @@ async def item_sightings(
             for s in sightings
         ],
     }
+
+
+@router.get("/items/{label}/direction")
+async def item_direction(
+    label: str,
+    caregiver: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+    geo=Depends(get_geo),
+    settings: Settings = Depends(get_settings),
+):
+    """Where the item's LastScene is from the wearer right now: distance and compass direction (Wi-Fi positions),
+    floors and rooms (surveyed fingerprints), and the sentence the wearer would hear (lastscene.py)."""
+    item = _label(label)
+    households, _, _ = await _scopes_and_places(db, caregiver)
+    for household in households:
+        devices = await db.household_device_ids(household)
+        rel = await relative_to_item(db, geo, settings, household, devices, item, minutes=settings.wearer_fix_minutes)
+        if rel is None:
+            continue
+        fix_at = await db.latest_fix_at(devices, settings.wearer_fix_minutes) if hasattr(db, "latest_fix_at") else None
+        return {
+            "item": item,
+            "known": True,
+            "here": rel.here,
+            "meters": round(rel.meters) if rel.meters is not None else None,
+            "bearing": round(rel.bearing) if rel.bearing is not None else None,
+            "compass": rel.compass,
+            "floors": rel.floors,
+            "item_room": rel.item_room,
+            "wearer_room": rel.wearer_room,
+            "item_place": rel.item_place,
+            "wearer_place": rel.wearer_place,
+            "accuracy_m": round(rel.accuracy_m) if rel.accuracy_m else None,
+            "lastscene_at": rel.item_at.isoformat(),
+            "wearer_at": fix_at.isoformat() if fix_at else None,
+            "sentence": rel.sentence(),
+        }
+    return {"item": item, "known": False}
 
 
 @router.delete("/items/{label}/sightings/{sighting_id}")

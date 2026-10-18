@@ -164,6 +164,8 @@ class Settings(BaseSettings):
     # "at Home, about 1.3 kilometers from you", lastscene.py). Worked out beside the answer; once the answer is
     # ready it gets at most this long, else the answer goes without it.
     lastscene_note_seconds: float = 1.0
+    # The dashboard's "From the wearer now" uses the wearer's latest scan or position from this recently.
+    wearer_fix_minutes: float = 30.0
 
     # raia (api.raia2.com) reads JSON context from the frame when one of the user's logged items (a Teach item,
     # or one named in a spoken memory) is seen at RAIA_MIN_CONFIDENCE or more: by the detector in an observation,

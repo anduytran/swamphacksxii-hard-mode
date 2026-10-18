@@ -8,7 +8,7 @@ from urllib.parse import unquote
 from app.ai import Command, PhotoCheck
 from app.config import Settings
 from app.geo import Location
-from app.lastscene import ItemPosition, compare, lastscene_note, spoken_distance
+from app.lastscene import Relative, bearing, compass, lastscene_note, spoken_distance
 from tests.test_api import DEVICE, client  # noqa: F401  (client is a fixture)
 
 REITZ = (29.6465, -82.3475)
@@ -17,23 +17,35 @@ NOW = datetime(2026, 10, 18, 6, 0, tzinfo=timezone.utc)
 SETTINGS = Settings(_env_file=None)
 
 
-def at(spot, place=None, accuracy=20.0):
-    return ItemPosition(spot[0], spot[1], accuracy, place, NOW)
-
-
 def here(spot, accuracy=20.0):
     return Location(spot[0], spot[1], accuracy, "wifi")
 
 
-def test_the_sentence_says_here_or_how_far_and_where():
-    labels = {"p-reitz": "Reitz Union", "p-home": "Home"}
-    assert compare(at(REITZ, "p-reitz"), here(REITZ), "p-reitz", labels) == "Its LastScene is here at Reitz Union."
-    assert compare(at(REITZ), here((29.6466, -82.3476)), None, {}) == "Its LastScene is right around here."
-    far = compare(at(HOME, "p-home"), here(REITZ), "p-reitz", labels)
-    assert far.startswith("Its LastScene is at Home, about 1.") and far.endswith(" kilometers from you.")
-    assert compare(at((29.6475, -82.3475)), here(REITZ), None, {}) == "Its LastScene is about 100 meters from you."
-    # Rough fixes: within their accuracy it counts as here.
-    assert "here" in compare(at((29.6475, -82.3475), accuracy=80), here(REITZ, accuracy=60), None, {})
+def rel(**over):
+    base = dict(here=False, meters=None, bearing=None, floors=None, item_room=None, wearer_room=None, item_place=None,
+                wearer_place=None, item_at=NOW, accuracy_m=None)
+    return Relative(**{**base, **over})
+
+
+def test_the_sentence_says_here_or_how_far_which_way_and_which_floor():
+    assert rel(here=True, item_room="Meeting Room 2360").sentence() == "Its LastScene is here at meeting room 2360."
+    assert rel(here=True, item_place="Reitz Union").sentence() == "Its LastScene is here at the Reitz Union."
+    assert rel(here=True).sentence() == "Its LastScene is right around here."
+    assert rel(meters=42, bearing=44, floors=1, item_room="Meeting Room 2360").sentence() == \
+        "Its LastScene is in meeting room 2360, about 40 meters north-east of you, one floor up."
+    assert rel(meters=1400, bearing=225, item_place="Home").sentence() == \
+        "Its LastScene is at Home, about 1.4 kilometers south-west of you."
+    assert rel(floors=-2, item_room="Game Room").sentence() == "Its LastScene is in the Game Room, two floors down."
+    assert rel(item_place="Home").sentence() == "Its LastScene is at Home, not here."
+    assert rel().sentence() == "Its LastScene is somewhere else, not where you are now."
+    assert rel(here=True, floors=1, item_room="Rion Ballroom").sentence() == "Its LastScene is in the Rion Ballroom, one floor up."
+
+
+def test_bearings_and_compass_points():
+    assert compass(bearing(*REITZ, REITZ[0] + 0.001, REITZ[1])) == "north"
+    assert compass(bearing(*REITZ, REITZ[0], REITZ[1] + 0.001)) == "east"
+    assert compass(bearing(*REITZ, *HOME)) == "south-west"
+    assert compass(359) == "north" and compass(100) == "east" and compass(300) == "north-west"
 
 
 def test_spoken_distances_are_rounded():
@@ -84,9 +96,10 @@ def test_the_wearers_position_comes_from_this_request_else_their_last_known_one(
     places = [place("p-reitz", "Reitz Union", REITZ), place("p-home", "Home", HOME)]
     item = (*HOME, 20.0, "p-home", NOW)
     assert note(FakeDB(item, places=places), wifi='[{"bssid": "aa:bb:cc:dd:ee:ff", "signal": -50}, {"bssid": "11:22:33:44:55:66", "signal": -60}]').startswith("Its LastScene is at Home")
-    assert note(FakeDB(item, recent=(*REITZ, 30.0), places=places)).startswith("Its LastScene is at Home")
+    assert note(FakeDB(item, recent=(*REITZ, 30.0), places=places)) == \
+        "Its LastScene is at Home, about 1.4 kilometers south-west of you."
     assert note(FakeDB((*REITZ, 20.0, "p-reitz", NOW), recent=(*REITZ, 30.0), places=places)) == \
-        "Its LastScene is here at Reitz Union."
+        "Its LastScene is here at the Reitz Union."
     assert note(FakeDB(item, recent=None, places=places)) is None  # where the wearer is isn't known
     assert note(FakeDB(None, recent=(*REITZ, 30.0), places=places)) is None  # the item was never located
 
@@ -110,13 +123,12 @@ def test_an_ask_adds_where_its_lastscene_is(client):  # noqa: F811
     resp = client.post("/api/v1/memory/voice", headers=DEVICE, files=files, data={"wake": "true"})
     assert resp.status_code == 200
     answer = unquote(resp.headers["x-answer"])
-    assert "Its LastScene is at Home, about 1." in answer and answer.endswith("kilometers from you.")
+    assert answer.endswith("Its LastScene is at Home, about 1.4 kilometers south-west of you.")
 
 
 # ---------------------------------------------------------------- Wi-Fi fingerprints (wifi_places.py)
 
 from app.intent import place_command  # noqa: E402
-from app.lastscene import compare_scans  # noqa: E402
 from app.wifi_places import best_place, from_wifi_json, merge, similarity  # noqa: E402
 
 REITZ_SCAN = {"aa:00:00:00:00:01": -60, "aa:00:00:00:00:02": -64, "aa:00:00:00:00:03": -70, "aa:00:00:00:00:04": -78}
@@ -137,13 +149,6 @@ def test_similarity_tells_the_same_place_from_another():
     assert from_wifi_json('[{"bssid": "AA:00:00:00:00:01", "signal": -60}]') == {"aa:00:00:00:00:01": -60}
 
 
-def test_the_scan_sentence():
-    assert compare_scans(REITZ_SCAN, REITZ_LATER, PLACES) == "Its LastScene is here at Reitz Union."
-    assert compare_scans(HOME_SCAN, REITZ_LATER, PLACES) == "Its LastScene is at Home, not here."
-    assert compare_scans(REITZ_SCAN, REITZ_LATER, []) == "Its LastScene is right around here."
-    assert compare_scans(HOME_SCAN, REITZ_LATER, []) == "Its LastScene is somewhere else, not where you are now."
-
-
 def test_naming_a_place_by_voice():
     assert place_command("this is the Reitz Union") == "Reitz Union"
     assert place_command("We're in the kitchen.") == "kitchen"
@@ -157,14 +162,14 @@ def test_naming_a_place_by_voice():
 class ScanDB(FakeDB):
     """FakeDB with Wi-Fi: the item's scan, the wearer's latest scan, and named places."""
     def __init__(self, item_scan, recent_scan, places=()):
-        super().__init__((*REITZ, 20.0, None, NOW), recent=None)
-        self.item_scan, self.recent, self.named = item_scan, recent_scan, list(places)
+        super().__init__((*REITZ, 20.0, None, NOW), recent=None)  # no positions: fingerprints only
+        self.item_scan, self.latest_scan, self.named = item_scan, recent_scan, list(places)
 
     async def lastscene_position(self, scope, device_ids, item):
         return {"lat": None, "lng": None, "accuracy_m": None, "place_id": None, "at": NOW, "wifi": self.item_scan}
 
     async def recent_scan(self, device_ids, minutes):
-        return self.recent
+        return self.latest_scan
 
     async def wifi_places(self, scope):
         return self.named
@@ -173,7 +178,7 @@ class ScanDB(FakeDB):
 def test_fingerprints_answer_without_any_position():
     wifi = json_scan(REITZ_LATER)
     assert asyncio.run(lastscene_note(ScanDB(REITZ_SCAN, None, PLACES), FakeGeo(), SETTINGS, "cam@clients", "pin",
-                                      wifi=wifi)) == "Its LastScene is here at Reitz Union."
+                                      wifi=wifi)) == "Its LastScene is here at the Reitz Union."
     # No scan with this request: the wearer's latest one.
     assert asyncio.run(lastscene_note(ScanDB(HOME_SCAN, REITZ_LATER, PLACES), FakeGeo(), SETTINGS, "cam@clients",
                                       "pin")) == "Its LastScene is at Home, not here."
@@ -238,3 +243,30 @@ def test_the_map_puts_an_item_in_the_room_its_wifi_says():
     assert (room.id, source) == ("rion", "wifi")  # Wi-Fi beats the photo's guess
     s.wifi_room = None
     assert room_and_source(s, plan)[1] == "photo"
+
+
+def test_the_dashboard_shows_distance_direction_and_floors(client):  # noqa: F811
+    """GET /api/v1/dashboard/items/{name}/direction: the item's LastScene from the wearer, for the item drawer."""
+    from types import SimpleNamespace as NS
+    from tests.test_api import CAREGIVER
+    db = client.app_state.db
+    fake = FakeDB((29.6470, -82.3470, 15.0, None, NOW), recent=(*REITZ, 20.0))  # ~70 m north-east
+    db.households_for = lambda sub: _async([NS(id="house-1", name="Ours")])
+    db.places_for = fake.places_for
+    db.household_device_ids = fake.household_device_ids
+    db.household_of_device = fake.household_of_device
+    db.lastscene_position = fake.lastscene_position
+    db.recent_position = fake.recent_position
+    db.latest_fix_at = lambda devices, minutes: _async(NOW)
+    resp = client.get("/api/v1/dashboard/items/Pin/direction", headers=CAREGIVER)
+    body = resp.json()
+    assert resp.status_code == 200 and body["known"] and not body["here"]
+    assert body["compass"] == "north-east" and 60 <= body["meters"] <= 80 and body["floors"] is None
+    assert body["sentence"] == "Its LastScene is about 70 meters north-east of you."
+
+    db.lastscene_position = lambda scope, devices, item: _async(None)
+    assert client.get("/api/v1/dashboard/items/umbrella/direction", headers=CAREGIVER).json() == {"item": "umbrella", "known": False}
+
+
+async def _async(value):
+    return value

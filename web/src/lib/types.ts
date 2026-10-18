@@ -326,3 +326,22 @@ export interface SightingsResponse {
   item: string;
   sightings: Sighting[];
 }
+
+/** Where an item's LastScene is from the wearer now (GET /api/v1/dashboard/items/{name}/direction). */
+export interface Direction {
+  item: string;
+  known: boolean;
+  here?: boolean;
+  meters?: number | null;
+  bearing?: number | null; // degrees clockwise from north, wearer -> item
+  compass?: string | null;
+  floors?: number | null; // the item's floor minus the wearer's
+  item_room?: string | null;
+  wearer_room?: string | null;
+  item_place?: string | null;
+  wearer_place?: string | null;
+  accuracy_m?: number | null;
+  lastscene_at?: string;
+  wearer_at?: string | null;
+  sentence?: string;
+}

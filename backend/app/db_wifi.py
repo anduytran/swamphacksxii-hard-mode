@@ -62,6 +62,22 @@ class WifiMixin:
         )
         return _aps(value) if value else None
 
+    async def latest_fix_at(self, device_ids: list[str], minutes: float):
+        """When these devices last sent a scan or a position with a memory or question, within `minutes`."""
+        return await self.pool.fetchval(
+            """
+            SELECT max(created_at) FROM (
+                SELECT created_at FROM memory_logs WHERE device_id = ANY($1::text[]) AND (wifi IS NOT NULL OR lat IS NOT NULL)
+                    AND created_at > now() - make_interval(secs => $2)
+                UNION ALL
+                SELECT created_at FROM query_logs WHERE device_id = ANY($1::text[]) AND (wifi IS NOT NULL OR lat IS NOT NULL)
+                    AND created_at > now() - make_interval(secs => $2)
+            ) fixes
+            """,
+            device_ids,
+            minutes * 60,
+        )
+
     async def wifi_places(self, scope: str) -> list[dict]:
         rows = await self.pool.fetch(
             "SELECT id::text, name, aps, samples, updated_at, room_id FROM wifi_places WHERE scope = $1 ORDER BY name",
