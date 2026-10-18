@@ -1699,3 +1699,31 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
 .mcp-key-form input:hover { border-color: var(--line-hi); }
 .mcp-key-form input:focus { border-color: var(--secondary); }
 .setup-card .invite-code { overflow-wrap: anywhere; }
+
+/* ---------- Live ---------- */
+.live-actions { display: flex; gap: 8px; }
+.live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--good); margin-right: 8px; vertical-align: middle; animation: live-pulse 1.6s ease-in-out infinite; }
+.live-dot.off { background: var(--faint); animation: none; }
+@keyframes live-pulse { 50% { opacity: 0.35; } }
+.live-error { color: var(--attention-ink); margin: 0 0 12px; }
+.live-usage { padding: 14px 18px; }
+.live-usage-row { display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: 0.875rem; }
+.live-list { list-style: none; margin: 0; padding: 0; }
+.live-event { padding: 18px 20px; animation: rise 0.25s ease-out; }
+.live-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 12px; }
+.live-outcome.good { background: var(--good-bg); border-color: transparent; color: var(--good-ink); }
+.live-outcome.attention { background: var(--attention-bg); border-color: var(--attention-line); color: var(--attention-ink); }
+.live-time { margin-left: auto; color: var(--muted); font-size: 0.8125rem; }
+.live-body { display: flex; gap: 16px; align-items: flex-start; }
+.live-photo { width: 132px; aspect-ratio: 4 / 3; object-fit: cover; border-radius: var(--radius); flex: none; background: var(--surface-2); }
+.live-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; min-width: 0; }
+.live-facts dt { color: var(--muted); font-size: 0.875rem; }
+.live-facts dd { margin: 0; overflow-wrap: anywhere; }
+.live-err { color: var(--attention-ink); }
+.live-steps { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 0.8125rem; }
+.live-served { margin: 6px 0 0; font-size: 0.75rem; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .live-body { flex-direction: column; }
+  .live-photo { width: 100%; }
+  .live-time { margin-left: 0; width: 100%; }
+}

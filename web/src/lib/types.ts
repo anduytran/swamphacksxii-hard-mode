@@ -251,3 +251,47 @@ export interface ReviewQueue {
   per_item: Record<string, number>;
   candidates: ReviewCandidate[];
 }
+
+/** One voice command on the Live page (GET /api/v1/dashboard/live). */
+export interface VoiceEvent {
+  id: number;
+  device_id: string;
+  created_at: string;
+  kind: string; // wake | voice | button: remember | button: ask
+  outcome: string; // saved | answered | found | ignored | nothing to do | error
+  heard?: string;
+  intent?: string;
+  item?: string;
+  item_from?: string;
+  decided_by?: "model" | "rules";
+  command_error?: string;
+  photos: number;
+  best_photo?: number;
+  in_view?: boolean;
+  seen_where?: string;
+  photo_error?: string;
+  saved_photo?: number;
+  memory_id?: string;
+  image_url?: string;
+  answer?: string;
+  answered_by?: string;
+  error?: string;
+  steps: Record<string, number>; // step -> ms, in the order they ran
+  served: Record<string, string>; // step -> provider/model
+  total_ms: number;
+}
+
+/** The parts of /healthz the Live page shows. */
+export interface Health {
+  ok: boolean;
+  missing_settings?: string[];
+  model_usage?: Record<string, { used_today: number; limit_per_day: number }>;
+  speech?: {
+    provider: string;
+    listening: string;
+    monthly_character_cap?: number;
+    characters_this_month?: number;
+    monthly_audio_seconds_cap?: number;
+    audio_seconds_this_month?: number;
+  };
+}

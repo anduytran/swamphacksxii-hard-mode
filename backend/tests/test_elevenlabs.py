@@ -192,3 +192,17 @@ def test_monthly_audio_cap_counts_seconds():
 def test_audio_seconds_and_keyterm_rules():
     assert audio_seconds(wav(2.2, 16000)) == 3 and audio_seconds(b"\0" * 64000) == 2 and audio_seconds(b"") == 1
     assert keyterms(["Last Scene", "last scene", "a [b]", "one two three four five six", "x" * 60, ""]) == ["Last Scene", "a b"]
+
+
+def test_what_served_each_step_is_noted_for_the_live_view():
+    from app.ai import served
+
+    seen = {}
+    served.set(seen)
+    ai = listening(Scribe())
+    run(ai.transcribe("c.wav", wav(), "audio/wav"))
+    assert seen == {"transcribe": "elevenlabs scribe_v2"}
+    failing = listening(Scribe(status=500))
+    run(failing.transcribe("c.wav", wav(), "audio/wav"))
+    assert seen["transcribe"] == "gemini-3.1-flash-lite"  # the Gemini model that heard it
+    served.set(None)

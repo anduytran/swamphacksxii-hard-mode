@@ -15,6 +15,7 @@ import { Landing } from "./pages/Landing";
 import SearchPage from "./pages/Search";
 import TeachPage from "./pages/Teach";
 import TimelinePage from "./pages/Timeline";
+import LivePage from "./pages/Live";
 
 // The map pages carry deck.gl, so they load on first visit. A tab left open across a deploy
 // asks for chunk names that no longer exist: reload once to pick up the new build.
@@ -49,6 +50,7 @@ const PAGE_VIEWS: Record<Page, () => JSX.Element> = {
   public: () => <PublicMapPage />,
   household: () => <HouseholdPage />,
   teach: () => <TeachPage />,
+  live: () => <LivePage />,
 };
 
 export function App() {

@@ -340,3 +340,60 @@ def test_a_saved_item_name_beats_the_models_wording(client):  # noqa: F811
         household_of_device, household_device_ids, last_seen, training_items)
     wake_clip(client, "Last Scene, where did my pins go", decipher=Command(intent="ask", item="pin"), look=PhotoCheck())
     assert client.looked == [("swamphacks pins", 4)]  # the taught name, not the model's "pin"
+
+
+# ---------------------------------------------------------------- the dashboard's Live view
+
+def live(client, after=0):  # noqa: F811
+    resp = client.get(f"/api/v1/dashboard/live?after={after}", headers=CAREGIVER)
+    assert resp.status_code == 200
+    return resp.json()["events"]
+
+
+def test_live_shows_each_wake_command_with_its_decision_and_steps(client):  # noqa: F811
+    wake_clip(client, "so the last thing I said was")
+    wake_clip(client, "Last Scene, I'm putting my keys on the counter",
+              decipher=Command(intent="remember", item="keys"), look=PhotoCheck(visible=True, best_photo=2))
+    wake_clip(client, "Last Scene, where are my keys", decipher=Command(intent="ask", item="keys"),
+              look=PhotoCheck(visible=True, best_photo=1, where="on the desk"))
+    saved, ignored = live(client)[1], live(client)[2]
+    assert ignored["outcome"] == "ignored" and ignored["heard"] == "so the last thing I said was"
+    assert saved["kind"] == "wake" and saved["outcome"] == "saved" and saved["intent"] == "remember"
+    assert saved["item"] == "keys" and saved["decided_by"] == "model" and saved["photos"] == 4
+    assert saved["saved_photo"] == 2 and saved["image_url"] and saved["memory_id"]
+    assert {"transcribe", "decide", "photos", "save"} <= set(saved["steps"]) and saved["total_ms"] >= 0
+    (answered,) = live(client, after=2)  # only what's new
+    assert answered["outcome"] == "answered" and answered["answered_by"] == "camera"
+    assert answered["answer"] == "I can see your keys right now, on the desk."
+
+
+def test_live_shows_the_rules_deciding_and_errors(client):  # noqa: F811
+    wake_clip(client, "Last Scene, where are my glasses?", decipher=RuntimeError("429"))
+    voice(client, "my glasses are on the nightstand", photo=False)  # a memory needs its photo: 422
+    error, asked = live(client)
+    assert asked["decided_by"] == "rules" and asked["command_error"] == "RuntimeError" and asked["outcome"] == "answered"
+    assert error["outcome"] == "error" and "photo" in error["error"]
+
+
+def test_live_covers_the_buttons(client):  # noqa: F811
+    from tests.test_api import log as button_log
+
+    button_log(client)
+    (event,) = live(client)
+    assert event["kind"] == "button: remember" and event["outcome"] == "saved"
+
+
+def test_live_is_only_for_the_household(client):  # noqa: F811
+    wake_clip(client, "Last Scene, never mind", decipher=Command(intent="none"))
+    client.app_state.db.household_devices = []
+    assert live(client) == []
+    assert client.get("/api/v1/dashboard/live", headers=DEVICE).status_code == 403
+
+
+def test_a_failure_to_record_never_breaks_the_command(client):  # noqa: F811
+    async def broken(device_id, event):
+        raise RuntimeError("db down")
+
+    client.app_state.db.add_voice_event = broken
+    resp = wake_clip(client, "Last Scene, never mind", decipher=Command(intent="none"))
+    assert resp.status_code == 200 and resp.json() == {"intent": "none"}

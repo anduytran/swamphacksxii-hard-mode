@@ -434,3 +434,21 @@ async def our_places(
             for m in memories
         ],
     }
+
+
+@router.get("/live")
+async def live(
+    after: int = Query(0, ge=0, description="only events newer than this id (the newest id you have)"),
+    devices: list[str] = Depends(household_devices),
+    db: MemoryDB = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Voice commands as they happen (db_voice_events.py), newest first, for the Live view: what was heard,
+    what was decided and by which model, the photo picked, what was said back, and each step's time."""
+    if not devices or not hasattr(db, "voice_events"):
+        return {"events": []}
+    events = await db.voice_events(devices, after)
+    for e in events:
+        if e.get("memory_id"):
+            e["image_url"] = _image_url(settings, e["memory_id"])
+    return {"events": events}

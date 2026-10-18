@@ -86,6 +86,15 @@ class FakeDB(MemorySlots):  # shared rate limits, counted in memory
     async def device_ids_for(self, user_sub):
         return list(self.household_devices)
 
+    voice_log: list = []
+
+    async def add_voice_event(self, device_id, event):
+        self.voice_log = [*self.voice_log, {**event, "id": len(self.voice_log) + 1, "device_id": device_id,
+                                            "created_at": datetime.now(timezone.utc).isoformat()}]
+
+    async def voice_events(self, device_ids, after=0, limit=50):
+        return [e for e in reversed(self.voice_log) if e["device_id"] in device_ids and e["id"] > after][:limit]
+
     async def household_of_device(self, device_id):
         return None
 

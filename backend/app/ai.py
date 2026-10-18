@@ -6,6 +6,7 @@ language tasks.
 """
 
 import functools
+from contextvars import ContextVar
 import logging
 import re
 from dataclasses import dataclass
@@ -285,6 +286,16 @@ def humanize_ago(then: datetime, now: datetime | None = None) -> str:
     return f"about {days} day{'s' if days != 1 else ''} ago"
 
 
+# What served each step of the current request (step -> provider or model), for the Live view. A route
+# sets a dict here; the speech and model calls below fill it in.
+served: ContextVar[dict | None] = ContextVar("served", default=None)
+
+
+def _served_by(step: str, who: str | None) -> None:
+    if (seen := served.get()) is not None:
+        seen[step] = who or "default"
+
+
 def limited(stage: str):
     """Guard a provider call with the shared rate limits for `stage` (see AIServices.rules), and
     fall back through Gemini models (AIServices.models): if a model is at its cap, cooling down,
@@ -303,7 +314,9 @@ def limited(stage: str):
                     if self.limiter and rules:
                         await self.limiter.take(rules)
                     with using(model, tts=stage == "tts"):
-                        return await fn(self, *args, **kwargs)
+                        result = await fn(self, *args, **kwargs)
+                    _served_by(fn.__name__.strip("_").removesuffix("_fallback"), model)
+                    return result
                 except RateLimited as busy:
                     last = busy
                 except Exception as exc:
@@ -444,7 +457,9 @@ class AIServices:
             await self.limiter.take([Rule("elevenlabs-stt:seconds", s.elevenlabs_stt_monthly_seconds, "month")],
                                     cost=audio_seconds(audio))
         try:
-            return await self.elevenlabs.transcribe(audio, filename, content_type, hints)
+            text = await self.elevenlabs.transcribe(audio, filename, content_type, hints)
+            _served_by("transcribe", f"elevenlabs {s.elevenlabs_stt_model}")
+            return text
         except Exception as exc:
             if self.limiter and (wait := provider_busy(exc)) is not None:
                 await self.limiter.cool_down("elevenlabs-stt", wait)
@@ -485,7 +500,9 @@ class AIServices:
             await self.limiter.take(per("elevenlabs", s.elevenlabs_rpm))
             await self.limiter.take([Rule("elevenlabs:characters", s.elevenlabs_monthly_chars, "month")], cost=len(text))
         try:
-            return await self.elevenlabs.speak(text)
+            audio = await self.elevenlabs.speak(text)
+            _served_by("speak", "elevenlabs")
+            return audio
         except Exception as exc:
             if self.limiter and (wait := provider_busy(exc)) is not None:
                 await self.limiter.cool_down("elevenlabs", wait)
