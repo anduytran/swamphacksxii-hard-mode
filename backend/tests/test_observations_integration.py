@@ -49,7 +49,8 @@ class OfflineAI:
 
 @pytest.fixture
 def c():
-    settings = get_settings().model_copy(update={"observation_min_interval_seconds": 0})
+    # Merging off by default: these tests post repeat sightings on purpose (one test turns it on).
+    settings = get_settings().model_copy(update={"observation_min_interval_seconds": 0, "passive_merge_minutes": 0})
     app = create_app(use_lifespan=False)
     app.state.ai = OfflineAI()
     who = {"device": DEVICE}
@@ -61,6 +62,8 @@ def c():
         yield client
         db, run = app.state.db, client.portal.call
         run(db.pool.execute, "DELETE FROM raia_contexts WHERE scope LIKE $1", f"it-{RUN}-%")
+        run(db.pool.execute, "DELETE FROM wifi_places WHERE scope LIKE $1", f"it-{RUN}-%")
+        run(db.pool.execute, "DELETE FROM item_history WHERE scope LIKE $1 OR scope IN (SELECT id::text FROM households WHERE created_by LIKE $1)", f"it-{RUN}-%")
         run(db.pool.execute, "DELETE FROM item_last_seen WHERE scope LIKE $1 OR scope IN (SELECT id::text FROM households WHERE created_by LIKE $1)", f"it-{RUN}-%")
         run(db.pool.execute, "DELETE FROM query_logs WHERE device_id LIKE $1", f"it-{RUN}-%")
         run(db.pool.execute, "DELETE FROM memory_logs WHERE device_id LIKE $1", f"it-{RUN}-%")
@@ -245,7 +248,7 @@ def test_raia_reads_a_logged_item_once_per_cooldown(c):
     # A spoken memory names the keys; then a sighting is read, and the next one within 30 min isn't.
     spoken = run(db.insert, DEVICE, "I put my keys on the hallway table", None, None)
     run(db.add_items, spoken.id, [("Keys", "hallway table")])
-    first = post(c, obs(label="keys", conf=0.71))
+    first = post(c, {**obs(label="keys", conf=0.71), "location": {"lat": 29.6465, "lng": -82.3475, "accuracy_m": 20}})
     assert first.status_code == 201 and sent.count("/conversations/conv-1/messages") == 1
     assert post(c, obs(label="keys", conf=0.9)).status_code == 201
     assert sent.count("/conversations/conv-1/messages") == 1
@@ -259,8 +262,119 @@ def test_raia_reads_a_logged_item_once_per_cooldown(c):
     chunks = run(db.chunks_for, [memory_id])[memory_id]
     assert ("item", "keys: on the hallway table") in [(ch.kind, ch.content) for ch in chunks]
     assert "hallway table" in run(db.pool.fetchval, "SELECT location FROM memory_items WHERE memory_id = $1::uuid", memory_id)
+    # The raia memory has the sighting's location.
+    where = run(db.pool.fetchrow, "SELECT lat, lng FROM memory_logs WHERE id = $1::uuid", memory_id)
+    assert (round(where["lat"], 4), round(where["lng"], 4)) == (29.6465, -82.3475)
 
     # Past the cooldown it's read again.
     run(db.pool.execute, "UPDATE raia_contexts SET claimed_at = now() - interval '31 minutes' WHERE scope = $1", DEVICE)
     assert post(c, obs(label="keys", conf=0.9)).status_code == 201
     assert sent.count("/conversations/conv-1/messages") == 2
+
+
+def test_repeat_passive_sightings_refresh_one_memory(c):
+    """Within PASSIVE_MERGE_MINUTES, the same item seen again updates its passive memory: one timeline entry."""
+    c.settings.passive_merge_minutes = 30
+    first = post(c, obs(minutes_ago=3, conf=0.5), image=b"\xff\xd8first")
+    assert first.status_code == 201 and first.json()["merged"] is False
+    again = post(c, obs(minutes_ago=1, conf=0.9, scene="hallway table"), image=b"\xff\xd8second")
+    assert again.status_code == 200 and again.json()["merged"] is True
+    assert again.json()["memory_id"] == first.json()["memory_id"]
+    late = post(c, obs(minutes_ago=5, conf=0.7), image=b"\xff\xd8older")  # an older frame arriving late
+    assert late.status_code == 201 and late.json()["merged"] is False
+
+    db, run = c.app.state.db, c.portal.call
+    memory_id = first.json()["memory_id"]
+    row = run(db.pool.fetchrow, "SELECT image FROM memory_logs WHERE id = $1::uuid", memory_id)
+    assert bytes(row["image"]) == b"\xff\xd8second"
+    dets = run(db.detections_for, [memory_id])[memory_id]
+    assert [(d["label"], d["confidence"]) for d in dets] == [("keys", 0.9)]
+    assert c.get("/api/v1/items/keys/last-seen").json()["scene"]["label"] == "hallway table"
+
+
+def test_every_passive_sighting_gets_a_location(c):
+    """Its own position, else the wearer's last known one (both Pis are worn together)."""
+    db, run = c.app.state.db, c.portal.call
+    own = post(c, {**obs(minutes_ago=2), "location": {"lat": 29.6465, "lng": -82.3475, "accuracy_m": 20}})
+    borrowed = post(c, obs(minutes_ago=1, label="wallet"))
+    assert own.status_code == 201 and borrowed.status_code == 201
+    rows = {r["id"]: r for r in run(db.pool.fetch, "SELECT id::text, lat, lng, accuracy_m FROM memory_logs WHERE id = ANY($1::uuid[])",
+                                   [own.json()["memory_id"], borrowed.json()["memory_id"]])}
+    for memory in (own, borrowed):
+        row = rows[memory.json()["memory_id"]]
+        assert (round(row["lat"], 4), round(row["lng"], 4)) == (29.6465, -82.3475)
+
+    # The item's LastScene position: its newest located sighting.
+    import time as _time
+    for _ in range(10):  # located after the response
+        found = run(db.lastscene_position, DEVICE, [DEVICE], "wallet")
+        if found:
+            break
+        _time.sleep(0.5)
+    assert found and (round(found["lat"], 4), round(found["lng"], 4)) == (29.6465, -82.3475)
+    assert run(db.lastscene_position, DEVICE, [DEVICE], "umbrella") is None
+
+
+def test_an_items_last_five_sightings_can_be_trashed(c):
+    """Every passive sighting is kept (newest 5 per item) even when memories merge; trashing a wrong one
+    removes it and its memory, and the item's last-seen falls back to the newest left."""
+    c.settings.passive_merge_minutes = 30
+    hh = c.post("/api/v1/households", json={"name": f"Hist {RUN}"}).json()["id"]
+    assert post(c, obs(minutes_ago=30, label="banana"), headers={"X-Pairing-Code": "CAM-H"}).status_code == 201
+    assert c.post(f"/api/v1/households/{hh}/devices", json={"client_id": DEVICE, "pairing_code": "CAM-H"}).status_code == 200
+    scenes = ["desk", "chair", "shelf", "sink", "bed", "floor"]
+    for n, scene in enumerate(scenes):  # 6 sightings, 5 to 0 minutes ago
+        assert post(c, obs(minutes_ago=5 - n, label="banana", scene=scene, conf=0.6 + n / 20)).status_code in (200, 201)
+
+    listed = c.get("/api/v1/dashboard/items/banana/sightings").json()["sightings"]
+    assert [s["scene"] for s in listed] == ["floor", "bed", "sink", "shelf", "chair"]  # newest 5
+    assert listed[0]["last_seen"] and not any(s["last_seen"] for s in listed[1:])
+    assert all(s["image_url"].startswith("/api/v1/images/ih-") for s in listed)
+    photo = c.get(listed[1]["image_url"])
+    assert photo.status_code == 200 and photo.content.startswith(b"\xff\xd8")
+
+    # The newest was a mistake: trash it. Last-seen goes back to "bed", with that sighting's photo.
+    gone = c.delete(f"/api/v1/dashboard/items/banana/sightings/{listed[0]['id']}")
+    assert gone.status_code == 200 and gone.json()["remaining"] == 5
+    assert c.get("/api/v1/items/banana/last-seen").json()["scene"]["label"] == "bed"
+    after = c.get("/api/v1/dashboard/items/banana/sightings").json()["sightings"]
+    # The sighting from before the camera joined the household (kept under the device) is next in line.
+    assert [s["scene"] for s in after] == ["bed", "sink", "shelf", "chair", "kitchen counter"] and after[0]["last_seen"]
+    assert c.delete(f"/api/v1/dashboard/items/banana/sightings/{listed[0]['id']}").status_code == 404
+    assert c.delete(f"/api/v1/dashboard/items/orange/sightings/{after[0]['id']}").status_code == 404  # wrong item
+
+
+def test_wifi_fingerprints_are_kept_and_places_can_be_named(c):
+    """A sighting keeps its Wi-Fi scan (memory and sighting); the LastScene lookup returns it; named places save."""
+    db, run = c.app.state.db, c.portal.call
+    scan = [{"bssid": f"aa:00:00:00:00:0{i}", "signal": -60 - 3 * i} for i in range(1, 5)]
+    sent = post(c, {**obs(minutes_ago=1, label="orange"), "location": {"wifi": scan}})
+    assert sent.status_code == 201
+    import time as _time
+    for _ in range(10):
+        found = run(db.lastscene_position, DEVICE, [DEVICE], "orange")
+        if found and found["wifi"]:
+            break
+        _time.sleep(0.5)
+    assert found["wifi"] == {a["bssid"]: a["signal"] for a in scan}
+    stored = run(db.pool.fetchval, "SELECT wifi FROM memory_logs WHERE id = $1::uuid", sent.json()["memory_id"])
+    assert stored and len(json.loads(stored) if isinstance(stored, str) else stored) == 4
+
+    saved = run(db.save_wifi_place, DEVICE, "Reitz Union", found["wifi"])
+    again = run(db.save_wifi_place, DEVICE, "reitz union", found["wifi"])  # same place, other capitalisation
+    assert again["id"] == saved["id"] and again["samples"] == 2
+    [place] = run(db.wifi_places, DEVICE)
+    assert place["name"] == "Reitz Union" and place["aps"] == found["wifi"]
+    assert run(db.delete_wifi_place, [DEVICE], saved["id"]) and run(db.wifi_places, DEVICE) == []
+
+    # A named place that is a floor-plan room: surveyed, and later sightings there land in it.
+    run(db.save_wifi_place, DEVICE, "Rion Ballroom", found["wifi"], None, "rion")
+    assert run(db.surveyed_rooms, [DEVICE]) == {"rion": 1}
+    again = post(c, {**obs(minutes_ago=0, label="banana"), "location": {"wifi": scan}})
+    for _ in range(10):
+        room = run(db.pool.fetchval, "SELECT wifi_room FROM memory_logs WHERE id = $1::uuid", again.json()["memory_id"])
+        if room:
+            break
+        _time.sleep(0.5)
+    assert room == "rion"
+    assert any(s.wifi_room == "rion" for s in run(db.item_sightings, 1, [DEVICE]) if s.name == "banana")

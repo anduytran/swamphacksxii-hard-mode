@@ -199,3 +199,25 @@ def test_the_stream_sends_live_frames_with_the_latest_boxes():
         assert b"Content-Type: image/jpeg" in got and b"\xff\xd8" in got
     finally:
         server.shutdown()
+
+
+def test_each_sighting_carries_a_cached_wifi_scan():
+    """CachedLocation: the scan voice commands send, as an observation's "location", rescanned once a minute."""
+    now = [0.0]
+    scans = []
+
+    def scan():
+        scans.append(now[0])
+        return {"wifi": '[{"bssid": "aa:bb:cc:dd:ee:ff", "signal": -60}]'}
+
+    where = dev.CachedLocation(Config.local({}), every=60, clock=lambda: now[0], scan=scan)
+    assert where() == {"wifi": [{"bssid": "aa:bb:cc:dd:ee:ff", "signal": -60}]}
+    now[0] = 30
+    where()
+    assert scans == [0.0]  # cached
+    now[0] = 61
+    where()
+    assert scans == [0.0, 61]
+    fixed = dev.CachedLocation(Config.local({}), scan=lambda: {"lat": "29.6", "lng": "-82.3", "accuracy_m": "100"})
+    assert fixed() == {"lat": 29.6, "lng": -82.3, "accuracy_m": 100.0}
+    assert dev.CachedLocation(Config.local({}), scan=lambda: {})() is None

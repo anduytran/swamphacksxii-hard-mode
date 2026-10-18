@@ -91,7 +91,7 @@ class Config:
     audio_out: str = "default"
     max_record_seconds: int = 15
     spool_dir: Path = Path("/var/lib/lastscene/spool")
-    pairing_code: str = ""  # printed on the device; a caregiver enters it to claim the device
+    pairing_code: str = ""  # printed on the device; whoever sets it up enters it to claim the device
     location_source: str = "wifi"  # wifi | fixed | none
     fixed_lat: float | None = None  # used for LOCATION_SOURCE=fixed (and as a Wi-Fi fallback)
     fixed_lng: float | None = None
@@ -234,6 +234,29 @@ def scan_wifi(interface: str = "wlan0") -> list[dict]:
                     seen[a["bssid"]] = a
             return sorted(seen.values(), key=lambda a: a["signal"], reverse=True)[:15]
     return []
+
+
+class CachedLocation:
+    """Where the wearer is, for each passive sighting's "location": the Wi-Fi scan (and fixed position) that
+    whereabouts() sends with voice commands, rescanned at most every `every` seconds so detection isn't held up."""
+
+    def __init__(self, cfg: Config, every: float = 60.0, clock=time.monotonic, scan=None):
+        self.cfg, self.every, self.clock = cfg, every, clock
+        self.scan = scan or (lambda: whereabouts(cfg))
+        self._at, self._value = -1e9, None
+
+    def __call__(self) -> dict | None:
+        if self.clock() - self._at >= self.every:
+            self._at = self.clock()
+            fields = self.scan()
+            value = {}
+            if fields.get("wifi"):
+                value["wifi"] = json.loads(fields["wifi"])
+            if fields.get("lat") and fields.get("lng"):
+                value |= {"lat": float(fields["lat"]), "lng": float(fields["lng"]),
+                          "accuracy_m": float(fields.get("accuracy_m") or 100)}
+            self._value = value or None
+        return self._value
 
 
 def whereabouts(cfg: Config) -> dict:
@@ -998,14 +1021,22 @@ def intent_of(transcript: str) -> str:
 
 class Remembering:
     """A detector that keeps its latest result, (monotonic time, detections, frame height and width), so the
-    camera Pi's /stream can draw what the background loop last saw. Everything else passes through."""
+    camera Pi's /stream can draw what the background loop last saw, and says when it's running (`idle` is set
+    otherwise): a USB frame captured during detection comes out torn (UsbCamera), so the stream waits for it.
+    Everything else passes through."""
 
     def __init__(self, inner):
         self.inner = inner
         self.last: tuple[float, list, tuple[int, int]] | None = None
+        self.idle = threading.Event()
+        self.idle.set()
 
     def detect(self, image):
-        hits = self.inner.detect(image)
+        self.idle.clear()
+        try:
+            hits = self.inner.detect(image)
+        finally:
+            self.idle.set()
         self.last = (time.monotonic(), list(hits), tuple(image.shape[:2]))
         return hits
 
@@ -1113,10 +1144,12 @@ class Vision:
             argv.append("--dry-run")
         args = build_parser().parse_args(argv)
 
+        location = CachedLocation(self.cfg) if self.cfg.location_source != "none" else None
+
         def loop():
             self.background = {"state": "running", "error": None}
             try:
-                run(args, frames=gate, detector=self.detector)
+                run(args, frames=gate, detector=self.detector, location=location)
                 self.background = {"state": "off", "error": None}
             except BaseException as exc:  # PipelineError is a SystemExit
                 self.background = {"state": "stopped", "error": f"{type(exc).__name__}: {exc}"[:300]}

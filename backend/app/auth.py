@@ -1,7 +1,7 @@
 """Auth0 JWT validation for the two kinds of callers.
 
 * Wearable: Auth0 Machine-to-Machine (client credentials) access token.
-* Caregiver: access token issued to the dashboard SPA via Universal Login.
+* User (household member): access token issued to the dashboard SPA via Universal Login.
 
 Both are RS256 JWTs for the same API audience, verified against the tenant JWKS.
 """

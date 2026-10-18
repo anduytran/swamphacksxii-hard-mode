@@ -63,7 +63,7 @@ class TrainingMixin:
                 image_type  text NOT NULL,
                 width       integer NOT NULL,
                 height      integer NOT NULL,
-                bbox        real[],            -- NULL only when the item is explicitly absent
+                bbox        real[],            -- NULL for absent, excluded, and unreviewed photos
                 annotation  text NOT NULL DEFAULT 'present', -- present | absent | excluded | unreviewed
                 created_at  timestamptz NOT NULL DEFAULT now()
             )

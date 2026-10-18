@@ -3,9 +3,9 @@
 Streamable HTTP, stateless, JSON responses: every POST is answered on its own, so it runs
 on serverless hosts (Vercel) with no sessions to keep. See docs/MCP.md.
 
-Callers authenticate with a caregiver's Auth0 access token (checked like the dashboard's)
+Callers authenticate with a household member's Auth0 access token (checked like the dashboard's)
 or a household MCP key (lsk_..., made on the Household page). Tools only reach households
-the caregiver belongs to (a key: only its own household), and nothing here writes data.
+the caller belongs to (a key: only its own household), and nothing here writes data.
 """
 
 import contextvars
@@ -44,16 +44,16 @@ RATE_WINDOW_SECONDS = 60
 MAX_REQUEST_BYTES = 64 * 1024
 
 INSTRUCTIONS = """\
-LastScene is a memory aid: a wearable camera and microphone note where a person with memory
-loss put things down, and family caregivers look it up. These tools read one household's
+LastScene is a memory aid: a wearable camera and microphone note where its wearer put things
+down, and they or anyone they share a household with look it up. These tools read one household's
 data (read-only). Call list_households first to get a household_id. Times are UTC ISO 8601.
 Memories are kept for 72 hours; older activity survives only as hourly counts (missing_times).
-The data is personal: use it to answer the caregiver's question and nothing else."""
+The data is personal: use it to answer the user's question and nothing else."""
 
 
 @dataclass
 class Caller:
-    sub: str  # the caregiver (for a key: the member who made it)
+    sub: str  # the user (for a key: the member who made it)
     key_id: str | None = None  # set when authenticated with a household MCP key
     household_id: str | None = None  # a key's only household
 
@@ -94,7 +94,7 @@ def _forbidden() -> ToolError:
 
 async def _household(tool: str, household_id: str) -> tuple[_Request, str, list[str]]:
     """The request, the household id and its devices, if the caller may see it. Logs the
-    call: which tool, household and caregiver, never the arguments (they're personal)."""
+    call: which tool, household and user, never the arguments (they're personal)."""
     req = _current.get()
     try:
         hid = str(uuid.UUID(household_id))
@@ -129,7 +129,7 @@ def _when(raw: str | None, name: str) -> datetime | None:
 
 @server.tool(annotations=READ_ONLY)
 async def list_households() -> dict[str, Any]:
-    """List the households this caregiver belongs to: id, name, the caller's role and how
+    """List the households this user belongs to: id, name, the caller's role and how
     many wearables it has. Call this first; every other tool takes a household_id."""
     req = _current.get()
     log.info("MCP tool=list_households caregiver=%s key=%s", req.caller.sub, req.caller.key_id or "-")
@@ -177,7 +177,7 @@ async def item_last_seen(
     household_id: HouseholdId,
     item: Annotated[str, Field(min_length=1, max_length=80, description="The item, e.g. 'wallet' or 'keys'. Partial names match.")],
 ) -> dict[str, Any]:
-    """Where and when one item was last seen. `memories`: the newest memories naming the
+    """One item's LastScene: where and when it was last put or seen. `memories`: the newest memories naming the
     item (from what the wearer said and the photo), each with where it was put. `camera`:
     the vision pipeline's latest sightings, with the detector's confidence (`maybe` = low
     confidence) and `found_at` if the wearer has since found it. Both newest first."""
@@ -248,7 +248,7 @@ async def timeline(
 
 @server.tool(annotations=READ_ONLY)
 async def items(household_id: HouseholdId) -> dict[str, Any]:
-    """Every item seen in the last 72 hours: where it was last put and when, how often it
+    """Every item seen in the last 72 hours: its LastScene (where it was last put, and when), how often it
     was mentioned, how often the wearer asked about it, and up to four earlier spots.
     `taught` lists the items the household taught the camera to recognise."""
     req, hid, devices = await _household("items", household_id)
@@ -292,7 +292,7 @@ async def mcp_caller(
     settings: Settings = Depends(get_settings),
     db: MemoryDB = Depends(get_db),
 ) -> Caller:
-    """A caregiver token (validated exactly like the dashboard's) or a household MCP key."""
+    """A user token (validated exactly like the dashboard's) or a household MCP key."""
     if creds is not None and creds.scheme.lower() == "bearer" and creds.credentials.startswith(KEY_PREFIX):
         found = await db.mcp_key_caller(mcp_key_hash(creds.credentials))
         if found is None:
@@ -310,7 +310,7 @@ async def mcp_caller(
 
 
 async def rate_limited(caller: Caller = Depends(mcp_caller), db: MemoryDB = Depends(get_db)) -> Caller:
-    """Per caregiver, counted in the database so every serverless instance shares it."""
+    """Per user, counted in the database so every serverless instance shares it."""
     if await db.mcp_rate_hit(f"mcp:{caller.sub}", RATE_WINDOW_SECONDS) > RATE_LIMIT_PER_MINUTE:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
                             f"At most {RATE_LIMIT_PER_MINUTE} MCP requests a minute",

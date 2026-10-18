@@ -3,7 +3,7 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import signing
 from ..ai import AIServices
@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
 async def household_devices(
     caregiver: Principal = Depends(require_caregiver), db: MemoryDB = Depends(get_db)
 ) -> list[str]:
-    """Devices in the caller's households: the only data a caregiver may see."""
+    """Devices in the caller's households: the only data a user may see."""
     return await db.device_ids_for(caregiver.sub)
 
 log = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ async def items(
     db: MemoryDB = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    """One entry per item: where it was last put, plus where it was before that."""
+    """One entry per item: its LastScene (where it was last put), plus where it was before that."""
     window = settings.retention_hours
     sightings = await db.item_sightings(window, devices)
     asked = Counter(q.item for q in await db.recent_queries(window, devices) if q.item)
@@ -226,7 +226,7 @@ async def summary(
     ai: AIServices = Depends(get_ai),
     settings: Settings = Depends(get_settings),
 ):
-    """A few plain sentences for the caregiver, written by the LLM (Gemini by default)."""
+    """A few plain sentences for the dashboard, written by the LLM (Gemini by default)."""
     data = await _insights(db, settings, devices)
     if not data["memories_logged"] and not data["questions_asked"]:
         return {"summary": None}
@@ -241,7 +241,7 @@ async def summary(
         f"Most often put down: {counts(data['most_logged'])}. "
         f"Asked about but never logged: {', '.join(never_logged) or 'none'}."
     )
-    # In the household language (a caregiver in several households gets the first one's).
+    # In the household language (someone in several households gets the first one's).
     language = normalize(await db.household_language(devices[0])) if devices else "en"
     cache_key = f"{sorted(devices)}|{language}|{facts}"
     cached = _summary_cache.get(cache_key)
@@ -250,7 +250,7 @@ async def summary(
     try:
         text = await ai.caregiver_summary(facts, language)
     except Exception:
-        log.exception("Caregiver summary failed")
+        log.exception("Dashboard summary failed")
         return {"summary": None}
     _summary_cache[cache_key] = (time.monotonic(), text)
     return {"summary": text}
@@ -317,8 +317,12 @@ def _curve(a: list[float], b: list[float], steps: int = 12) -> list[list[float]]
 
 
 def room_and_source(s: ItemSighting, plan: FloorPlan) -> tuple[Room, str]:
-    """The room the photo showed ("photo"), else the one the words name ("words"). A room
-    id from another floor plan (FLOOR_PLAN changed since) is ignored."""
+    """The room its Wi-Fi scan matched ("wifi", a room surveyed by saying "Last Scene, this is the Grand
+    Ballroom"), else the room the photo showed ("photo"), else the one the words name ("words"). A room id
+    from another floor plan (FLOOR_PLAN changed since) is ignored."""
+    wifi = next((r for r in plan.rooms if r.id == s.wifi_room), None) if getattr(s, "wifi_room", None) else None
+    if wifi:
+        return wifi, "wifi"
     photo = next((r for r in plan.rooms if r.id == s.room_id), None) if s.room_id else None
     return (photo, "photo") if photo else (room_for(s.location, s.scene, plan=plan), "words")
 
@@ -339,7 +343,9 @@ async def home_map(
         history.setdefault(s.name, []).append(s)
 
     plan = floor_plan(settings.floor_plan)
-    rooms = {r.id: {"id": r.id, "name": r.name, "kind": r.kind, "level": r.level, "polygon": r.polygon, "putdowns": 0, "lost": 0, "items": []} for r in (*plan.rooms, plan.unknown)}
+    surveyed = await db.surveyed_rooms(devices) if hasattr(db, "surveyed_rooms") else {}
+    rooms = {r.id: {"id": r.id, "name": r.name, "kind": r.kind, "level": r.level, "polygon": r.polygon, "putdowns": 0, "lost": 0,
+                    "items": [], "wifi_scans": surveyed.get(r.id, 0)} for r in (*plan.rooms, plan.unknown)}
     places = {name: [room_and_source(s, plan)[0] for s in seen] for name, seen in history.items()}
     for name, rooms_visited in places.items():
         here = rooms_visited[-1]
@@ -388,7 +394,7 @@ async def home_map(
         if len(path) > 1:
             trips.append({"name": name, "path": path, "timestamps": stamps, "rooms": [p.name for p in visited]})
 
-    used = [r for r in rooms.values() if r["id"] != plan.unknown.id or r["putdowns"]]
+    used = [r for r in rooms.values() if r["id"] != plan.unknown.id or r["putdowns"]]  # every room, surveyed or not
     return {
         "window_hours": window,
         "plan": {"id": plan.id, "name": plan.name},
@@ -453,3 +459,80 @@ async def live(
         if e.get("memory_id"):
             e["image_url"] = _image_url(settings, e["memory_id"])
     return {"events": events}
+
+
+# ---------------------------------------------------------------- an item's last few sightings (db_history)
+
+def _label(raw: str) -> str:
+    return " ".join(raw.strip().lower().split())
+
+
+async def _scopes_and_places(db: MemoryDB, caregiver: Principal) -> tuple[list[str], list[str], dict[str, str]]:
+    """(the user's household ids, every scope they may see: those and their devices, place id -> label)."""
+    households = await db.households_for(caregiver.sub)
+    labels: dict[str, str] = {}
+    for h in households:
+        places = await db.places_for(h.id)
+        home = home_place_id(places)
+        labels |= {p.id: place_label(p, home, i) for i, p in enumerate(places, 1)}
+    ids = [h.id for h in households]
+    return ids, ids + await db.device_ids_for(caregiver.sub), labels
+
+
+@router.get("/items/{label}/sightings")
+async def item_sightings(
+    label: str,
+    caregiver: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """The item's last few passive sightings, newest first, with raia's context and the place, so a wrong
+    one can be trashed. "last_seen" marks the one the item's last-seen comes from."""
+    item = _label(label)
+    _, scopes, places = await _scopes_and_places(db, caregiver)
+    sightings = await db.sightings(scopes, item)
+    current = await db.last_seen_keys(scopes, item)
+    return {
+        "item": item,
+        "sightings": [
+            {
+                "id": s.id,
+                "captured_at": s.captured_at.isoformat(),
+                "source": s.source,
+                "confidence": s.confidence,
+                "maybe": s.confidence is not None and s.confidence < settings.maybe_confidence,
+                "bbox": s.bbox,
+                "image_size": {"width": s.image_width, "height": s.image_height} if s.image_width else None,
+                "image_url": signing.image_url(settings.image_url_secret, f"ih-{s.id}", settings.image_url_ttl_seconds)
+                if s.has_image else None,
+                "where": (s.context or {}).get("where") or None,
+                "summary": (s.context or {}).get("summary") or None,
+                "nearby": (s.context or {}).get("nearby") or [],
+                "room": (s.context or {}).get("room") or None,
+                "scene": s.scene_label,
+                "location": {"lat": s.lat, "lng": s.lng, "accuracy_m": s.accuracy_m} if s.lat is not None else None,
+                "place": {"id": s.place_id, "label": places.get(s.place_id)} if s.place_id else None,
+                "last_seen": (s.observation_id or s.captured_at.isoformat()) in current,
+            }
+            for s in sightings
+        ],
+    }
+
+
+@router.delete("/items/{label}/sightings/{sighting_id}")
+async def trash_item_sighting(
+    label: str,
+    sighting_id: str,
+    caregiver: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+):
+    """Trash a wrong sighting: it and the memory it alone stands for go, and the item's last-seen points at the
+    newest sighting left."""
+    item = _label(label)
+    households, scopes, _ = await _scopes_and_places(db, caregiver)
+    gone = await db.trash_sighting(scopes, item, sighting_id)
+    if gone is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such sighting of that item")
+    devices = await db.household_device_ids(gone.scope) if gone.scope in households else [gone.scope]
+    await db.restore_last_seen(gone.scope, item, devices)
+    return {"trashed": sighting_id, "item": item, "remaining": len(await db.sightings(scopes, item))}

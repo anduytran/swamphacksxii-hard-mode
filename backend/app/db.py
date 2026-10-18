@@ -18,6 +18,8 @@ from .db_maps import MapsNamesMixin
 from .db_limits import LimitsMixin
 from .db_mcp import McpMixin
 from .db_observations import ObservationsMixin
+from .db_history import HistoryMixin
+from .db_wifi import WifiMixin
 from .db_places import PlacesMixin
 from .db_raia import RaiaMixin
 from .db_review import ReviewMixin
@@ -51,6 +53,7 @@ class ItemSighting:
     has_image: bool
     scene: str | None = None
     room_id: str | None = None  # the floor plan room the photo showed (describe_scene), if any
+    wifi_room: str | None = None  # the floor plan room its Wi-Fi scan matched (wifi_places.py), if any
 
 
 @dataclass
@@ -69,7 +72,7 @@ _COLUMNS = "id, device_id, created_at, transcript, scene, source, image IS NOT N
 
 
 class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixin, MapsNamesMixin, ReviewMixin, McpMixin, LimitsMixin,
-               VoiceEventsMixin, RaiaMixin):
+               VoiceEventsMixin, RaiaMixin, HistoryMixin, WifiMixin):
     def __init__(self, settings: Settings):
         self.dsn = settings.database_url
         self.dims = settings.embedding_dimensions
@@ -188,7 +191,7 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS memory_items_memory_id_idx ON memory_items (memory_id)"
             )
-            # Questions the wearer asked, for the caregiver's Insights page.
+            # Questions the wearer asked, for the dashboard's Insights page.
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS query_logs (
@@ -214,6 +217,8 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
             await self.init_limits_schema(conn)
             await self.init_voice_events_schema(conn)
             await self.init_raia_schema(conn)
+            await self.init_history_schema(conn)
+            await self.init_wifi_schema(conn)
             # Anonymous hourly counts that outlive the 72-hour purge (see delete_older_than):
             # no words, photos or item names, just how many questions / put-downs per hour.
             await conn.execute(
@@ -360,7 +365,7 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
         rows = await self.pool.fetch(
             """
             SELECT i.name, i.location, m.id AS memory_id, m.created_at, m.transcript, m.scene, m.room_id,
-                   m.image IS NOT NULL AS has_image
+                   m.wifi_room, m.image IS NOT NULL AS has_image
             FROM memory_items i
             JOIN memory_logs m ON m.id = i.memory_id
             WHERE m.created_at > now() - make_interval(hours => $1)
@@ -380,6 +385,7 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
                 has_image=r["has_image"],
                 scene=r["scene"],
                 room_id=r["room_id"],
+                wifi_room=r["wifi_room"],
             )
             for r in rows
         ]

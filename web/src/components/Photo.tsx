@@ -8,7 +8,7 @@ interface Props {
   alt: string;
   boxes?: Detection[];
   className?: string;
-  children?: ReactNode; // overlays such as the "Latest scene" tag
+  children?: ReactNode; // overlays such as the "LastScene" tag
 }
 
 export function Photo({ url, alt, boxes = [], className = "", children }: Props) {

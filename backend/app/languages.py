@@ -1,7 +1,7 @@
 """The languages a household can choose for the wearer's spoken answers.
 
 A household's `language` (BCP-47, default "en") decides what language the answer, the
-fixed phrases and the caregiver summary are in. Gemini transcribes, embeds and speaks all
+fixed phrases and the dashboard summary are in. Gemini transcribes, embeds and speaks all
 of these; on-device Moonshine is English-only (see device/README.md).
 
 Keep LANGUAGES in step with web/src/lib/languages.ts.
@@ -9,7 +9,7 @@ Keep LANGUAGES in step with web/src/lib/languages.ts.
 
 DEFAULT_LANGUAGE = "en"
 
-# code -> (English name, used in prompts; own name, shown to caregivers)
+# code -> (English name, used in prompts; own name, shown on the dashboard)
 LANGUAGES: dict[str, tuple[str, str]] = {
     "en": ("English", "English"),
     "es": ("Spanish", "Español"),

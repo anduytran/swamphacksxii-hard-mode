@@ -13,7 +13,7 @@ What is simulated (no API call that uses a token is made):
     answers, a beep for speech. No Gemini, Claude or OpenAI calls.
   * the RAG layer is real: memories become text chunks in memory_chunks, and questions
     go through the same vector + keyword search and fusion as production.
-  * Auth0 -> device/caregiver checks are bypassed in-process; no token is requested.
+  * Auth0 -> device/user checks are bypassed in-process; no token is requested.
   * time -> events are backdated over the last ~72 h so the history looks lived-in.
 
 All rows use device id "sim-wearable@clients"; each run replaces the previous run's rows.
@@ -410,7 +410,7 @@ def main() -> None:
                     DEVICE_ID, when)
                 print(f"{stamp}  ❓ ASK      “{ev.text}”\n           → {answer}")
 
-        print("\nWhat the caregiver dashboard now shows:\n")
+        print("\nWhat the dashboard now shows:\n")
         items = client.get("/api/v1/dashboard/items").json()["items"]
         for it in items:
             print(f"  • {it['name']:<16} {it['location'] or '?':<24} put down {it['mentions']}×, asked {it['times_asked']}×")

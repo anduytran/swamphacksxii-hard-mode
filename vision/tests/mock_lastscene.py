@@ -37,7 +37,7 @@ import numpy as np
 
 CLIENT_ID, CLIENT_SECRET, AUDIENCE = "mock-client", "mock-secret", "https://lastscene.photo/api"
 PAIRING_CODE = "PAIR-1234"
-TOP_FIELDS = {"observation_id", "captured_at", "source", "pipeline", "image_size", "scene", "objects"}
+TOP_FIELDS = {"observation_id", "captured_at", "source", "pipeline", "image_size", "scene", "objects", "location"}
 EVENTS = {"placed", "seen", "moved", "picked_up"}
 
 
@@ -99,6 +99,15 @@ def validate(obs, image_bytes):
         if not isinstance(s, dict) or not isinstance(s.get("id"), str) or len(s["id"]) > 80 \
                 or len(s.get("label") or "") > 120 or (score is not None and not 0 <= score <= 1):
             return _bad("scene", "needs id (<= 80 chars); label <= 120 chars; match_score 0-1 if present")
+    if "location" in obs:  # backend ObservationLocation: optional Wi-Fi scan and/or position
+        loc = obs["location"]
+        aps = loc.get("wifi", []) if isinstance(loc, dict) else None
+        if not isinstance(loc, dict) or set(loc) - {"wifi", "lat", "lng", "accuracy_m"} or not isinstance(aps, list) \
+                or len(aps) > 60 or any(not isinstance(a, dict) or not isinstance(a.get("bssid"), str)
+                                        or not -130 <= a.get("signal", 1) <= 0 for a in aps) \
+                or (loc.get("lat") is not None and not -90 <= loc["lat"] <= 90) \
+                or (loc.get("lng") is not None and not -180 <= loc["lng"] <= 180):
+            return _bad("location", "wifi: up to 60 {bssid, signal -130..0}; lat -90..90, lng -180..180")
     objs = obs["objects"]
     if not isinstance(objs, list) or not objs:
         return _bad("objects", "list with at least one entry")

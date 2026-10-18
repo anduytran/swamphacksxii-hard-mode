@@ -1,11 +1,11 @@
 // Drill-down for one item: photo with its box, where and when, where it's been, and the
 // questions about it. Opened from Items cards and Insights bars.
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useApi } from "../lib/api";
 import { useApp } from "../lib/app";
 import { capitalize, clockTime, timeAgo } from "../lib/format";
-import { getCached, setCached } from "../lib/resource";
-import type { Insights, Item, ItemsResponse, Question } from "../lib/types";
+import { getCached, invalidateAll, setCached } from "../lib/resource";
+import type { Insights, Item, ItemsResponse, Question, Sighting, SightingsResponse } from "../lib/types";
 import { latestInsights } from "../pages/Insights";
 import { ItemChips, Sk } from "./bits";
 import { Dialog } from "./Dialog";
@@ -111,6 +111,7 @@ function Detail({ name, item, questions, onClose }: { name: string; item: Item |
         alt={`The ${name} on the ${item.location || "spot shown"}`}
         boxes={item.detection ? [item.detection] : []}
       />
+      <p className="eyebrow">LastScene</p>
       <p className="detail-where">{capitalize(item.location) || "Location not said"}</p>
       <p className="when mono">
         {timeAgo(item.last_seen)} · {clockTime(item.last_seen)}
@@ -125,15 +126,114 @@ function Detail({ name, item, questions, onClose }: { name: string; item: Item |
           {spots.map((s) => (
             <li key={`${s.timestamp}-${s.now}`} className={s.now ? "now" : ""}>
               <strong>{capitalize(s.location) || "Somewhere"}</strong>
-              <span className="muted">{s.now ? `now · ${timeAgo(s.timestamp)}` : timeAgo(s.timestamp)}</span>
+              <span className="muted">{s.now ? `LastScene · ${timeAgo(s.timestamp)}` : timeAgo(s.timestamp)}</span>
             </li>
           ))}
         </ol>
       </section>
+      <Sightings name={name} />
       {questionList}
       <a className="pill" href="#/map" onClick={onClose}>
         Show on the home map
       </a>
     </>
+  );
+}
+
+/** The item's last few passive sightings (camera and raia), newest first. A wrong one can be trashed: it and the
+ * memory it alone stands for go, and its LastScene falls back to the next one. */
+function Sightings({ name }: { name: string }) {
+  const api = useApi();
+  const [state, setState] = useState<{ list?: Sighting[]; error?: string }>({});
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const path = `/api/v1/dashboard/items/${encodeURIComponent(name)}/sightings`;
+
+  const load = useCallback(async () => {
+    try {
+      const data = await api<SightingsResponse>(path);
+      setState({ list: data.sightings });
+    } catch (err) {
+      setState({ error: (err as Error).message });
+    }
+  }, [api, path]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const trash = async (id: string) => {
+    setBusy(true);
+    try {
+      await api(`${path}/${id}`, { method: "DELETE" });
+      invalidateAll(); // the item's LastScene and the timeline may have changed
+      setConfirming(null);
+      await load();
+    } catch (err) {
+      setState((s) => ({ ...s, error: (err as Error).message }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (state.error) return <p className="form-msg error">Couldn't load the recent sightings: {state.error}</p>;
+  if (!state.list?.length) return null;
+  return (
+    <SightingList name={name} list={state.list} confirming={confirming} busy={busy} onAsk={setConfirming} onTrash={trash} />
+  );
+}
+
+export function SightingList({ name, list, confirming, busy, onAsk, onTrash }: {
+  name: string;
+  list: Sighting[];
+  confirming: string | null;
+  busy: boolean;
+  onAsk(id: string | null): void;
+  onTrash(id: string): void;
+}) {
+  return (
+    <section className="detail-section">
+      <h3>Last {list.length} sightings</h3>
+      <p className="hint">Seen by the camera on its own. Trash any that aren't the {name}: its LastScene moves to the next one.</p>
+      <ul className="sightings">
+        {list.map((s, i) => (
+          <li key={s.id} className={s.last_seen ? "now" : ""}>
+            <Photo
+              className="sighting-photo"
+              url={s.image_url}
+              alt={`Sighting ${i + 1} of the ${name}`}
+              boxes={s.bbox ? [{ label: name, confidence: s.confidence ?? 0, bbox: s.bbox, maybe: s.maybe }] : []}
+            />
+            <div className="sighting-text">
+              <strong>{capitalize(s.where || s.summary || (s.scene ? `on the ${s.scene}` : "") || "Seen by the camera")}</strong>
+              {s.nearby.length > 0 && <span className="muted">Next to {s.nearby.join(", ")}</span>}
+              <span className="muted">
+                {[s.place?.label, s.room && s.room !== s.place?.label ? s.room : null].filter(Boolean).join(" · ") || "Place not known"}
+              </span>
+              <time className="mono" dateTime={s.captured_at}>
+                {s.last_seen ? "LastScene · " : ""}
+                {timeAgo(s.captured_at)} · {clockTime(s.captured_at)}
+                {s.confidence !== null ? ` · ${Math.round(s.confidence * 100)}%${s.maybe ? " (maybe)" : ""}` : ""}
+                {s.source === "raia" ? " · described from the photo" : ""}
+              </time>
+              {confirming === s.id ? (
+                <span className="confirm-row">
+                  <button type="button" className="pill danger" disabled={busy} onClick={() => onTrash(s.id)}>
+                    Trash this sighting
+                  </button>
+                  <button type="button" className="pill quiet" disabled={busy} onClick={() => onAsk(null)}>
+                    Cancel
+                  </button>
+                </span>
+              ) : (
+                <button type="button" className="pill quiet sighting-trash" onClick={() => onAsk(s.id)}>
+                  Trash
+                </button>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

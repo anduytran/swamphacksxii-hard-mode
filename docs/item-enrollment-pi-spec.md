@@ -8,7 +8,7 @@ Companion: [bridge integration](bridge-integration.md).
 
 ## Goal and confirmed constraints
 
-Let a user or caregiver add everyday belongings, teach the system what each looks
+Let anyone in a household add everyday belongings, teach the system what each looks
 like, and retrieve its most recent supported sighting. Support multiple categories
 without hardcoding keys. Target Raspberry Pi Zero 2 W; inference must execute on
 the Pi for an on-device claim. Build/export work can execute on a development

@@ -8,7 +8,7 @@ TigerData (pgvector for meaning, Postgres full-text search for exact words).
     generate  top memories' chunks ──▶ grounded prompt ──▶ spoken answer
 
 Everything the assistant "knows" about a memory is text in memory_chunks; the photo is
-kept only so caregivers can look at it.
+kept only so the household can look at it.
 """
 
 from dataclasses import dataclass, field

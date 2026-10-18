@@ -6,6 +6,10 @@ pages draw each level a little shifted, so every level is lined up on the orange
 (the same shaft on every floor); the dashboard stacks them, Ground at the bottom. Room
 shapes are simplified to rectangles where the real ones are close to rectangular.
 
+Meeting rooms are each their own room (G310–G330, 2101–2108, 2315–2365, 3305–3320), from the vector shapes and
+room numbers in the 2025 level maps PDF: page points x 1024/792, y 1600/1224 (the 1024 x 1600 pages above), each
+room's rectangle being the smallest green shape around its number (3305: the part of its block left of 3310).
+
 Keywords: rooms are matched before corridors, and within rooms the earlier entry wins, so
 specific places come first and the Grand Ballroom (where teams hack) takes the generic
 "ballroom", "table" and "desk" last of all. Plain "restroom" or "hallway" means Level 2, next to the ballroom.
@@ -70,8 +74,11 @@ ground = _level(
         ("dining_ground", "Dining", (760, 718, 150, 95), ("dining",)),
         ("bike_repair", "SG Bike Repair", (848, 852, 62, 90), ("bike",)),
         ("senate", "Senate Chamber", (758, 1055, 154, 170), ("senate", "chamber")),
-        ("meeting_g310", "Meeting Rooms G310–G320", (785, 1225, 127, 255), ("g310", "g315", "g320")),
-        ("meeting_g325", "Meeting Rooms G325–G330", (585, 1445, 187, 95), ("g325", "g330")),
+        ("room_g310", "Meeting Room G310", (776, 1226, 126, 84), ("g310",)),
+        ("room_g315", "Meeting Room G315", (776, 1310, 126, 70), ("g315",)),
+        ("room_g320", "Meeting Room G320", (776, 1381, 126, 102), ("g320",)),
+        ("room_g325", "Meeting Room G325", (685, 1418, 78, 119), ("g325",)),
+        ("room_g330", "Meeting Room G330", (580, 1418, 105, 119), ("g330",)),
         ("restrooms_ground", "Restrooms (ground)", (660, 912, 67, 90), ()),
     ],
     {"orange_brew": [(400, 1040), (635, 1040), (635, 1245), (590, 1215), (400, 1065)]},
@@ -119,10 +126,23 @@ level2 = _level(
         ("student_engagement", "Student Engagement", (815, 1080, 130, 420), ("student engagement",)),
         ("leadership", "Brown Center for Leadership and Service", (480, 1085, 175, 150), ("leadership", "brown center")),
         ("copy_center", "SG Graphics and Copy Center", (688, 1445, 75, 45), ("copy center", "print", "printer", "graphics")),
-        ("meeting_2101", "Meeting Rooms 2101–2104", (595, 1305, 55, 200), ("2101", "2102", "2103", "2104")),
-        ("meeting_2106", "Meeting Rooms 2106–2108", (650, 1490, 152, 63), ("2106", "2108")),
-        ("meeting_2345", "Meeting Rooms 2345–2350", (403, 1080, 73, 65), ("2345", "2350")),
-        ("meeting_2315", "Meeting Rooms 2315–2365", (287, 803, 272, 245), ("2315", "2320", "2325", "2330", "2335", "2340", "2355", "2360", "2365", "meeting room", "workshop", "mentor")),
+        ("room_2101", "Meeting Room 2101", (590, 1309, 45, 47), ("2101",)),
+        ("room_2102", "Meeting Room 2102", (590, 1356, 56, 65), ("2102",)),
+        ("room_2103", "Meeting Room 2103", (590, 1421, 41, 87), ("2103",)),
+        ("room_2104", "Meeting Room 2104", (631, 1442, 34, 35), ("2104",)),
+        ("room_2106", "Meeting Room 2106", (643, 1492, 150, 60), ("2106",)),
+        ("room_2108", "Meeting Room 2108", (771, 1441, 37, 36), ("2108",)),
+        ("room_2345", "Meeting Room 2345", (436, 1081, 36, 67), ("2345",)),
+        ("room_2350", "Meeting Room 2350", (398, 1081, 37, 62), ("2350",)),
+        ("room_2315", "Meeting Room 2315", (482, 989, 70, 60), ("2315",)),
+        ("room_2320", "Meeting Room 2320", (482, 929, 70, 60), ("2320",)),
+        ("room_2325", "Meeting Room 2325", (482, 868, 70, 61), ("2325",)),
+        ("room_2330", "Meeting Room 2330", (482, 806, 70, 61), ("2330",)),
+        ("room_2335", "Meeting Room 2335", (398, 802, 62, 125), ("2335",)),
+        ("room_2340", "Meeting Room 2340", (398, 927, 62, 121), ("2340",)),
+        ("room_2355", "Meeting Room 2355", (283, 958, 115, 90), ("2355",)),
+        ("room_2360", "Meeting Room 2360", (283, 896, 115, 62), ("2360",)),
+        ("room_2365", "Meeting Room 2365", (283, 802, 115, 94), ("2365",)),
         ("restrooms_2", "Restrooms (level 2, centre)", (695, 960, 62, 72), ()),
         ("grand_ballroom", "Grand Ballroom", (673, 373, 229, 345), ("grand ballroom", "ballroom", "hacking", "hack", "team", "workstation", "laptop", "monitor", "charger", "outlet", "table", "desk", "chair")),
     ],
@@ -141,8 +161,11 @@ level3 = _level(
     (230, 1052, 460, 22),
     [
         ("rion", "Rion Ballroom", (310, 787, 217, 265), ("rion", "stage", "judging", "judge", "demo", "presentation", "ceremony", "podium", "closing", "opening")),
-        ("meeting_3305", "Meeting Rooms 3305–3320", (825, 715, 123, 260), ("3305", "3310", "3315", "3320")),
-        ("legal", "Student Legal Services", (692, 715, 130, 80), ("legal",)),
+        ("room_3305", "Meeting Room 3305", (816, 715, 59, 78), ("3305",)),
+        ("room_3310", "Meeting Room 3310", (875, 715, 63, 78), ("3310",)),
+        ("room_3315", "Meeting Room 3315", (815, 817, 123, 79), ("3315",)),
+        ("room_3320", "Meeting Room 3320", (816, 896, 122, 79), ("3320",)),
+        ("legal", "Student Legal Services", (692, 715, 124, 80), ("legal",)),  # to where the meeting rooms start
         ("reflection", "Reflection Room", (802, 975, 90, 65), ("reflection", "prayer", "quiet room")),
         ("greek_life", "Sorority and Fraternity Life", (810, 1040, 150, 300), ("sorority", "fraternity")),
         ("student_government", "Student Government", (603, 1300, 90, 200), ("student government",)),
@@ -151,9 +174,14 @@ level3 = _level(
     ],
 )
 
-# The Grand Ballroom's generic words ("ballroom", "table", "desk") are matched last of all.
+# Room numbers ("2360", "G315") are the most specific thing anyone says, so numbered rooms are matched first; the
+# Grand Ballroom's generic words ("ballroom", "table", "desk") are matched last of all.
 _rooms = (*ground, *level1, *level2, *level3)
-REITZ_ROOMS: tuple[Room, ...] = (*(r for r in _rooms if r.id != "grand_ballroom"), *(r for r in _rooms if r.id == "grand_ballroom"))
+REITZ_ROOMS: tuple[Room, ...] = (
+    *(r for r in _rooms if r.id.startswith("room_")),
+    *(r for r in _rooms if not r.id.startswith("room_") and r.id != "grand_ballroom"),
+    *(r for r in _rooms if r.id == "grand_ballroom"),
+)
 # Levels 4 and Lower, anywhere outside, or no place said: beside the building, at ground level.
 _right = max(x for r in _rooms for x, _ in r.polygon)
 REITZ_UNKNOWN = Room("unknown", "Elsewhere", round(_right + GAP, 2), 10, 18, 120, ())

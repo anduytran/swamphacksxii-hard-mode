@@ -132,6 +132,57 @@ class ObservationsMixin:
             captured_at,
         )
 
+    async def recent_position(self, device_ids: list[str], minutes: float) -> tuple[float, float, float | None] | None:
+        """The newest located memory or question of these devices from the last `minutes`: (lat, lng, accuracy)."""
+        row = await self.pool.fetchrow(
+            """
+            SELECT lat, lng, accuracy_m FROM (
+                SELECT lat, lng, accuracy_m, created_at FROM memory_logs
+                WHERE device_id = ANY($1::text[]) AND lat IS NOT NULL AND created_at > now() - make_interval(secs => $2)
+                UNION ALL
+                SELECT lat, lng, accuracy_m, created_at FROM query_logs
+                WHERE device_id = ANY($1::text[]) AND lat IS NOT NULL AND created_at > now() - make_interval(secs => $2)
+            ) located ORDER BY created_at DESC LIMIT 1
+            """,
+            device_ids,
+            minutes * 60,
+        )
+        return (row["lat"], row["lng"], row["accuracy_m"]) if row else None
+
+    async def recent_passive_memory(self, device_ids: list[str], label: str, minutes: float,
+                                    captured_at: datetime) -> str | None:
+        """The household's newest passive memory with `label`, if it's from the last `minutes` and not newer
+        than `captured_at` (a late upload of an older frame never replaces a newer one)."""
+        return await self.pool.fetchval(
+            """
+            SELECT m.id::text FROM memory_logs m JOIN memory_detections d ON d.memory_id = m.id
+            WHERE m.source = 'auto' AND m.device_id = ANY($1::text[]) AND d.label = $2
+              AND m.created_at > now() - make_interval(secs => $3) AND m.created_at <= $4
+            ORDER BY m.created_at DESC LIMIT 1
+            """,
+            device_ids,
+            label,
+            minutes * 60,
+            captured_at,
+        )
+
+    async def refresh_observation(
+        self, memory_id: str, observation_id: str, captured_at: datetime, image: bytes, image_type: str,
+    ) -> None:
+        """A newer sighting of the same thing: its frame, time and id replace the memory's; detections go."""
+        async with self.pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "UPDATE memory_logs SET image = $2, image_type = $3, observation_id = $4::uuid, "
+                "created_at = GREATEST(created_at, $5), received_at = now() WHERE id = $1::uuid",
+                memory_id,
+                image,
+                image_type,
+                observation_id,
+                captured_at,
+            )
+            await conn.execute("DELETE FROM memory_detections WHERE memory_id = $1::uuid", memory_id)
+            await conn.execute("DELETE FROM memory_items WHERE memory_id = $1::uuid", memory_id)
+
     async def add_detections(
         self, memory_id: str, detections: list[dict], scene: dict | None, pipeline: dict, size: tuple[int, int]
     ) -> None:

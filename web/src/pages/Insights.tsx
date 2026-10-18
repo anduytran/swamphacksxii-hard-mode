@@ -1,4 +1,4 @@
-// Insights: patterns a caregiver should know about, over a chosen window (24 h – 3 days).
+// Insights: patterns worth knowing about, over a chosen window (24 h – 3 days).
 import { useState, type ReactNode } from "react";
 import { BarList, Columns, DataTable, HeatGrid, type BarRow } from "../components/Charts";
 import { EmptyState, repeat, Sk } from "../components/bits";
@@ -72,7 +72,7 @@ export default function InsightsPage() {
             The last 3 days, in brief
           </p>
           <p className="summary-text">{summary.data.summary}</p>
-          <p className="summary-by">Written by Gemini from the last 3 days of activity.</p>
+          <p className="summary-by">Written by AI from the last 3 days of activity.</p>
         </section>
       )}
 

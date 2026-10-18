@@ -69,14 +69,15 @@ def prompt(label: str, bbox: list[float] | None, scene_label: str | None) -> str
         found = f"Their {label} should be somewhere in it."
     where = f" The camera's location is the {scene_label}." if scene_label else ""
     return (
-        f"This photo is from a wearable camera that helps someone with memory loss find their things. {found}{where}\n"
+        f"This photo is from a wearable camera that helps its wearer find their things. {found}{where}\n"
         f"Answer with only this JSON object, no markdown or other text:\n"
         f'{{"visible": true or false (is a {label} really in the photo), '
         f'"where": "where the {label} is, 2 to 6 words starting with a preposition, like \\"on the desk by the laptop\\"", '
         f'"surface": "what it is on or in", "nearby": ["up to {MAX_NEARBY} things right next to it"], '
         f'"room": "the room or kind of place, or \\"\\"", "visible_text": "words readable near it, or \\"\\"", '
         f'"summary": "one short sentence saying where the {label} is"}}\n'
-        f'If there is no {label}, answer {{"visible": false}}.'
+        f'If there is no {label}, answer {{"visible": false}}. The answers are read out to the wearer: say "your hand", '
+        f'"in front of you", never "the person\'s hand".'
     )
 
 
@@ -216,7 +217,7 @@ class Raia:
         """A wearer's follow-up about `item`, in the conversation that read its photo: a short spoken answer."""
         earlier = f'Just before, they asked "{previous[0]}" and heard "{previous[1]}". ' if previous else ""
         message = (
-            f"Follow-up from the person wearing the camera, who has memory loss and is looking for their {item}. "
+            f"Follow-up from the person wearing the camera, who is looking for their {item}. "
             f'{earlier}Now they say: "{question}". Answer from the photo and what you said about it, as one friendly '
             f"spoken sentence under 100 characters, in plain text, not JSON. Directions are from the camera's view: "
             f"its left is their left."
@@ -263,9 +264,11 @@ async def save_context(db: MemoryDB, ai: AIServices, device_id: str, label: str,
 async def read_item(
     db: MemoryDB, ai: AIServices, raia: Raia, settings: Settings, device_id: str, scope: str, label: str,
     confidence: float, bbox: list[float] | None, scene_label: str | None, image: bytes, image_type: str,
-    captured_at: datetime, via: str,
+    captured_at: datetime, via: str, locate=None, observation_id: str | None = None,
 ) -> str | None:
-    """One item's frame to raia, if it isn't in its cooldown: the saved memory's id, or None."""
+    """One item's frame to raia, if it isn't in its cooldown: the saved memory's id, or None.
+    `locate(memory_id)`: gives the saved memory the location of the save that triggered it. The context also goes
+    into the item's sightings (db_history): onto the observation's, or as a sighting of its own."""
     if not await db.claim_raia_context(scope, label, None, settings.raia_cooldown_minutes):
         log.info("RAIA skip %s (%.2f, %s): read in the last %g min", label, confidence, via,
                  settings.raia_cooldown_minutes)
@@ -289,6 +292,22 @@ async def read_item(
         return None
     memory_id = await save_context(db, ai, device_id, label, ctx, image, image_type)
     await db.finish_raia_context(scope, label, json.dumps(ctx), None, memory_id, conversation_id)
+    sighting = None
+    try:
+        if observation_id and hasattr(db, "add_sighting_context"):
+            await db.add_sighting_context(scope, label, observation_id, ctx)
+        elif hasattr(db, "add_sighting"):
+            sighting = await db.add_sighting(scope, label, captured_at, "raia", memory_id, None, image, image_type,
+                                             None, bbox, confidence, scene_label, ctx)
+    except Exception:
+        log.exception("Recording the raia sighting of %s failed", label)
+    if locate is not None:
+        try:
+            await locate(memory_id)
+            if sighting:
+                await db.locate_sighting_like_memory(sighting)
+        except Exception:
+            log.exception("Locating the raia memory %s failed", memory_id)
     log.info("RAIA reply: %s (%s), %.1f s, saved memory %s: %s", label, via, seconds, memory_id, json.dumps(ctx))
     return memory_id
 
@@ -304,7 +323,7 @@ def candidates(obs: Observation, min_confidence: float) -> dict[str, DetectedObj
 
 async def extract_contexts(
     db: MemoryDB, ai: AIServices, raia: Raia, settings: Settings, device_id: str, memory_id: str,
-    obs: Observation, image: bytes, image_type: str,
+    obs: Observation, image: bytes, image_type: str, locate=None,
 ) -> list[str]:
     """For an observation, best effort, after the response: the labels whose context was saved. Never raises."""
     try:
@@ -321,7 +340,7 @@ async def extract_contexts(
                 continue
             if await read_item(db, ai, raia, settings, device_id, scope, label, o.confidence, o.bbox,
                                obs.scene.label if obs.scene else None, image, image_type, obs.captured_at,
-                               f"observation {memory_id}"):
+                               f"observation {memory_id}", locate, str(obs.observation_id)):
                 saved.append(label)
         return saved
     except Exception:
@@ -331,7 +350,7 @@ async def extract_contexts(
 
 async def context_from_photos(
     db: MemoryDB, ai: AIServices, raia: Raia, settings: Settings, device_id: str, item: str, view,
-    photos: list[tuple[bytes, str]], via: str,
+    photos: list[tuple[bytes, str]], via: str, locate=None,
 ) -> str | None:
     """For a wake command's photo check (`view`: a PhotoCheck, or the task still working it out), best effort:
     the saved memory's id, or None. Never raises."""
@@ -356,7 +375,7 @@ async def context_from_photos(
         best = view.best_photo if 0 <= view.best_photo < len(photos) else 0
         image, image_type = photos[best]
         return await read_item(db, ai, raia, settings, device_id, scope, label, confidence, None, None,
-                               image, image_type, datetime.now(timezone.utc), f"{via}, photo {best}")
+                               image, image_type, datetime.now(timezone.utc), f"{via}, photo {best}", locate)
     except Exception:
         log.exception("RAIA context from %s photos failed", via)
         return None

@@ -1,4 +1,4 @@
-// Household: setting LastScene up, often for someone else.
+// Household: setting LastScene up, for yourself or someone else, and sharing it.
 import { useEffect, useState, type FormEvent } from "react";
 import { repeat, Sk } from "../components/bits";
 import { FormCard } from "../components/FormCard";
@@ -76,13 +76,13 @@ function Start({ api, onDone }: { api: Api; onDone(): void }) {
   const myName = user?.name || user?.email || "";
   return (
     <>
-      <p className="lede">LastScene is usually set up by a family member for the person who wears it.</p>
+      <p className="lede">Set LastScene up for yourself or for someone else, then invite anyone who should see it.</p>
       <div className="two-col">
         <FormCard
-          title="Set up for someone"
-          hint="Creates a household. You can add the wearable and invite family next."
+          title="Start a household"
+          hint="Creates a household. You can add the wearable and invite others next."
           fields={[
-            { name: "name", label: "Household name", required: true, placeholder: "Mom's household", maxLength: 80 },
+            { name: "name", label: "Household name", required: true, placeholder: "Home", maxLength: 80 },
             { name: "display_name", label: "Your name", defaultValue: myName, maxLength: 80 },
           ]}
           submitLabel="Create household"
@@ -150,7 +150,7 @@ function HouseholdView({ h, api, onChange }: { h: Household; api: Api; onChange(
       fields={[
         { name: "client_id", label: "Client ID", required: true, minLength: 4, maxLength: 128, autoComplete: "off", spellCheck: false, placeholder: "from the device label" },
         { name: "pairing_code", label: "Pairing code", required: true, minLength: 4, maxLength: 32, autoComplete: "off", spellCheck: false, placeholder: "ABCD-1234-EF56" },
-        { name: "label", label: "Name", placeholder: "Mom's wearable", maxLength: 80 },
+        { name: "label", label: "Name", placeholder: "My wearable", maxLength: 80 },
       ]}
       submitLabel="Add wearable"
       onSubmit={async (v) => {
@@ -232,7 +232,7 @@ function People({ h, api, onChange }: { h: Household; api: Api; onChange(): void
               {m.display_name}
               {m.is_you ? " (you)" : ""}
             </strong>
-            <span className="muted">{m.role === "owner" ? "set this up" : "family"}</span>
+            <span className="muted">{m.role === "owner" ? "set this up" : "member"}</span>
             {m.is_you && !editing && (
               <button type="button" className="pill quiet" onClick={() => (setName(m.display_name), setEditing(true))}>
                 Change your name
@@ -270,7 +270,7 @@ function People({ h, api, onChange }: { h: Household; api: Api; onChange(): void
           </span>
         </form>
       )}
-      {/* Any member can invite: family brings in family, not only whoever set it up. */}
+      {/* Any member can invite: anyone in it can bring others in, not only whoever set it up. */}
       <button type="button" className="pill" disabled={busy} aria-busy={busy} onClick={makeInvite}>
         Invite someone
       </button>

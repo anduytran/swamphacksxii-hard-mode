@@ -11,11 +11,11 @@ class Settings(BaseSettings):
     # Auth0
     auth0_domain: str = ""  # e.g. lastscene.us.auth0.com
     auth0_audience: str = ""  # API identifier, e.g. https://api.lastscene
-    # Auth0 SPA application used by the caregiver dashboard (public values).
+    # Auth0 SPA application used by the dashboard (public values).
     auth0_spa_client_id: str = ""
     # Scope the wearable's M2M token must carry (grant it to the M2M app in Auth0).
     device_scope: str = "write:memories"
-    # Optional RBAC permission caregivers must carry. Empty = any valid user token.
+    # Optional RBAC permission dashboard users must carry. Empty = any valid user token.
     caregiver_permission: str = ""
 
     # TigerData (Postgres + pgvector)
@@ -62,7 +62,10 @@ class Settings(BaseSettings):
     # month here, and never past what the plan has left (checked with ElevenLabs, keeping a reserve).
     elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = "SAz9YHcvj6GT2YYXdXww"  # River: relaxed, neutral, calm (premade); any voice id works
-    elevenlabs_model: str = "eleven_flash_v2_5"  # ~75 ms, 32 languages, half price per character
+    # eleven_multilingual_v2: ElevenLabs' most lifelike voice, 1 credit per character (Flash v2.5: ~75 ms, half
+    # that). Answers are under 100 characters, so it stays well inside ELEVENLABS_MONTHLY_CHARS (120,000 at most
+    # 120,000 credits, under the Creator plan's 131,000), and the plan's own balance is checked before each call.
+    elevenlabs_model: str = "eleven_multilingual_v2"
     elevenlabs_speed: float = 0.9  # 0.7-1.2; a little slower is easier to follow
     elevenlabs_monthly_chars: int = 120000  # Creator plan: 131,000 a month, no overage
     elevenlabs_reserve_chars: int = 500
@@ -121,11 +124,14 @@ class Settings(BaseSettings):
     device_rpm: int = 20  # per device: spoken requests (/memory/log, /query, /voice, /recall)
     device_rpd: int = 1000
     device_observations_rpm: int = 60  # per device: vision pipeline uploads (it sends at most one per 2 s)
-    caregiver_ai_rpm: int = 30  # per caregiver: dashboard requests that call a model (search, summary)
+    caregiver_ai_rpm: int = 30  # per user: dashboard requests that call a model (search, summary)
 
     # Wi-Fi positioning: the wearable sends nearby access points; the server asks Google's
-    # Geolocation API where that is. Empty = positions only from the device (or none).
+    # Geolocation API (when this key is set) and then BeaconDB where that is.
     google_geolocation_api_key: str = ""
+    # BeaconDB: free, no key, same request format as Google (community data, so coverage varies).
+    # Used without a Google key, past the Google budget, and when Google has no answer. Empty = off.
+    beacondb_url: str = "https://api.beacondb.net/v1/geolocate"
     # Spend guard: at most this many Google calls per calendar month (UTC), counted in the
     # database before each call; past it, positions come only from the device. Keep it under
     # Google's free monthly allowance. 0 turns Wi-Fi positioning off.
@@ -148,6 +154,16 @@ class Settings(BaseSettings):
     # How long each item's last-seen frame + box is kept. 72 = same as memories; the
     # integration contract proposes 720 (30 days) once the team agrees.
     last_seen_retention_hours: int = 72
+    # A passive sighting of an item the camera already saw passively this recently refreshes that memory (newest
+    # photo, box and time) instead of adding another timeline entry: one memory, one raia read, per item. 0 = off.
+    passive_merge_minutes: float = 30.0
+    # A passive sighting sent without its own Wi-Fi scan takes the wearable's last known position from this
+    # recently (both Pis are worn together), so every save gets a location. 0 = only the sighting's own.
+    location_reuse_minutes: float = 10.0
+    # Spoken answers about an item add where its LastScene is compared with the wearer ("here at Reitz Union",
+    # "at Home, about 1.3 kilometers from you", lastscene.py). Worked out beside the answer; once the answer is
+    # ready it gets at most this long, else the answer goes without it.
+    lastscene_note_seconds: float = 1.0
 
     # raia (api.raia2.com) reads JSON context from the frame when one of the user's logged items (a Teach item,
     # or one named in a spoken memory) is seen at RAIA_MIN_CONFIDENCE or more: by the detector in an observation,

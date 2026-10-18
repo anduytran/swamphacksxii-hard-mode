@@ -113,6 +113,29 @@ def test_observation_matches_contract_and_is_conservative(tmp_path, bus):
     assert mock.validate(with_scene, jpeg) is None
 
 
+def test_each_observation_carries_where_the_camera_is(tmp_path, bus):
+    ls, batches = observe_keys(tmp_path, bus)
+    where = {"wifi": [{"bssid": "aa:bb:cc:dd:ee:ff", "signal": -61}], "lat": 29.6465, "lng": -82.3475, "accuracy_m": 30.0}
+    bridge = LastSceneBridge(ls, outbox_dir=tmp_path / "outbox", location=lambda: where)
+    for b in batches:
+        bridge.handle(b)
+    [sent] = [json.loads(p.read_text()) for p in (tmp_path / "outbox").glob("*.json")]
+    assert sent["location"] == where
+    jpeg = next((tmp_path / "outbox").glob("*.jpg")).read_bytes()
+    assert mock.validate(sent, jpeg) is None
+    assert mock.validate({**sent, "location": {"wifi": [{"bssid": "x", "signal": 5}]}}, jpeg)[0] == 422
+
+    def broken():
+        raise OSError("nmcli missing")
+    quiet = LastSceneBridge(ls, outbox_dir=tmp_path / "outbox2", location=broken)  # a scan failing never stops a sighting
+    ls2, batches2 = observe_keys(tmp_path / "b", bus)
+    quiet.ls = ls2
+    for b in batches2:
+        quiet.handle(b)
+    [plain] = [json.loads(p.read_text()) for p in (tmp_path / "outbox2").glob("*.json")]
+    assert "location" not in plain
+
+
 def test_event_names_follow_what_the_engine_established():
     assert event_for({"event": "created", "place_status": "first_sighting"}) == "placed"
     assert event_for({"event": "created", "place_status": None}) == "placed"          # no scene matcher

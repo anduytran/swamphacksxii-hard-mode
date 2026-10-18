@@ -1,5 +1,6 @@
 // Teach items: photos of the household's own things, each with a box drawn around the item,
-// for the vision pipeline (YOLO) to learn from. The pipeline downloads them; nothing here runs a model.
+// for the camera to learn from. The vision pipeline downloads them (docs/item-enrollment-pi-spec.md); nothing here
+// runs a model.
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { EmptyState, repeat, Sk } from "../components/bits";
 import { Dialog } from "../components/Dialog";
@@ -116,14 +117,6 @@ export default function TeachPage() {
             ))}
           </div>
           {!list.data.items.length && <p className="hint">No items yet. Start with the one that goes missing most.</p>}
-          <details className="teach-tech">
-            <summary>For the vision pipeline team</summary>
-            <p>
-              The pipeline reads these with the wearable's token: <code>GET /api/v1/training/vocabulary</code> (class names for{" "}
-              <code>set_classes</code>) and <code>GET /api/v1/training/dataset</code> (boxed photos plus explicit absent examples).{" "}
-              <code>backend/scripts/fetch_training_set.py dataset</code> writes the YOLO folder and keeps item-specific absent examples separately.
-            </p>
-          </details>
         </>
       )}
     </section>

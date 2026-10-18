@@ -26,12 +26,16 @@ from ..config import Settings, get_settings
 from ..db import MemoryDB
 from ..deps import device_limit, get_ai, get_db, get_geo, get_raia
 from ..geo import Geolocator, locate_and_record, record_public, resolve_location
-from ..intent import after_wake_phrase, classify, continue_command, fallback_command, needs_context, strip_wake_phrase
+from ..intent import (after_wake_phrase, classify, continue_command, fallback_command, match_item, needs_context,
+                      place_command, strip_wake_phrase)
 from ..observations import scope_for
 from ..languages import is_english, normalize, phrase
 from ..limits import RateLimited
 from ..maps_names import name_memory_place
 from ..pipeline import ingest_image, ingest_speech, retrieve
+from ..lastscene import lastscene_note
+from ..home_map import floor_plan, room_for
+from ..wifi_places import clean_name, display, from_wifi_json, learn, name_place, room_of_scan, usable
 from ..raia import Raia, context_from_photos, context_note, norm
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
@@ -60,12 +64,18 @@ TRANSCRIPT_FORM = Form(None, description="what was said, transcribed on the devi
 WAKE_HINT = "Last Scene"
 
 
-async def stt_hints(db: MemoryDB, device_id: str) -> list[str]:
-    """Words the wearer is likely to say that speech-to-text tends to get wrong: the wake phrase and the
-    household's Teach items and their aliases ("swamphacks pins", not "Swampfax pins")."""
+async def stt_hints(db: MemoryDB, device_id: str, plan_id: str | None = None) -> list[str]:
+    """Words the wearer is likely to say that speech-to-text tends to get wrong: the wake phrase, the
+    household's Teach items and their aliases ("swamphacks pins", not "Swampfax pins"), the floor plan and its
+    rooms ("Reitz Union", not "the Wrights"), and the places the household named."""
     hints = [WAKE_HINT]
+    if plan_id:
+        plan = floor_plan(plan_id)
+        hints += [plan.name, *(r.name for r in plan.rooms if r.kind == "room")]
     try:
         household = await db.household_of_device(device_id)
+        if hasattr(db, "place_names"):
+            hints += await db.place_names(household[0] if household else device_id)
         if household:
             for item in await db.training_items(household[0]):
                 hints += [item.name, *item.aliases]
@@ -131,6 +141,7 @@ def whereabouts(
 
 
 async def _locate(geo: Geolocator, db: MemoryDB, device_id: str, table: str, row_id: str, where: Whereabouts):
+    await _keep_scan(db, device_id, table, row_id, where.wifi)
     try:
         loc = await resolve_location(geo, where.wifi, where.lat, where.lng, where.accuracy_m)
         place, public = await locate_and_record(db, device_id, table, row_id, loc)
@@ -138,6 +149,21 @@ async def _locate(geo: Geolocator, db: MemoryDB, device_id: str, table: str, row
     except Exception:
         log.exception("Locating %s %s failed", table, row_id)
         return None, False
+
+
+async def _keep_scan(db, device_id: str, table: str, row_id: str, wifi: str | None) -> None:
+    """The save's Wi-Fi scan, kept with it so places are recognized from fingerprints (wifi_places.py)."""
+    scan = from_wifi_json(wifi)
+    if not usable(scan) or not hasattr(db, "set_scan"):
+        return
+    try:
+        await db.set_scan(table, row_id, scan)
+        scope, _ = await scope_for(db, device_id)
+        await learn(db, scope, scan)
+        if table == "memory_logs" and (room := await room_of_scan(db, scope, scan)):
+            await db.set_wifi_room(row_id, room)  # the map puts it in the room its Wi-Fi says
+    except Exception:
+        log.exception("Keeping the Wi-Fi scan of %s %s failed", table, row_id)
 
 
 async def _enrich_memory(
@@ -328,9 +354,24 @@ async def _spoken_answer(
     background: BackgroundTasks, db: MemoryDB, ai: AIServices, geo: Geolocator, settings: Settings,
     device_id: str, question: str, where: Whereabouts, extra_headers: dict | None = None, trace: Trace | None = None,
     previous: tuple[str, str] | None = None, answer: tuple[str, str, dict[str, float]] | None = None,
+    lastscene: "asyncio.Task | None" = None,
 ) -> Response:
-    """Answer out loud. `answer`: an (answer, answered_by, timings) already worked out (_answer_text)."""
+    """Answer out loud. `answer`: an (answer, answered_by, timings) already worked out (_answer_text).
+    `lastscene`: the task working out where the item's LastScene is from the wearer (_lastscene_task); its
+    sentence is added when it's ready within LASTSCENE_NOTE_SECONDS of the answer."""
     answer_text, answered_by, timings = answer or await _answer_text(db, ai, settings, device_id, question, previous)
+    if lastscene is not None and answered_by not in ("fixed", "busy"):
+        clock = time.perf_counter()
+        try:
+            if note := await asyncio.wait_for(lastscene, settings.lastscene_note_seconds):
+                answer_text = f"{answer_text.rstrip()} {note}"
+                if trace:
+                    trace.set(lastscene=note)
+        except TimeoutError:
+            log.info("LastScene comparison slower than %.1f s; answered without it", settings.lastscene_note_seconds)
+        except Exception:
+            log.exception("LastScene comparison failed")
+        timings["lastscene"] = (time.perf_counter() - clock) * 1000
     clock = time.perf_counter()
     speech = await ai.speak(answer_text)
     timings["speak"] = (time.perf_counter() - clock) * 1000
@@ -380,7 +421,7 @@ async def log_memory(
 
     async def run():
         image_bytes = await _read(image, MAX_IMAGE_BYTES, "image")
-        heard = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub)))
+        heard = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub, settings.floor_plan)))
         trace.lap("transcribe")
         trace.set(heard=heard, intent="remember", photos=1)
         await _note_pairing(db, device.sub, pairing_code)
@@ -410,7 +451,7 @@ async def query_memory(
     trace = Trace("button: ask")
 
     async def run():
-        question = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub)))
+        question = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub, settings.floor_plan)))
         trace.lap("transcribe")
         trace.set(heard=question, intent="ask")
         await _note_pairing(db, device.sub, pairing_code)
@@ -466,6 +507,44 @@ TRUSTED_WAKE_SCORE = 0.9  # a wake this sure counts even when speech-to-text doe
 CONTINUE_WITHIN_S = 600  # "continue" follows on from an answer this recent
 
 
+def _lastscene_task(db, geo, settings: Settings, device_id: str, item: str, where: Whereabouts):
+    """Start comparing where the wearer is with the item's LastScene (lastscene.py), beside the answer."""
+    if not item:
+        return None
+    return asyncio.create_task(lastscene_note(db, geo, settings, device_id, item, where.wifi, where.lat, where.lng,
+                                              where.accuracy_m))
+
+
+async def _name_place(db, ai: AIServices, settings: Settings, device_id: str, place: str, where: Whereabouts,
+                      heard: str, trace: Trace) -> Response:
+    """Remember the Wi-Fi heard here as the place called `place`, and say so. A name that is one of the floor
+    plan's rooms ("the Grand Ballroom", "room 2350") ties the place to that room, for the map."""
+    scan, name = from_wifi_json(where.wifi), clean_name(place)
+    plan = floor_plan(settings.floor_plan)
+    room = room_for(name, plan=plan)
+    room = room if room.id != plan.unknown.id and room.kind == "room" else None
+    trace.set(intent="place", item=None, decided_by="rules", place=name, room=room.name if room else None)
+    trace.lap("decide")
+    if usable(scan) and hasattr(db, "save_wifi_place"):
+        scope, _ = await scope_for(db, device_id)
+        saved = await name_place(db, scope, name, scan, room.id if room else None)
+        answer = f"Got it, this is {_spoken_room(room.name)}." if room else f"Got it, this is {display(saved['name'])}."
+        trace.set(outcome="named place", wifi_aps=len(scan))
+    else:
+        answer = "I can't hear enough Wi-Fi here to remember this place."
+        trace.set(outcome="no wifi", wifi_aps=len(scan))
+    speech = await ai.speak(answer)
+    trace.lap("speak")
+    trace.set(answer=answer)
+    return Response(content=speech, media_type=ai.speech_media_type,
+                    headers={"X-Intent": "place", "X-Answer": quote(answer), "X-Heard": quote(heard)})
+
+
+def _spoken_room(name: str) -> str:
+    """How a floor-plan room is said back: "meeting room 2360", "the Grand Ballroom"."""
+    return "meeting room " + name.removeprefix("Meeting Room ") if name.startswith("Meeting Room ") else f"the {name}"
+
+
 async def _previous_turn(db: MemoryDB, device_id: str) -> dict | None:
     """The last answer this device heard: {"question", "answer", "item"}, for follow-ups."""
     if not hasattr(db, "voice_events"):
@@ -502,6 +581,8 @@ async def _follow_up(background, db, ai, geo, settings, device_id: str, question
             log.exception("Looking up the stored context for %s failed", item)
     ctx = json.loads(stored["context"]) if stored and stored.get("context") else None
     trace.set(item=item or None, follow_up_context=bool(ctx))
+    english = is_english(await _language(db, device_id))
+    lastscene = _lastscene_task(db, geo, settings, device_id, item, where) if english else None
     if ctx and stored.get("conversation_id") and raia is not None and raia.configured:
         started = time.perf_counter()
         try:
@@ -511,20 +592,21 @@ async def _follow_up(background, db, ai, geo, settings, device_id: str, question
                      time.perf_counter() - started, text)
             if text:
                 return await _spoken_answer(background, db, ai, geo, settings, device_id, question, where, headers,
-                                            trace=trace, answer=(text, "raia", {"raia": (time.perf_counter() - started) * 1000}))
+                                            trace=trace, answer=(text, "raia", {"raia": (time.perf_counter() - started) * 1000}),
+                                            lastscene=lastscene)
         except Exception as exc:  # slow or down: the answer model, with the context below
             log.warning("RAIA follow-up about %s unavailable (%s); answering with the stored context",
                         item, type(exc).__name__)
     if ctx:
         previous = (previous[0], f"{previous[1]}\n{context_note(ctx, stored.get('finished_at'))}")
     return await _spoken_answer(background, db, ai, geo, settings, device_id, question, where, headers,
-                                trace=trace, previous=previous)
+                                trace=trace, previous=previous, lastscene=lastscene)
 
 
 async def _voice(background, audio, image, transcript, wake, where, pairing_code, device, db, ai, geo, settings,
                  trace: Trace, raia: Raia | None = None):
     photos = [(await _read(i, MAX_IMAGE_BYTES, "image"), i.content_type) for i in (image or [])[:MAX_WAKE_PHOTOS]]
-    heard = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub)))
+    heard = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub, settings.floor_plan)))
     trace.lap("transcribe")
     trace.set(heard=heard, photos=len(photos))
     await _note_pairing(db, device.sub, pairing_code)
@@ -570,6 +652,11 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
         return await _follow_up(background, db, ai, geo, settings, device.sub, question or "Tell me more.", turn,
                                 where, headers, trace, raia)
 
+    # "this is the Reitz Union": the Wi-Fi heard here becomes that place's fingerprint (wifi_places.py).
+    if wake and (place := place_command(words)) and not match_item(place, await saved_item_names(
+            db, device.sub, settings.query_lookback_hours)):
+        return await _name_place(db, ai, settings, device.sub, place, where, heard, trace)
+
     # Step 1, words only: what is being asked (the photos stay out of it). The item comes from matching the
     # household's own saved item names whenever they're said, so it's always the name they taught; the
     # model's item is used only when none matches, and the rules decide when the model is slow or down.
@@ -610,9 +697,11 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
         look = wake and photos
         started = time.perf_counter()
         photo_task = asyncio.create_task(check_photos()) if look else None
+        lastscene = _lastscene_task(db, geo, settings, device.sub, item, where) if is_english(await _language(db, device.sub)) else None
         if photo_task is not None and raia is not None and raia.configured:
             # The item in view goes to raia (raia.py) after the response, once the photo check is done.
-            background.add_task(context_from_photos, db, ai, raia, settings, device.sub, item, photo_task, photos, "ask")
+            background.add_task(context_from_photos, db, ai, raia, settings, device.sub, item, photo_task, photos, "ask",
+                                lambda memory_id: _locate(geo, db, device.sub, "memory_logs", memory_id, where))
         answered = await _answer_text(db, ai, settings, device.sub, words)
         view = None
         if photo_task is not None:
@@ -624,6 +713,8 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
             note_view(view)
         trace.clock = time.perf_counter()
         if view and view.visible and item and view.where and is_english(await _language(db, device.sub)):
+            if lastscene is not None:  # it's in view: where it was recorded doesn't matter now
+                lastscene.cancel()
             answer = IN_VIEW.format(item=item, where=view.where.strip().rstrip("."))
             speech = await ai.speak(answer)
             trace.lap("speak")
@@ -631,7 +722,8 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
             return Response(content=speech, media_type=ai.speech_media_type,
                             headers={"X-Intent": "ask", "X-Answer": quote(answer), "X-Answered-By": "camera", **heard_header})
         return await _spoken_answer(background, db, ai, geo, settings, device.sub, words, where,
-                                    {"X-Intent": "ask", **heard_header}, trace=trace, answer=answered)
+                                    {"X-Intent": "ask", **heard_header}, trace=trace, answer=answered,
+                                    lastscene=lastscene)
     if intent == "found" and item:
         scope, _ = await scope_for(db, device.sub)
         await db.mark_found(scope, " ".join(item.lower().split()), datetime.now(timezone.utc))
@@ -661,7 +753,8 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
     data, kind = photos[best]
     saved = await _save_memory(background, db, ai, geo, settings, device.sub, words, data, kind, where, trace=trace)
     if wake and raia is not None and raia.configured:
-        background.add_task(context_from_photos, db, ai, raia, settings, device.sub, item, view, photos, "remember")
+        background.add_task(context_from_photos, db, ai, raia, settings, device.sub, item, view, photos, "remember",
+                            lambda memory_id: _locate(geo, db, device.sub, "memory_logs", memory_id, where))
     trace.lap("save")
     trace.set(outcome="saved", memory_id=saved["id"], saved_photo=best)
     return {**saved, "intent": "remember", "photo": best, "heard": heard}
@@ -693,7 +786,9 @@ async def _run_pending(db: MemoryDB, ai: AIServices, geo: Geolocator, settings: 
         record = await db.insert(device_id, words, typed[best][0], typed[best][1])
         done.update(memory_id=record.id, saved_photo=best, outcome="saved")
         if raia is not None and raia.configured and settings is not None:  # the wearer heard the reply already
-            if raia_memory := await context_from_photos(db, ai, raia, settings, device_id, item, view, typed, "remember"):
+            if raia_memory := await context_from_photos(
+                    db, ai, raia, settings, device_id, item, view, typed, "remember",
+                    lambda memory_id: _locate(geo, db, device_id, "memory_logs", memory_id, where)):
                 done["raia_memory_id"] = raia_memory
         pending = {"type": "memory", "memory_id": record.id, "words": words, "where": pending.get("where", {})}
     if pending["type"] == "memory":

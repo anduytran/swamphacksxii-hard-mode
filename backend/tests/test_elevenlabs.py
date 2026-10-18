@@ -76,7 +76,7 @@ def test_speaks_with_elevenlabs_as_wav():
     audio = run(ai.speak("Your keys are on the kitchen counter."))
     assert audio[:4] == b"RIFF" and ai.speech_media_type == "audio/wav"
     (body,) = api.spoken
-    assert body["text"] == "Your keys are on the kitchen counter." and body["model_id"] == "eleven_flash_v2_5"
+    assert body["text"] == "Your keys are on the kitchen counter." and body["model_id"] == "eleven_multilingual_v2"
     assert body["voice_settings"]["speed"] == 0.9
     assert ai.gemini.spoken == []
 

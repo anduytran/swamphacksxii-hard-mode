@@ -74,6 +74,19 @@ def test_sync_writes_the_spec_layout_then_skips_an_unchanged_version(tmp_path, p
     assert run_sync(out, force=True, api=FakeApi(VOCAB, dataset()), log=lambda m: None) == EXIT_OK
 
 
+def test_sync_keeps_item_specific_absence_out_of_yolo_training(tmp_path, photos):
+    out = tmp_path / "dataset"
+    data = dataset(ids=("positive",))
+    data["samples"].append({"id": "absent", "class_id": 0, "name": "keys",
+                            "image_url": "https://signed/absent", "width": 64, "height": 48,
+                            "bbox": None, "bbox_xyxy_px": None, "annotation": "absent", "yolo": ""})
+    assert run_sync(out, api=FakeApi(VOCAB, data), log=lambda m: None) == EXIT_OK
+    assert sorted(p.name for p in (out / "images" / "train").iterdir()) == ["positive.jpg"]
+    assert sorted(p.name for p in (out / "images" / "negatives").iterdir()) == ["absent.jpg"]
+    assert json.loads((out / "negatives.json").read_text())[0]["class_id"] == 0
+    assert sorted(p.name for p in (out / "labels" / "train").iterdir()) == ["positive.txt"]
+
+
 def test_sync_removes_photos_deleted_on_the_dashboard(tmp_path, photos):
     out = tmp_path / "dataset"
     run_sync(out, api=FakeApi(VOCAB, dataset()), log=lambda m: None)

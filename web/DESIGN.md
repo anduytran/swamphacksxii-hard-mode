@@ -1,12 +1,12 @@
 # LastScene dashboard: UI specification
 
-High-fidelity, responsive spec for the caregiver dashboard as built in `web/` (React + TypeScript + Vite: `src/pages`, `src/components`, `src/styles.css`). Change the code and this file together.
+High-fidelity, responsive spec for the LastScene dashboard as built in `web/` (React + TypeScript + Vite: `src/pages`, `src/components`, `src/styles.css`). Change the code and this file together.
 
 ## 1. Four layers
 
 | Layer | Definition |
 |---|---|
-| **Context** | Web dashboard (also used on phones) for family members who look after someone with memory loss. They check where things were left, what keeps going missing, and set up the wearable. Often older, often on a phone, often in a hurry. |
+| **Context** | Web dashboard (also used on phones) for anyone who wears LastScene and anyone they share a household with: people who lose things, partners, roommates, family, carers. They check where things were left, what keeps going missing, and set up the wearable. Any age, often on a phone, often in a hurry. |
 | **Structure** | Desktop ≥ 961px: 248px sidebar + content column, max 1320px, 48px side padding, 16px gutters. Tablet 641–960px and phone ≤ 640px: sticky top bar + fixed bottom tab bar, single column, 16–20px side padding. Grids are `auto-fill` / `auto-fit` (e.g. item cards `minmax(250px, 1fr)`: 3–4 columns desktop, 2 tablet, 1 phone). |
 | **Constraints** | Light (white) by default, dark (deep indigo) when the system is dark; maps are night maps in both. No box shadows: depth comes from layered surfaces and 1px borders. No stock photography: real camera frames, plus line-art and geometric illustration. No placeholder-only labels. Every interactive element ≥ 44×44px. Text ≥ 4.5:1 contrast. Chart colours come only from the validated series pair, never from status colours. |
 | **Output** | Responsive, production code. This file is the reference. |
@@ -29,7 +29,7 @@ High-fidelity, responsive spec for the caregiver dashboard as built in `web/` (R
 1. *First visit:* Landing → Log in (Auth0) → no household → Household: create → Add a wearable (Client ID + pairing code) → Items.
 2. *"Where are the keys?":* Items → filter "keys" or tap the card → detail drawer (photo + box, where, when, where it's been, questions) → "Show on the home map".
 3. *Spotting a pattern:* Insights → range 24 h / 2 d / 3 d → tap a bar → detail drawer.
-4. *Family member:* Household → Join with an invite code.
+4. *Someone invited:* Household → Join with an invite code.
 
 **Navigation.** Desktop: sidebar grouped *Today* (Items, Timeline, Map), *Understand* (Insights, Search, Public map), *Setup* (Household), with the user, Refresh and Log out at the bottom. Phone/tablet: bottom tab bar with Items · Timeline · Map · Insights · More. "More" opens a bottom sheet with Search, Public map, Household, Refresh and Log out, and shows as active when one of those pages is open. Signed out on a phone, Log in is a full-width bar at the bottom.
 

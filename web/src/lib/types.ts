@@ -95,13 +95,14 @@ export interface Room {
   putdowns: number;
   lost: number;
   items: string[];
+  wifi_scans?: number; // > 0: surveyed ("Last Scene, this is the Grand Ballroom"), so saves here are placed by Wi-Fi
 }
 
 export interface MapItem {
   name: string;
   room: string;
   room_name: string;
-  room_source?: "photo" | "words"; // photo: the room the camera showed; words: matched from what was said
+  room_source?: "wifi" | "photo" | "words"; // wifi: the room its Wi-Fi matched; photo: the room the camera showed; words: from what was said
   location: string | null;
   last_seen: string;
   mentions: number;
@@ -301,4 +302,29 @@ export interface Health {
     monthly_audio_seconds_cap?: number;
     audio_seconds_this_month?: number;
   };
+}
+
+/** One of an item's last few passive sightings (GET /api/v1/dashboard/items/{name}/sightings). */
+export interface Sighting {
+  id: string;
+  captured_at: string;
+  source: "auto" | "raia";
+  confidence: number | null;
+  maybe: boolean;
+  bbox: BBox | null;
+  image_size: { width: number; height: number } | null;
+  image_url: string | null;
+  where: string | null;
+  summary: string | null;
+  nearby: string[];
+  room: string | null;
+  scene: string | null;
+  location: { lat: number; lng: number; accuracy_m: number | null } | null;
+  place: { id: string; label: string | null } | null;
+  last_seen: boolean;
+}
+
+export interface SightingsResponse {
+  item: string;
+  sightings: Sighting[];
 }

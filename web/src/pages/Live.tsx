@@ -109,21 +109,33 @@ export const orderedSteps = (steps: Record<string, number> = {}) =>
 
 const ENDED: Record<string, string> = { drop: "loudness dropped", silence: "silence", max: "time limit" };
 
+// Plain words for each step: what it does, not which service does it.
 const STEP_LABEL: Record<string, string> = {
-  transcribe: "speech-to-text",
-  decide: "decide",
-  photos: "photo check",
-  save: "save",
-  embed: "embed",
-  retrieve: "search",
-  answer: "answer",
-  speak: "speech",
+  transcribe: "hearing",
+  decide: "understanding",
+  photos: "checking photos",
+  save: "saving",
+  embed: "indexing",
+  retrieve: "searching memories",
+  answer: "answering",
+  speak: "speaking",
+  lastscene: "finding its LastScene",
+  raia: "reading the photo",
+};
+
+// How an answer was put together, in plain words.
+const ANSWERED_BY: Record<string, string> = {
+  template: "from its LastScene",
+  llm: "AI answer",
+  camera: "seen right now",
+  raia: "from the photo",
+  "memory (model too slow)": "from memory",
+  busy: "busy",
 };
 
 function EventCard({ e }: { e: VoiceEvent }) {
   const outcome = OUTCOME[e.outcome] ?? { label: e.outcome, tone: "quiet" };
   const steps = orderedSteps(e.steps);
-  const served = Object.entries(e.served ?? {});
   return (
     <li className="card live-event">
       <div className="live-head">
@@ -131,7 +143,7 @@ function EventCard({ e }: { e: VoiceEvent }) {
         <span className="chip">{e.kind}</span>
         {e.intent && e.intent !== "ignored" && <span className="chip">{e.intent}</span>}
         <time className="live-time mono" dateTime={e.created_at}>
-          {clockTime(e.created_at)} · server {(e.total_ms / 1000).toFixed(1)} s
+          {clockTime(e.created_at)} · took {(e.total_ms / 1000).toFixed(1)} s
           {e.device?.recorded_s !== undefined && ` · wake to reply ≈ ${(e.device.recorded_s + e.total_ms / 1000).toFixed(1)} s`}
         </time>
       </div>
@@ -160,7 +172,7 @@ function EventCard({ e }: { e: VoiceEvent }) {
                 listened {e.device.recorded_s.toFixed(1)} s
                 {e.device.ended && ` (${ENDED[e.device.ended] ?? e.device.ended})`}
                 {e.device.photo_at_s?.length ? ` · photos at ${e.device.photo_at_s.map((t) => t.toFixed(1)).join(", ")} s` : ""}
-                {e.device.wake_score ? <span className="muted"> · wake score {e.device.wake_score.toFixed(2)}</span> : null}
+
               </dd>
             </>
           )}
@@ -168,8 +180,7 @@ function EventCard({ e }: { e: VoiceEvent }) {
             <>
               <dt>Decided by</dt>
               <dd>
-                {e.decided_by === "model" ? "the command model" : "the rules (model slow or down)"}
-                {e.command_error && <span className="muted"> · {e.command_error}</span>}
+                {e.decided_by === "model" ? "AI" : "built-in rules"}
               </dd>
             </>
           )}
@@ -190,7 +201,7 @@ function EventCard({ e }: { e: VoiceEvent }) {
                 {e.best_photo !== undefined && ` · best is #${e.best_photo + 1}`}
                 {e.in_view !== undefined && (e.in_view ? " · item in view" : " · item not in view")}
                 {e.seen_where && ` (${e.seen_where})`}
-                {e.photo_error && <span className="muted"> · check failed: {e.photo_error}</span>}
+                {e.photo_error && <span className="muted"> · couldn't check the photos</span>}
               </dd>
             </>
           )}
@@ -198,7 +209,7 @@ function EventCard({ e }: { e: VoiceEvent }) {
             <>
               <dt>Said back</dt>
               <dd>
-                “{e.answer}”{e.answered_by && <span className="muted"> · {e.answered_by}</span>}
+                “{e.answer}”{e.answered_by && ANSWERED_BY[e.answered_by] && <span className="muted"> · {ANSWERED_BY[e.answered_by]}</span>}
               </dd>
             </>
           )}
@@ -226,15 +237,10 @@ function EventCard({ e }: { e: VoiceEvent }) {
         <div className="live-steps" aria-label="Time per step">
           {steps.map(([k, ms]) => (
             <span key={k} className="live-step">
-              <span className="muted">{STEP_LABEL[k] ?? k}</span> <span className="mono">{ms} ms</span>
+              <span className="muted">{STEP_LABEL[k] ?? k}</span> <span className="mono">{(ms / 1000).toFixed(1)} s</span>
             </span>
           ))}
         </div>
-      )}
-      {served.length > 0 && (
-        <p className="live-served muted">
-          {served.map(([k, who]) => `${STEP_LABEL[k] ?? k}: ${who}`).join(" · ")}
-        </p>
       )}
     </li>
   );
@@ -253,12 +259,12 @@ export function timelineSegments(e: VoiceEvent): Segment[] {
   const out: Segment[] = [];
   if (listened !== undefined) out.push({ label: "listening", s: listened, group: "wearable" });
   if (t.photos_ready !== undefined && t.speech_end !== undefined) out.push({ label: "last photo", s: t.photos_ready - t.speech_end, group: "wearable" });
-  if (t.sent !== undefined && t.photos_ready !== undefined) out.push({ label: "packing", s: t.sent - t.photos_ready, group: "wearable" });
+  if (t.sent !== undefined && t.photos_ready !== undefined) out.push({ label: "preparing", s: t.sent - t.photos_ready, group: "wearable" });
   const network = t.reply !== undefined && t.sent !== undefined ? t.reply - t.sent - serverS : undefined;
-  if (network !== undefined) out.push({ label: "upload + network", s: Math.max(0, network), group: "network" });
+  if (network !== undefined) out.push({ label: "sending", s: Math.max(0, network), group: "network" });
   out.push(...server);
   const stepsS = server.reduce((a, x) => a + x.s, 0);
-  if (serverS - stepsS > 0.05) out.push({ label: "server other", s: serverS - stepsS, group: "server" });
+  if (serverS - stepsS > 0.05) out.push({ label: "processing", s: serverS - stepsS, group: "server" });
   if (t.played !== undefined && t.reply !== undefined) out.push({ label: "playing reply", s: t.played - t.reply, group: "speaking" });
   return out.filter((x) => x.s > 0.005);
 }
@@ -290,28 +296,32 @@ function Timeline({ e }: { e: VoiceEvent }) {
 
 function Usage({ health }: { health: Health }) {
   const s = health.speech;
-  const models = Object.entries(health.model_usage ?? {}).filter(([, u]) => u.used_today > 0);
+  // One total for AI use today, not a line per service.
+  const usage = Object.values(health.model_usage ?? {});
+  const aiUsed = usage.reduce((n, u) => n + u.used_today, 0);
+  const aiLimit = usage.reduce((n, u) => n + u.limit_per_day, 0);
   return (
     <div className="card live-usage">
       <div className="live-usage-row">
         {s && (
           <>
             <span>
-              <span className="muted">Speech-to-text</span> {s.listening} ·{" "}
-              <span className="mono">{s.audio_seconds_this_month ?? 0}</span> of {s.monthly_audio_seconds_cap ?? "?"} s this month
+              <span className="muted">Listening this month</span>{" "}
+              <span className="mono">{Math.round((s.audio_seconds_this_month ?? 0) / 60)}</span> of{" "}
+              {s.monthly_audio_seconds_cap ? Math.round(s.monthly_audio_seconds_cap / 60) : "?"} min
             </span>
             <span>
-              <span className="muted">Voice</span> {s.provider} · <span className="mono">{s.characters_this_month ?? 0}</span> of{" "}
+              <span className="muted">Voice this month</span> <span className="mono">{s.characters_this_month ?? 0}</span> of{" "}
               {s.monthly_character_cap ?? "?"} characters
             </span>
           </>
         )}
-        {models.map(([name, u]) => (
-          <span key={name}>
-            <span className="muted">{name.replace(/^gemini:/, "")}</span> <span className="mono">{u.used_today}</span>/{u.limit_per_day} today
+        {aiLimit > 0 && (
+          <span>
+            <span className="muted">AI use today</span> <span className="mono">{aiUsed}</span> of {aiLimit}
           </span>
-        ))}
-        {!health.ok && <span className="live-err">Server not healthy: {health.missing_settings?.join(", ")}</span>}
+        )}
+        {!health.ok && <span className="live-err">Something on the server needs attention: it's missing some settings.</span>}
       </div>
     </div>
   );

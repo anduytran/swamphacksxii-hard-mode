@@ -23,11 +23,14 @@ from memory_engine.presets import PRESETS
 class LastSceneBridge:
     def __init__(self, ls, uploader=None, preset_name="efficient", outbox_dir=None,
                  enforce_contract_min_confidence=False, selector: EventSelector | None = None,
-                 min_confidence: float | None = None, scene: dict | None = None, pipeline: dict | None = None):
+                 min_confidence: float | None = None, scene: dict | None = None, pipeline: dict | None = None,
+                 location=None):
         """uploader=None and outbox_dir set -> dry run: observations are written to disk, nothing is sent.
         min_confidence: objects below it are not sent (enforce_contract_min_confidence = the contract's 0.35).
         scene: optional {"id", "label"} for where this camera is (observation.scene_block).
-        pipeline: overrides the preset-derived pipeline metadata (e.g. a trained model's name)."""
+        pipeline: overrides the preset-derived pipeline metadata (e.g. a trained model's name).
+        location: optional callable -> {"wifi": [{"bssid", "signal"}], "lat", "lng", "accuracy_m"} or None, where
+        the camera is now; sent as each observation's "location" so the server can place the sighting."""
         self.ls = ls
         self.uploader = uploader
         self.outbox = Path(outbox_dir) if outbox_dir else None
@@ -37,6 +40,7 @@ class LastSceneBridge:
         self.min_confidence = min_confidence if min_confidence is not None else \
             CONTRACT_MIN_CONFIDENCE if enforce_contract_min_confidence else None
         self.scene = scene
+        self.location = location
         self.selector = selector or EventSelector()
         self.stats = {"events": 0, "observations": 0, "skipped_no_capture_time": 0,
                       "below_contract_min_confidence": 0, "dropped_by_contract_min_confidence": 0}
@@ -61,6 +65,12 @@ class LastSceneBridge:
             image_bytes = (Path(self.ls.store.out) / group[0]["image_path"]).read_bytes()  # snapshot now
             try:
                 obs, jpeg = build_observation(group, image_bytes, self.pipeline, self.scene)
+                if self.location is not None:
+                    try:
+                        if where := self.location():
+                            obs["location"] = where
+                    except Exception:  # noqa: BLE001  a sighting without a location still goes up
+                        pass
             except NoCaptureTime:
                 self.stats["skipped_no_capture_time"] += 1
                 continue
