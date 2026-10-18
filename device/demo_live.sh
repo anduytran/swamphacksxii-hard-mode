@@ -29,13 +29,8 @@ ssh_to() {  # one login per Pi for the whole run
 }
 
 echo "== API"
-curl -s -m 10 "$API/healthz" | python3 -c '
-import json, sys
-d = json.load(sys.stdin)
-speech = d.get("speech") or {}
-print("   healthy:", d.get("ok"), "| positioning:", " then ".join(d.get("wifi_positioning_providers") or []) or "off",
-      "| raia:", "on" if d.get("raia_context") else "off", "| voice:", speech.get("voice_model") or speech.get("provider"))
-' || echo "   API not answering"
+curl -s -m 10 "$API/healthz" | python3 -c 'import json, sys; print("   healthy:", json.load(sys.stdin).get("ok"))' \
+  || echo "   API not answering"
 
 if [ -z "${SKIP_CAMERA:-}" ]; then
   echo "== Camera Pi ($CAMERA_HOST): its password, then sudo's"
