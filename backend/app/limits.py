@@ -8,7 +8,7 @@ Two kinds of limit:
     ones reset at midnight Pacific time, so the "day" window here does too. Google doesn't publish
     the free tier's numbers (AI Studio shows your project's), so the defaults are conservative
     settings (config.py, *_RPM / *_RPD) to raise once you've checked.
-  * Callers (inbound): each device and each caregiver gets a per-minute and per-day cap on the
+  * Callers (inbound): each device and each dashboard user gets a per-minute and per-day cap on the
     routes that spend those calls, so one stuck device or script can't use up the day's quota.
 
 When Google answers 429 / 503 anyway (its limits move with demand), the provider's bucket cools

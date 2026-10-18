@@ -40,7 +40,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: "Setup",
     items: [
-      { page: "household", label: "Household", icon: "household", secondary: true, blurb: "Wearable, family and places" },
+      { page: "household", label: "Household", icon: "household", secondary: true, blurb: "Wearable, people and places" },
       { page: "teach", label: "Teach items", icon: "sparkle", secondary: true, blurb: "Help the camera spot your things" },
       { page: "live", label: "Live", icon: "mic", secondary: true, blurb: "Each voice command as it happens" },
     ],

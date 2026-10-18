@@ -1,10 +1,10 @@
-"""Which photos the Teach page's "Needs a look" queue asks the caregiver about.
+"""Which photos the Teach page's "Needs a look" queue asks the household about.
 
 Two sources, newest first:
 - detection: the vision pipeline boxed a taught item with confidence in the unsure band
   (REVIEW_CONFIDENCE_MIN..MAX): "Is this the keys?" with the detector's box.
 - memory: a memory photo whose items name a taught item (or one of its other words) but
-  that no detector boxed; the caregiver draws the box (only the detector ever proposes one).
+  that no detector boxed; a household member draws the box (only the detector ever proposes one).
 A photo already answered for that item (db_review) is never asked again.
 """
 

@@ -11,7 +11,7 @@ interface Feature {
 const FEATURES: Feature[] = [
   { icon: "mic", title: "Press, say, done", text: "Hold a button and say where something is going. The wearable takes a photo at the same moment." },
   { icon: "message", title: "Ask out loud", text: "“Where are my glasses?” gets a spoken answer from what was logged earlier, with the photo to back it up." },
-  { icon: "people", title: "Family stays in the loop", text: "See where each item is, the day scene by scene, and what keeps going missing, floor by floor." },
+  { icon: "people", title: "Share it if you like", text: "See where each item is, the day scene by scene, and what keeps going missing, floor by floor. Invite anyone you live or work with." },
 ];
 
 export function Features(): JSX.Element {

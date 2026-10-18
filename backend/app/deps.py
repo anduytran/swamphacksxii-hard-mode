@@ -55,6 +55,6 @@ def device_limit(kind: str = "spoken"):
 
 async def caregiver_ai_limit(request: Request, caregiver: Principal = Depends(require_caregiver),
                              settings: Settings = Depends(get_settings)) -> Principal:
-    """Per-caregiver cap on dashboard requests that call a model (search, summary)."""
+    """Per-user cap on dashboard requests that call a model (search, summary)."""
     await _take(request, per(f"caregiver:{caregiver.sub}:ai", settings.caregiver_ai_rpm))
     return caregiver

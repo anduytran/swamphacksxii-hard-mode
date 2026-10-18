@@ -91,7 +91,7 @@ class Config:
     audio_out: str = "default"
     max_record_seconds: int = 15
     spool_dir: Path = Path("/var/lib/lastscene/spool")
-    pairing_code: str = ""  # printed on the device; a caregiver enters it to claim the device
+    pairing_code: str = ""  # printed on the device; whoever sets it up enters it to claim the device
     location_source: str = "wifi"  # wifi | fixed | none
     fixed_lat: float | None = None  # used for LOCATION_SOURCE=fixed (and as a Wi-Fi fallback)
     fixed_lng: float | None = None

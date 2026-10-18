@@ -1,6 +1,6 @@
 # LastScene MCP server
 
-`https://www.lastscene.photo/mcp` is a read-only [Model Context Protocol](https://modelcontextprotocol.io) server. Gemini, or any MCP client, can use it to look up a household's data and answer a caregiver's question, such as "When did Mom last have her wallet?".
+`https://www.lastscene.photo/mcp` is a read-only [Model Context Protocol](https://modelcontextprotocol.io) server. Gemini, or any MCP client, can use it to look up a household's data and answer a household member's question, such as "When did I last have my wallet?".
 
 - **Code:** `backend/app/mcp_server.py` (server and tools), `backend/app/db_mcp.py` (keys and the rate counter), `backend/app/routers/mcp_keys.py` (key endpoints).
 - **Tests:** `backend/tests/test_mcp.py`.
@@ -26,7 +26,7 @@ The tools reuse the dashboard's code (`dashboard.items`, `dashboard.missing_time
 
 Send `Authorization: Bearer <token>` on every request. Two kinds of token work:
 
-1. **A caregiver's Auth0 access token.** This is the same token the dashboard uses, checked by the same code (`get_principal` + `require_caregiver`: signature, audience, issuer, expiry, `CAREGIVER_PERMISSION`). Device (M2M) tokens get 403. Tools see only households the caregiver belongs to.
+1. **A household member's Auth0 access token.** This is the same token the dashboard uses, checked by the same code (`get_principal` + `require_caregiver`: signature, audience, issuer, expiry, `CAREGIVER_PERMISSION`). Device (M2M) tokens get 403. Tools see only households the user belongs to.
 2. **A household MCP key** (`lsk_…`), for scripts and headless use such as a Gemini call.
    - The household owner makes and revokes keys on the **Household** page (MCP keys card), or through the API below.
    - A key reads only its own household.
@@ -47,17 +47,17 @@ Errors:
 
 ## Limits
 
-- **Rate:** 60 MCP requests a minute per caregiver. A key counts against the caregiver who made it. Every request counts: `initialize`, `tools/list` and each tool call. Over the limit you get HTTP **429** with `Retry-After: 60`. The counter is kept in the database (`mcp_rate`), so all serverless instances share it.
+- **Rate:** 60 MCP requests a minute per user. A key counts against the user who made it. Every request counts: `initialize`, `tools/list` and each tool call. Over the limit you get HTTP **429** with `Retry-After: 60`. The counter is kept in the database (`mcp_rate`), so all serverless instances share it.
 - **Size:** request bodies over 64 KiB get HTTP **413**, before they are parsed.
 - **Transport:** **Streamable HTTP only** (POST, JSON responses). The server is stateless: every request stands alone and there are no session ids, which suits Vercel. There is no SSE transport and no GET stream. GET and DELETE on `/mcp` get 405. Server-to-client requests (sampling, elicitation) aren't used.
 - Use **`www.lastscene.photo`**. The apex domain answers with a 308 redirect, and some clients drop the `Authorization` header on that redirect.
 
 ## Privacy
 
-This is personal data about someone with memory loss: what they said, where they were, what they lost.
+This is personal data about the wearer: what they said, where they were, what they lost.
 
 - **Read-only.** No tool writes, updates or deletes anything. The only writes an MCP request causes are its rate-counter row and a key's `last_used_at`.
-- **Logging.** Each tool call is logged with the tool name, household id, caregiver id and key id. Its arguments are never logged: search queries and item names can be personal. Refused calls are logged as `denied`.
+- **Logging.** Each tool call is logged with the tool name, household id, user id and key id. Its arguments are never logged: search queries and item names can be personal. Refused calls are logged as `denied`.
 - **Where the data goes.** Anything a tool returns goes to whichever model or client called it. With Gemini, that means Google: the data, and the bearer token in `headers`, go to Google for that call. The example script below passes `store=False` so Google doesn't keep the interaction. Prefer a household MCP key over a personal Auth0 token: a key is narrower, and it can be revoked without signing out.
 - **Photos.** No tool returns photos or photo links.
 
@@ -71,7 +71,7 @@ from google import genai
 client = genai.Client(api_key=GEMINI_API_KEY)
 interaction = client.interactions.create(
     model="gemini-3.8-flash",
-    system_instruction="You help a family caregiver. Answer from the LastScene tools; call list_households first.",
+    system_instruction="You help someone find their things. Answer from the LastScene tools; call list_households first.",
     input="When did Mom last have her wallet?",
     tools=[{
         "type": "mcp_server",

@@ -60,7 +60,7 @@ export function EmptyState({ text, title, checklist, cta, as: Tag = "div" }: Emp
   if (!title) return <Tag className="empty">{text}</Tag>;
   const steps: [string, boolean][] | null = checklist
     ? [
-        ["Create a household for the person who wears it", setup.household],
+        ["Create a household", setup.household],
         ["Add the wearable with the Client ID and pairing code on its label", setup.wearable],
         [checklist, false],
       ]

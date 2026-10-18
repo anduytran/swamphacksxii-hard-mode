@@ -1,4 +1,4 @@
-"""Caregiver review of photos the item detector is unsure about (mixed into MemoryDB).
+"""Household review of photos the item detector is unsure about (mixed into MemoryDB).
 
 The Teach page's "Needs a look" queue asks about two kinds of photo, both already in
 memory_logs: observation frames whose detection confidence is in an unsure band, and memory

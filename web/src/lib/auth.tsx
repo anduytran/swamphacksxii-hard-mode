@@ -1,4 +1,4 @@
-// Auth0 sign-in for caregivers (Universal Login + PKCE via auth0-spa-js). The tenant settings
+// Auth0 sign-in for dashboard users (Universal Login + PKCE via auth0-spa-js). The tenant settings
 // come from /config.json at runtime, so one build works on every host.
 import { createAuth0Client, type User } from "@auth0/auth0-spa-js";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";

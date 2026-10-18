@@ -11,11 +11,11 @@ class Settings(BaseSettings):
     # Auth0
     auth0_domain: str = ""  # e.g. lastscene.us.auth0.com
     auth0_audience: str = ""  # API identifier, e.g. https://api.lastscene
-    # Auth0 SPA application used by the caregiver dashboard (public values).
+    # Auth0 SPA application used by the dashboard (public values).
     auth0_spa_client_id: str = ""
     # Scope the wearable's M2M token must carry (grant it to the M2M app in Auth0).
     device_scope: str = "write:memories"
-    # Optional RBAC permission caregivers must carry. Empty = any valid user token.
+    # Optional RBAC permission dashboard users must carry. Empty = any valid user token.
     caregiver_permission: str = ""
 
     # TigerData (Postgres + pgvector)
@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     device_rpm: int = 20  # per device: spoken requests (/memory/log, /query, /voice, /recall)
     device_rpd: int = 1000
     device_observations_rpm: int = 60  # per device: vision pipeline uploads (it sends at most one per 2 s)
-    caregiver_ai_rpm: int = 30  # per caregiver: dashboard requests that call a model (search, summary)
+    caregiver_ai_rpm: int = 30  # per user: dashboard requests that call a model (search, summary)
 
     # Wi-Fi positioning: the wearable sends nearby access points; the server asks Google's
     # Geolocation API (when this key is set) and then BeaconDB where that is.

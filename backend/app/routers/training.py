@@ -1,6 +1,6 @@
 """Teaching the vision pipeline a household's own items.
 
-Dashboard (household members, caregiver token):
+Dashboard (household members, user token):
     GET    /api/v1/households/{household_id}/training/items
     POST   /api/v1/households/{household_id}/training/items                    {name, aliases}
     PATCH  /api/v1/households/{household_id}/training/items/{item_id}          {name?, aliases?}

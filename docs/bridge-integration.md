@@ -25,7 +25,7 @@ flowchart LR
     Edge --> Queue[Pi queue: stable observation ID, retry, 2-second spacing]
     Queue --> API[FastAPI: POST /api/v1/observations]
     API --> DB[(Postgres: memories, detections, last-seen)]
-    DB --> Dashboard[Caregiver dashboard: photo, box, Maybe]
+    DB --> Dashboard[Dashboard: photo, box, Maybe]
     DB --> Lookup[Device last-seen endpoint]
     DB --> Retrieval[Structured retrieval for voice queries]
     Local --> Guidance[Pi or webapp live guidance]
@@ -57,7 +57,7 @@ Room recognition is outside the demo: omit `scene` or send `null` when unknown.
 ## Backend contract
 
 All bridge routes use the device's Auth0 M2M bearer token, with the configured
-device scope (default `write:memories`). Caregiver dashboard access uses its own
+device scope (default `write:memories`). Dashboard access uses its own
 user token and household membership.
 
 | Operation | Request | Expected result |
@@ -132,7 +132,7 @@ it. These names are verified for the reference client, not for the absent bridge
    token until expiry; send the code as `X-Pairing-Code` on upload.
 3. Send an accepted observation so the backend learns the pairing code. The
    observation route does not register pairing when all detections are rejected.
-4. A caregiver creates/selects the household and claims the device using its
+4. A household member creates/selects the household and claims the device using its
    Auth0 Client ID and the same pairing code. Verify that household's dashboard
    can see the uploaded evidence. Unclaimed device evidence has device-only scope.
 5. From the external bridge environment, run:

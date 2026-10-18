@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
 async def household_devices(
     caregiver: Principal = Depends(require_caregiver), db: MemoryDB = Depends(get_db)
 ) -> list[str]:
-    """Devices in the caller's households: the only data a caregiver may see."""
+    """Devices in the caller's households: the only data a user may see."""
     return await db.device_ids_for(caregiver.sub)
 
 log = logging.getLogger(__name__)
@@ -226,7 +226,7 @@ async def summary(
     ai: AIServices = Depends(get_ai),
     settings: Settings = Depends(get_settings),
 ):
-    """A few plain sentences for the caregiver, written by the LLM (Gemini by default)."""
+    """A few plain sentences for the dashboard, written by the LLM (Gemini by default)."""
     data = await _insights(db, settings, devices)
     if not data["memories_logged"] and not data["questions_asked"]:
         return {"summary": None}
@@ -241,7 +241,7 @@ async def summary(
         f"Most often put down: {counts(data['most_logged'])}. "
         f"Asked about but never logged: {', '.join(never_logged) or 'none'}."
     )
-    # In the household language (a caregiver in several households gets the first one's).
+    # In the household language (someone in several households gets the first one's).
     language = normalize(await db.household_language(devices[0])) if devices else "en"
     cache_key = f"{sorted(devices)}|{language}|{facts}"
     cached = _summary_cache.get(cache_key)
@@ -250,7 +250,7 @@ async def summary(
     try:
         text = await ai.caregiver_summary(facts, language)
     except Exception:
-        log.exception("Caregiver summary failed")
+        log.exception("Dashboard summary failed")
         return {"summary": None}
     _summary_cache[cache_key] = (time.monotonic(), text)
     return {"summary": text}
@@ -462,7 +462,7 @@ def _label(raw: str) -> str:
 
 
 async def _scopes_and_places(db: MemoryDB, caregiver: Principal) -> tuple[list[str], list[str], dict[str, str]]:
-    """(the caregiver's household ids, every scope they may see: those and their devices, place id -> label)."""
+    """(the user's household ids, every scope they may see: those and their devices, place id -> label)."""
     households = await db.households_for(caregiver.sub)
     labels: dict[str, str] = {}
     for h in households:

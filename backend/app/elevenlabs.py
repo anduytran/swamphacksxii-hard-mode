@@ -97,7 +97,7 @@ class ElevenLabs:
             json={
                 "text": text,
                 "model_id": self.s.elevenlabs_model,
-                # A little slower and steadier than default, for listeners with memory loss.
+                # A little slower and steadier than default, so answers are easy to follow.
                 "voice_settings": {"stability": 0.6, "similarity_boost": 0.75, "speed": self.s.elevenlabs_speed},
             },
         )

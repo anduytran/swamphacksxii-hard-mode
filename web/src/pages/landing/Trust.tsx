@@ -1,4 +1,4 @@
-// Why families can trust it. In place of testimonials (there are no customers to quote yet):
+// Why people can trust it. In place of testimonials (there are no customers to quote yet):
 // three things anyone can check in the product, on a tinted band.
 import { Icon, type IconName } from "../../components/Icons";
 import { RevealSection } from "./Reveal";
@@ -33,7 +33,7 @@ export function Trust(): JSX.Element {
       <div className="l-section-head">
         <p className="eyebrow">Built to be trusted</p>
         <h2 id="trust-title" className="l-h2">
-          Made for someone's whole day.
+          Made for your whole day.
         </h2>
       </div>
       <div className="l-cards">

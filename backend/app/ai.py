@@ -29,8 +29,8 @@ log = logging.getLogger(__name__)
 from . import languages
 
 ANSWER_SYSTEM_PROMPT = """\
-You are LastScene, a gentle voice assistant on a wearable that helps someone \
-with memory loss find everyday items. Your reply is spoken aloud through a small speaker.
+You are LastScene, a gentle voice assistant on a wearable that helps people \
+find everyday items. Your reply is spoken aloud through a small speaker.
 
 You are given the user's question and the memories retrieved for it. Each memory says \
 how long ago it happened, what the user said, and what the wearable's camera saw \
@@ -54,7 +54,7 @@ putting something down ("I'm putting my keys on the kitchen counter") or a quest
 ("Where are my glasses?").
 
 List each physical item it is about:
-- name: a short lowercase singular noun phrase a family member would recognise, with no \
+- name: a short lowercase singular noun phrase anyone would recognise, with no \
 possessive ("keys", "reading glasses", "wallet", "blue umbrella"). Use the same name \
 every time for the same kind of item.
 - location: where the item was put, as a short phrase ("kitchen counter", "coat pocket"). \
@@ -69,7 +69,7 @@ loss, said: "{transcript}". Turn it into text a search engine can use to find th
 visible landmarks ("Keys on a wooden table by the front door, next to a blue bowl.").
 - items: each physical item the wearer is putting down, from their words or, if they \
 don't name it, from the photo.
-  - name: a short lowercase singular noun phrase a family member would recognise, with no \
+  - name: a short lowercase singular noun phrase anyone would recognise, with no \
 possessive ("keys", "reading glasses", "wallet", "blue umbrella"). Use the same name every \
 time for the same kind of item.
   - location: where it was put, as a short phrase ("kitchen counter", "coat pocket"): the \
@@ -87,7 +87,7 @@ doesn't show which:
 
 
 COMMAND_SYSTEM_PROMPT = """\
-You read one spoken command to LastScene, a memory-aid wearable for someone with memory loss. It was \
+You read one spoken command to LastScene, a memory-aid wearable that helps people find their things. It was \
 said right after the wake phrase. You get only the words.
 - intent: "remember" when they are putting something down or noting where something is ("I'm putting my \
 keys on the counter", "my glasses are in my bag"); "ask" when they want to know where something is or \
@@ -120,8 +120,8 @@ class PhotoCheck(BaseModel):
 
 
 SUMMARY_SYSTEM_PROMPT = """\
-You write a short update for a family caregiver of someone with memory loss who wears \
-the LastScene memory aid. You get counts and lists from the last few days.
+You write a short update for someone who uses the LastScene memory aid: its wearer, or anyone \
+they share it with. You get counts and lists from the last few days.
 Write 2-3 warm, plain sentences: what stood out, and one practical suggestion if the data \
 supports one. No lists, markdown, headings or invented facts."""
 

@@ -1,4 +1,4 @@
-// Insights: patterns a caregiver should know about, over a chosen window (24 h – 3 days).
+// Insights: patterns worth knowing about, over a chosen window (24 h – 3 days).
 import { useState, type ReactNode } from "react";
 import { BarList, Columns, DataTable, HeatGrid, type BarRow } from "../components/Charts";
 import { EmptyState, repeat, Sk } from "../components/bits";

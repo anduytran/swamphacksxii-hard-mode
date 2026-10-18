@@ -7,7 +7,7 @@ LastScene: multimodal ai embedded on hardware to track down items
 api/index.py      Vercel entry point for the API (the dashboard is static, built from web/)
 backend/          FastAPI service
   app/main.py         app + /config.json (+ serves web/dist locally)
-  app/auth.py         Auth0 JWT validation (M2M device vs. caregiver user)
+  app/auth.py         Auth0 JWT validation (M2M device vs. dashboard user)
   app/db.py           TigerData / Postgres + pgvector: transcripts, embeddings and photos
   app/signing.py      short-lived signed photo links for the dashboard
   app/ai.py           every AI stage, routed per stage to Gemini (default), OpenAI or Claude
@@ -15,7 +15,7 @@ backend/          FastAPI service
   app/routers/        memory, observations (vision pipeline), dashboard, households, public, images, admin (see API)
   app/retention.py    72h purge job (run from cron)
   scripts/device_sim.py  pretend-wearable client for end-to-end testing
-web/              caregiver dashboard: React + TypeScript + Vite (UI spec: web/DESIGN.md)
+web/              dashboard: React + TypeScript + Vite (UI spec: web/DESIGN.md)
   src/App.tsx         shell + hash routing (#/items …); map pages load as their own chunks
   src/pages/          Items, Timeline, Map, Insights, Search, Public map, Household, Landing
   src/components/     shell, charts (bar list, columns, sortable table), item drawer, forms
@@ -29,7 +29,7 @@ deploy/           systemd unit + crontab for the Vultr instance
 
 Base URL `https://www.lastscene.photo` (the bare domain redirects there). Interactive docs at `/docs`, schema at `/openapi.json`.
 
-Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, scope `write:memories`), optionally with an `X-Pairing-Code` header so a caregiver can claim the device. **caregiver** = the dashboard user's Auth0 token. **owner** / **member** = caregiver who owns / belongs to that household. Everything a device or caregiver sees is scoped to its household.
+Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, scope `write:memories`), optionally with an `X-Pairing-Code` header so a household can claim the device. **user** = the dashboard user's Auth0 token. **owner** / **member** = user who owns / belongs to that household. Everything a device or user sees is scoped to its household.
 
 ### Wearable (device)
 
@@ -83,7 +83,7 @@ Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, 
 }
 ```
 
-### Dashboard (caregiver)
+### Dashboard (user)
 
 | Endpoint | Returns |
 |---|---|
@@ -96,15 +96,15 @@ Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, 
 | `GET /api/v1/dashboard/map` | house floor plan: rooms, item spots, movement trips |
 | `GET /api/v1/dashboard/places` | the household's places (private included) and located memories |
 
-### Households (caregiver)
+### Households (user)
 
 | Endpoint | Who | Body | Returns |
 |---|---|---|---|
-| `GET /api/v1/households/me` | caregiver | – | `{households}` with members, devices, places |
-| `POST /api/v1/households` | caregiver | `{name, display_name?}` | `{id}` |
+| `GET /api/v1/households/me` | user | – | `{households}` with members, devices, places |
+| `POST /api/v1/households` | user | `{name, display_name?}` | `{id}` |
 | `POST /api/v1/households/{id}/devices` | owner | `{client_id, pairing_code, label?}` | `{device_id, memories_placed}` |
 | `POST /api/v1/households/{id}/invites` | owner | – | `{code, expires_in_hours}` (one use) |
-| `POST /api/v1/invites/accept` | caregiver | `{code}` | `{household_id}` |
+| `POST /api/v1/invites/accept` | user | `{code}` | `{household_id}` |
 | `PATCH /api/v1/households/{id}` | owner | `{share_public}` | public-map opt-in |
 | `PATCH /api/v1/households/{id}/places/{place_id}` | member | `{name?, kind?}` (`kind`: `private` or `public`) | `{places}` |
 
@@ -126,7 +126,7 @@ Auth: **device** = Auth0 machine-to-machine token (`Authorization: Bearer …`, 
 
 ### MCP (Gemini and other AI assistants)
 
-`POST /mcp` is a read-only [MCP](https://modelcontextprotocol.io) server: Streamable HTTP, stateless, JSON responses. It has 7 tools: `list_households`, `search_memories`, `item_last_seen`, `timeline`, `items`, `missing_times` and `places`. Send a caregiver's Auth0 token or a household MCP key (`/api/v1/households/{id}/mcp-keys`, made by the owner, shown once). See [docs/MCP.md](docs/MCP.md) for auth, limits, privacy and a Gemini example (`backend/scripts/ask_gemini_mcp.py`).
+`POST /mcp` is a read-only [MCP](https://modelcontextprotocol.io) server: Streamable HTTP, stateless, JSON responses. It has 7 tools: `list_households`, `search_memories`, `item_last_seen`, `timeline`, `items`, `missing_times` and `places`. Send a user's Auth0 token or a household MCP key (`/api/v1/households/{id}/mcp-keys`, made by the owner, shown once). See [docs/MCP.md](docs/MCP.md) for auth, limits, privacy and a Gemini example (`backend/scripts/ask_gemini_mcp.py`).
 
 ### Public, photos and ops
 
@@ -148,7 +148,7 @@ After each `log` and `query`, Gemini extracts the items mentioned ("keys" → "k
 1. **API**: create one with identifier = `AUTH0_AUDIENCE` (e.g. `https://api.lastscene`), RS256. Add permission `write:memories`.
 2. **Wearable**: create a *Machine to Machine* application, authorize it for the API with the `write:memories` scope. Put its Client ID/Secret on the wearable ([device/README.md](device/README.md)); the device POSTs `client_credentials` to `https://AUTH0_DOMAIN/oauth/token` and sends `Authorization: Bearer <access_token>` (cache it until `expires_in`).
 3. **Dashboard**: create a *Single Page Application*. Allowed Callback / Logout / Web Origins = your dashboard URL (e.g. `http://localhost:8000`). Put its Client ID in `AUTH0_SPA_CLIENT_ID`.
-4. Because any user who can log in sees the feed, disable public sign-ups on the database connection, or enable RBAC on the API, create a `read:history` permission for caregivers, and set `CAREGIVER_PERMISSION=read:history`.
+4. Because any user who can log in sees the feed, disable public sign-ups on the database connection, or enable RBAC on the API, create a `read:history` permission for dashboard users, and set `CAREGIVER_PERMISSION=read:history`.
 
 ### TigerData
 Create a service and put its connection string in `DATABASE_URL`. On startup the app runs `CREATE EXTENSION vector` and creates the `memory_logs` table with an HNSW index. Photos are stored in the same table (`bytea`), so there is no separate object store; at 72h retention and ~100 KB per JPEG this stays tiny.
@@ -252,11 +252,11 @@ Put it behind HTTPS (Caddy or nginx + Let's Encrypt). Auth0 requires HTTPS origi
 
 ## Households, places and the public map
 
-LastScene is usually set up by a family member **for** the person who wears it.
+Anyone can set LastScene up, for themselves or for someone else, and share it with the people they choose.
 
-1. **Household page → Set up for someone** creates a household; the creator is its owner.
+1. **Household page → Start a household** creates a household; the creator is its owner.
 2. **Add a wearable** with the device's Auth0 Client ID and the pairing code on its label (`PAIRING_CODE` in `device.env`). The device must have connected once; the first code it sends is the one that claims it (trust on first use). A wrong code and an unknown device get the same error.
-3. **Invite someone** gives a one-use code (72 h) that family members enter under **Join a household**.
+3. **Invite someone** gives a one-use code (72 h) that anyone you share with enters under **Join a household**.
 
 **Positions.** The Pi Zero 2 W has no GPS. With `LOCATION_SOURCE=wifi` it sends the access points it can hear with each memory and question. The server keeps that scan with the save (deleted with it, after 72 hours) to recognise the household's own places from their Wi-Fi fingerprints: say "Last Scene, this is the Reitz Union" (or "we're in the kitchen") once, and later saves there are known to be there, indoors and where no positioning service has data (`backend/app/wifi_places.py`; named places keep their fingerprint until deleted). The scan is also resolved to coordinates. It works with no key: [BeaconDB](https://beacondb.net) (free, no account, the community successor to Mozilla Location Service, `BEACONDB_URL`) answers by default. With `GOOGLE_GEOLOCATION_API_KEY` set, Google is asked first (better coverage, budgeted below), and BeaconDB answers past the budget or where Google has no answer. `LOCATION_SOURCE=fixed` sends `HOME_LAT`/`HOME_LNG` instead (also used as a fallback).
 
@@ -309,12 +309,12 @@ Gemini runs every stage by default (`app/gemini.py`); each stage can be switched
 | Answer the question | `gemini-3.8-flash`, grounded on the top-3 memories | Claude | `LLM_PROVIDER` | `AIServices.answer` |
 | Item + location extraction | `gemini-3.8-flash` structured output | Claude | `LLM_PROVIDER` | `AIServices.extract_items` |
 | Photo understanding | `gemini-3.8-flash` vision: one-line scene + items | off | `VISION_PROVIDER` | `AIServices.describe_scene` |
-| Caregiver summary | `gemini-3.8-flash` | Claude | `LLM_PROVIDER` | `AIServices.caregiver_summary` |
+| Dashboard summary | `gemini-3.8-flash` | Claude | `LLM_PROVIDER` | `AIServices.caregiver_summary` |
 | Text → speech | `gemini-3.8-flash-tts` (24 kHz WAV) | OpenAI TTS | `TTS_PROVIDER` | `AIServices.speak` |
 
 After each memory is saved, Gemini looks at the photo, fills in the location when the wearer didn't say one ("I'm putting my keys down" → "table by the front door"), and the memory is re-embedded with that description so questions match what the camera saw as well as what was said. Changing `EMBEDDING_PROVIDER` makes earlier memories unsearchable until they age out (72h).
 
-The wearable runs no models by default. Next steps with an obvious home: on-device wake word / VAD (openWakeWord, Silero) in `device/lastscene_device.py`, and pattern detection for caregivers in `routers/dashboard.py::_insights`.
+The wearable runs no models by default. Next steps with an obvious home: on-device wake word / VAD (openWakeWord, Silero) in `device/lastscene_device.py`, and pattern detection in `routers/dashboard.py::_insights`.
 
 ## Adding a visualization
 

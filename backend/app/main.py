@@ -79,7 +79,7 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
 
     @app.exception_handler(RateLimited)
     async def rate_limited(request: Request, exc: RateLimited):
-        # Which limit, never whose: buckets name devices and caregivers.
+        # Which limit, never whose: buckets name devices and users.
         log.warning("Rate limited (%s) on %s", exc.why, request.url.path)
         return JSONResponse(
             status_code=429,

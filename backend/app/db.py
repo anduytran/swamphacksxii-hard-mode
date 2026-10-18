@@ -190,7 +190,7 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS memory_items_memory_id_idx ON memory_items (memory_id)"
             )
-            # Questions the wearer asked, for the caregiver's Insights page.
+            # Questions the wearer asked, for the dashboard's Insights page.
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS query_logs (

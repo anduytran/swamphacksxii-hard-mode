@@ -1,10 +1,10 @@
 """Household setup: who shares a wearer's memories, which devices, which places.
 
-Typical flow: a caregiver sets LastScene up for someone else.
+Typical flow: someone sets LastScene up, for themselves or someone else, and shares it.
   1. POST /households               create "Mom's household" (the caller becomes owner)
   2. POST /households/{id}/devices   claim the wearable with its Client ID + pairing code
-  3. POST /households/{id}/invites   one-time code for other family members (any member can make one)
-  4. POST /invites/accept            family member joins with the code
+  3. POST /households/{id}/invites   one-time code for anyone else (any member can make one)
+  4. POST /invites/accept            they join with the code
   5. PATCH /households/{id}/places/{place}   name auto-found places, mark public ones
   6. PATCH /households/{id}          opt in to the anonymous public map, set the wearer's language
   7. PATCH /me                       change your own display name (in every household you're in)
@@ -151,7 +151,7 @@ async def claim_device(
 
 @router.post("/households/{household_id}/invites")
 async def create_invite(household_id: str, user: Principal = Depends(require_caregiver), db: MemoryDB = Depends(get_db)):
-    # Any member can share the household: family members bring in other family, not only whoever set it up.
+    # Any member can share the household: anyone in it can bring others in, not only whoever set it up.
     await _require_member(db, household_id, user)
     return {"code": await db.create_invite(household_id, user.sub), "expires_in_hours": 72}
 

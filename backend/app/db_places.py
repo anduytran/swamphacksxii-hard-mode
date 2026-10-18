@@ -1,7 +1,7 @@
 """Households, devices, places and public statistics (mixed into MemoryDB).
 
 Privacy model
-  * A household is the wearer plus the caregivers they share with. Members see their
+  * A household is the wearer plus the people they share with. Members see their
     household's devices' memories; nobody else does.
   * Places are GPS (Wi-Fi-located) clusters per household. They start private; a
     member can mark one public (a shop, a park). Only public places, in households

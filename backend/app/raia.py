@@ -69,7 +69,7 @@ def prompt(label: str, bbox: list[float] | None, scene_label: str | None) -> str
         found = f"Their {label} should be somewhere in it."
     where = f" The camera's location is the {scene_label}." if scene_label else ""
     return (
-        f"This photo is from a wearable camera that helps someone with memory loss find their things. {found}{where}\n"
+        f"This photo is from a wearable camera that helps its wearer find their things. {found}{where}\n"
         f"Answer with only this JSON object, no markdown or other text:\n"
         f'{{"visible": true or false (is a {label} really in the photo), '
         f'"where": "where the {label} is, 2 to 6 words starting with a preposition, like \\"on the desk by the laptop\\"", '
@@ -217,7 +217,7 @@ class Raia:
         """A wearer's follow-up about `item`, in the conversation that read its photo: a short spoken answer."""
         earlier = f'Just before, they asked "{previous[0]}" and heard "{previous[1]}". ' if previous else ""
         message = (
-            f"Follow-up from the person wearing the camera, who has memory loss and is looking for their {item}. "
+            f"Follow-up from the person wearing the camera, who is looking for their {item}. "
             f'{earlier}Now they say: "{question}". Answer from the photo and what you said about it, as one friendly '
             f"spoken sentence under 100 characters, in plain text, not JSON. Directions are from the camera's view: "
             f"its left is their left."

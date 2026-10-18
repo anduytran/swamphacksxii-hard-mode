@@ -1,6 +1,6 @@
-"""Ask Gemini a caregiver's question, answered from LastScene's read-only MCP server.
+"""Ask Gemini a household member's question, answered from LastScene's read-only MCP server.
 
-    python scripts/ask_gemini_mcp.py "When did Mom last have her wallet?"
+    python scripts/ask_gemini_mcp.py "When did I last have my wallet?"
     python scripts/ask_gemini_mcp.py --list-tools        # check the token against /mcp, no Gemini call
 
 Gemini (Interactions API) calls https://www.lastscene.photo/mcp itself, with the token
@@ -9,7 +9,7 @@ below as its bearer header, then answers from what the tools return. See docs/MC
 Reads from the env file (default backend/.env; real environment variables win):
     GEMINI_API_KEY        https://aistudio.google.com/apikey
     LASTSCENE_MCP_TOKEN   a household MCP key (lsk_..., Household page > MCP keys) or a
-                          caregiver's Auth0 access token. Prefer a key: it only reads one
+                          household member's Auth0 access token. Prefer a key: it only reads one
                           household and can be revoked.
     LASTSCENE_MCP_URL     optional, default https://www.lastscene.photo/mcp
 
@@ -30,7 +30,7 @@ DEFAULT_URL = "https://www.lastscene.photo/mcp"  # www: the apex redirects and d
 MODEL = "gemini-3.8-flash"
 TOOLS = ["list_households", "search_memories", "item_last_seen", "timeline", "items", "missing_times", "places"]
 SYSTEM = (
-    "You help a family caregiver of someone with memory loss. Answer from the LastScene tools only: "
+    "You help someone find their things. Answer from the LastScene tools only: "
     "call list_households first, then the tools that fit. Say when something was seen and where, in "
     "plain words and local-sounding times, and say so if the data doesn't show it. Be brief and kind."
 )
@@ -91,7 +91,7 @@ def ask(question: str, url: str, token: str, api_key: str) -> str:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("question", nargs="?", default="When did Mom last have her wallet?")
+    p.add_argument("question", nargs="?", default="When did I last have my wallet?")
     p.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
     p.add_argument("--list-tools", action="store_true", help="only list the server's tools")
     p.add_argument("--json", action="store_true", help="print the answer as JSON")

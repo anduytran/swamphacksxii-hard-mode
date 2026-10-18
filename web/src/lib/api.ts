@@ -1,4 +1,4 @@
-// Calls to the LastScene API with the caregiver's Auth0 token.
+// Calls to the LastScene API with the signed-in user's Auth0 token.
 import { useCallback } from "react";
 import { useAuth } from "./auth";
 
