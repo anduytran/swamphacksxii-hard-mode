@@ -500,7 +500,7 @@ class AIServices:
         if text not in FIXED_PHRASES:
             return await self._speak(text)
         key = (self.s.tts_provider, self.s.gemini_tts_model, self.s.gemini_tts_voice, self.s.tts_model,
-               self.s.tts_voice, self.s.tts_format, self.s.elevenlabs_voice_id, text)
+               self.s.tts_voice, self.s.tts_format, self.s.elevenlabs_voice_id, self.s.elevenlabs_model, text)
         if key not in self._speech_cache:
             self._speech_cache[key] = await self._speak(text)
         return self._speech_cache[key]

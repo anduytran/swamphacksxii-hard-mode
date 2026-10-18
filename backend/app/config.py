@@ -62,7 +62,10 @@ class Settings(BaseSettings):
     # month here, and never past what the plan has left (checked with ElevenLabs, keeping a reserve).
     elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = "SAz9YHcvj6GT2YYXdXww"  # River: relaxed, neutral, calm (premade); any voice id works
-    elevenlabs_model: str = "eleven_flash_v2_5"  # ~75 ms, 32 languages, half price per character
+    # eleven_multilingual_v2: ElevenLabs' most lifelike voice, 1 credit per character (Flash v2.5: ~75 ms, half
+    # that). Answers are under 100 characters, so it stays well inside ELEVENLABS_MONTHLY_CHARS (120,000 at most
+    # 120,000 credits, under the Creator plan's 131,000), and the plan's own balance is checked before each call.
+    elevenlabs_model: str = "eleven_multilingual_v2"
     elevenlabs_speed: float = 0.9  # 0.7-1.2; a little slower is easier to follow
     elevenlabs_monthly_chars: int = 120000  # Creator plan: 131,000 a month, no overage
     elevenlabs_reserve_chars: int = 500

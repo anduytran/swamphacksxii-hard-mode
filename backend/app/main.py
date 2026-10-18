@@ -143,7 +143,8 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
         }
         keys = {}
         if settings.tts_provider == "elevenlabs":
-            info |= {"monthly_character_cap": settings.elevenlabs_monthly_chars, "characters_this_month": None}
+            info |= {"voice_model": settings.elevenlabs_model,
+                     "monthly_character_cap": settings.elevenlabs_monthly_chars, "characters_this_month": None}
             keys["characters_this_month"] = "elevenlabs:characters:month"
         if settings.stt_provider == "elevenlabs":
             info |= {"monthly_audio_seconds_cap": settings.elevenlabs_stt_monthly_seconds, "audio_seconds_this_month": None}
@@ -161,11 +162,13 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
     async def healthz():
         settings = get_settings()
         missing = missing_settings(settings)
+        positioning = Geolocator(settings).providers
         # Optional features: whether each is configured, never the value itself.
         return {
             "ok": not missing,
             "missing_settings": missing,
-            "wifi_positioning": bool(settings.google_geolocation_api_key),
+            "wifi_positioning": bool(positioning),
+            "wifi_positioning_providers": positioning,  # google (when keyed), then beacondb
             "raia_context": bool(settings.raia_agent_key),
             "geolocation_budget": await geolocation_budget(settings),
             "model_usage": await model_usage(settings),
