@@ -342,8 +342,8 @@ class ApiClient:
     def voice(self, wav: bytes | None, jpeg: bytes | list[bytes] | None, where: dict | None = None,
               transcript: str | None = None, wake: bool = False, defer: bool = False,
               client: dict | None = None) -> tuple[str, bytes | dict]:
-        """Wake-phrase clip, with one photo or several. Spoken audio back for "ask" and "found";
-        otherwise the JSON's intent: "remember" (saved), "none" (not a request), "ignored" (wake=True and
+        """Wake-phrase clip, with one photo or several. Spoken audio back for "ask", "found", "place" (a place
+        named: "Last Scene, this is meeting room 2360") and any later spoken reply; otherwise the JSON's intent: "remember" (saved), "none" (not a request), "ignored" (wake=True and
         the clip didn't start with the wake phrase: a false wake)."""
         files, data = self._speech("voice.wav", wav, transcript, where)
         jpegs = [jpeg] if isinstance(jpeg, (bytes, bytearray)) else list(jpeg or [])
@@ -1563,7 +1563,7 @@ class Device:
                     log.warning("Offline; a question can't be answered later, so it isn't kept")
                     play_wav(self.cfg.audio_out, tone(440))
                 return
-            if intent == "ask":
+            if isinstance(result, (bytes, bytearray)):  # any spoken reply: an answer, a place named, ...
                 self.led.on()
                 play_wav(self.cfg.audio_out, result)
             else:
@@ -1730,8 +1730,9 @@ class Device:
         wants_photos = isinstance(result, dict) and bool(result.get("photos_wanted"))
         if not wants_photos:
             not_needed.set()
-        # What the wearer hears, first; the logging after.
-        if intent in ("ask", "found"):
+        # What the wearer hears, first; the logging after. Any spoken reply is played (ask, found, place, ...).
+        spoken = isinstance(result, (bytes, bytearray))
+        if spoken:
             self.led.on()
             play_wav(self.cfg.audio_out, result)
         elif intent == "remember":
@@ -1743,7 +1744,7 @@ class Device:
         heard = info.get("heard") or ""
         log.info("Reply in %.1f s (%.1f s since the wake)%s", timeline["reply"] - timeline["sent"], timeline["reply"],
                  f" [server: {server}]" if server else "")
-        if intent in ("ask", "found"):
+        if spoken:
             log.info("Heard \"%s\" -> %s: \"%s\" (%s)", heard, intent, info.get("answer", ""), info.get("answered_by") or "-")
         elif intent == "remember":
             log.info("Heard \"%s\" -> saving \"%s\" once the photos are in", heard, result.get("transcript"))

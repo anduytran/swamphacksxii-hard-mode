@@ -120,6 +120,13 @@ def test_answers_and_found_are_played(quiet):
     assert b"RIFFanswer" in quiet and b"RIFFglad" in quiet
 
 
+def test_naming_a_place_is_spoken_back_not_beeped(quiet):
+    """ "Last Scene, this is meeting room 2360": the server answers in speech (intent "place"); any spoken reply
+    plays, so new kinds of reply don't fall through to the "not a request" beep."""
+    device(Api(answer=("place", b"RIFFgot-it")))._wake_command(b"")
+    assert b"RIFFgot-it" in quiet and dev.tone(440) not in quiet
+
+
 def test_nothing_said_after_the_beep_sends_nothing(quiet):
     api = Api()
     device(api, said=None)._wake_command(b"")
