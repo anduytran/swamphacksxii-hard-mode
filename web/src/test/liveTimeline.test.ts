@@ -1,0 +1,26 @@
+import { describe, expect, it } from "vitest";
+import { timelineSegments } from "../pages/Live";
+import type { VoiceEvent } from "../lib/types";
+
+const base: VoiceEvent = {
+  id: 1, device_id: "d", created_at: "2026-10-17T23:00:00Z", kind: "wake", outcome: "answered", photos: 4,
+  steps: { transcribe: 400, decide: 700, speak: 500 }, served: {}, total_ms: 1700,
+};
+
+describe("timelineSegments", () => {
+  it("splits wake-to-reply into the wearable, network, server steps and playback", () => {
+    const segs = timelineSegments({ ...base, timeline: { speech_end: 2.0, photos_ready: 2.3, sent: 2.4, reply: 4.6, played: 5.6 } });
+    expect(segs.map((s) => s.label)).toEqual([
+      "listening", "last photo", "packing", "upload + network", "speech-to-text", "decide", "speech", "server other", "playing reply",
+    ]);
+    const total = segs.reduce((a, s) => a + s.s, 0);
+    expect(total).toBeCloseTo(5.6, 5); // wake to end of reply
+    expect(segs.find((s) => s.label === "upload + network")!.s).toBeCloseTo(0.5, 5); // 2.2 s round trip - 1.7 s server
+  });
+
+  it("shows what's known before the device's timeline arrives", () => {
+    const segs = timelineSegments({ ...base, device: { recorded_s: 2.0 } });
+    expect(segs[0]).toEqual({ label: "listening", s: 2.0, group: "wearable" });
+    expect(segs.some((s) => s.group === "network")).toBe(false);
+  });
+});

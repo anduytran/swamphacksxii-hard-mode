@@ -18,6 +18,7 @@ import { openPhoto, PHOTO_ACCEPT, retryPhoto } from "../lib/photo";
 const GOOD_ENOUGH = 10; // photos per item before it's "ready"
 const MAX_SIDE = 1024; // photos are shrunk to this before upload (the pipeline trains at 640)
 const PER_RANGE = 2; // photos per distance before that range counts as covered
+const PREVIEW = 3; // newest photos on an item's card; the rest open in its photo view, so the page loads few
 
 export default function TeachPage() {
   const api = useApi();
@@ -149,6 +150,7 @@ function ItemCard({
   const fileRef = useRef<HTMLInputElement>(null);
   const [queue, setQueue] = useState<File[]>([]);
   const [confirming, setConfirming] = useState(false);
+  const [viewing, setViewing] = useState(false);
   const [error, setError] = useState("");
   const count = item.samples.length;
   const room = maxPhotos - count;
@@ -186,16 +188,18 @@ function ItemCard({
       )}
 
       {count > 0 ? (
-        <ul className="sample-grid">
-          {item.samples.map((s, i) => (
-            <li key={s.id}>
-              <SampleThumb sample={s} alt={`${item.name}, photo ${i + 1}`} />
-              <button type="button" className="icon-btn sample-delete" aria-label={`Delete photo ${i + 1} of ${item.name}`} onClick={() => remove(`${base}/samples/${s.id}`)}>
-                <Icon name="close" />
-              </button>
-            </li>
-          ))}
-        </ul>
+        <>
+          <SampleGrid
+            item={item.name}
+            samples={item.samples.slice(-PREVIEW).reverse()}
+            remove={(s) => remove(`${base}/samples/${s.id}`)}
+          />
+          {count > PREVIEW && (
+            <button type="button" className="pill quiet see-all" onClick={() => setViewing(true)}>
+              See all {count} photos
+            </button>
+          )}
+        </>
       ) : (
         <p className="hint">No photos yet. Different distances, angles, backgrounds and light all help.</p>
       )}
@@ -235,6 +239,8 @@ function ItemCard({
       </div>
       {error && <p className="form-msg error">{error}</p>}
 
+      {viewing && <ItemPhotos item={item} remove={(s) => remove(`${base}/samples/${s.id}`)} onClose={() => setViewing(false)} />}
+
       {queue.length > 0 && (
         <BoxEditor
           item={item.name}
@@ -254,6 +260,53 @@ function ItemCard({
         />
       )}
     </article>
+  );
+}
+
+/** Photos with their boxes, newest first, each with a delete button. */
+function SampleGrid({ item, samples, remove }: { item: string; samples: TrainingSample[]; remove(s: TrainingSample): void }) {
+  return (
+    <ul className="sample-grid">
+      {samples.map((s, i) => (
+        <li key={s.id}>
+          <SampleThumb sample={s} alt={`${item}, photo ${i + 1}`} />
+          <button type="button" className="icon-btn sample-delete" aria-label={`Delete photo ${i + 1} of ${item}`} onClick={() => remove(s)}>
+            <Icon name="close" />
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Every photo of one item, grouped by distance (close up, a step back, across the room), newest first. */
+function ItemPhotos({ item, remove, onClose }: { item: TrainingItem; remove(s: TrainingSample): void; onClose(): void }) {
+  const newest = [...item.samples].reverse();
+  return (
+    <Dialog open onClose={onClose} className="box-dialog" labelledBy="photos-title">
+      <header className="box-head">
+        <div>
+          <h2 id="photos-title">{item.name}: all photos</h2>
+          <p className="hint">
+            {item.samples.length} photo{item.samples.length === 1 ? "" : "s"}, by how far away the {item.name} was.
+          </p>
+        </div>
+        <button type="button" className="icon-btn" data-close aria-label="Close">
+          <Icon name="close" />
+        </button>
+      </header>
+      {RANGES.map((r) => {
+        const photos = newest.filter((s) => rangeOf(s.bbox) === r.key);
+        return (
+          <section key={r.key} className="photos-range" aria-label={r.label}>
+            <h3>
+              {r.label} <span className="hint">· {photos.length}</span>
+            </h3>
+            {photos.length ? <SampleGrid item={item.name} samples={photos} remove={remove} /> : <p className="hint">None yet: {r.tip}.</p>}
+          </section>
+        );
+      })}
+    </Dialog>
   );
 }
 

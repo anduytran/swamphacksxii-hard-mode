@@ -469,3 +469,17 @@ def test_a_deferred_answer_logs_its_question_on_followup(client):  # noqa: F811
     assert client.app_state.db.queries == []
     client.post(f"/api/v1/memory/followup/{followup}", headers=DEVICE)
     assert [q.question for q in client.app_state.db.queries] == ["where are my keys"]
+
+
+def test_every_deferred_command_gets_an_id_for_the_device_timeline(client):  # noqa: F811
+    async def none(words):
+        return Command(intent="none")
+
+    client.app_state.ai.decipher = none
+    files = [("audio", ("v.wav", b"Last Scene, never mind", "audio/wav"))]
+    body = client.post("/api/v1/memory/voice", headers=DEVICE, files=files, data={"wake": "true", "defer": "true"}).json()
+    assert body["intent"] == "none" and body["followup"]
+    timeline = {"speech_end": 2.1, "sent": 2.4, "reply": 3.9, "played": 4.2, "note": "x"}
+    resp = client.post(f"/api/v1/memory/followup/{body['followup']}", headers=DEVICE, json={"timeline": timeline})
+    assert resp.json() == {"done": False}  # no slow work for "never mind"
+    assert live(client)[0]["timeline"] == {"speech_end": 2.1, "sent": 2.4, "reply": 3.9, "played": 4.2}

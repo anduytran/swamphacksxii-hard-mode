@@ -13,6 +13,7 @@ from fastapi import (
     File,
     Form,
     Header,
+    Body,
     HTTPException,
     Response,
     UploadFile,
@@ -227,13 +228,14 @@ async def _traced(background: BackgroundTasks, db: MemoryDB, device_id: str, tra
         response.headers["Server-Timing"] = ", ".join(f"{k};dur={v}" for k, v in steps.items())
     else:
         response = {**response, "steps": steps}
-    if "pending" not in trace.event:
+    if not trace.defer and "pending" not in trace.event:
         background.add_task(_record_trace, db, device_id, trace.done())
         return response
-    # Slow work waits in the event; the device asks for it with a follow-up request once the wearer has heard.
+    # A deferred command is recorded now: the device's follow-up request (its id) runs the slow work waiting in
+    # "pending" once the wearer has heard, and reports the device's own timeline for the Live page.
     event_id = await _record_trace(db, device_id, trace.done())
     if event_id is None:  # nowhere to keep it: do it after the response instead
-        if deps:
+        if deps and "pending" in trace.event:
             background.add_task(_run_pending, db, *deps, device_id, trace.event["pending"])
         return response
     if isinstance(response, Response):
@@ -603,6 +605,7 @@ async def _run_pending(db: MemoryDB, ai: AIServices, geo: Geolocator, settings: 
 @router.post("/followup/{event_id}")
 async def followup(
     event_id: int,
+    report: dict | None = Body(None, description='{"timeline": {stage: seconds since the wake}} from the device'),
     device: Principal = Depends(require_device),
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
@@ -610,10 +613,16 @@ async def followup(
     settings: Settings = Depends(get_settings),
 ):
     """The slow work a wake command left for later (its "followup" id). The device calls this right after
-    the wearer heard the reply and doesn't wait on it. Runs once; a repeat is a no-op."""
+    the wearer heard the reply and doesn't wait on it, with the device's timeline of the command (wake, speech
+    ended, sent, reply, played: seconds since the wake) for the Live page. The work runs once; a repeat only
+    updates the timeline."""
     event = await db.voice_event(device.sub, event_id) if hasattr(db, "voice_event") else None
     if event is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such command")
+    timeline = (report or {}).get("timeline")
+    if isinstance(timeline, dict):
+        clean = {str(k)[:40]: round(float(v), 2) for k, v in list(timeline.items())[:20] if isinstance(v, (int, float))}
+        await db.finish_voice_event(event_id, {"timeline": clean})
     pending = event.get("pending")
     if not pending:
         return {"done": False}

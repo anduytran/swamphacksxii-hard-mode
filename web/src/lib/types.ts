@@ -280,6 +280,7 @@ export interface VoiceEvent {
     wake_score?: number;
     preroll_s?: number;
   };
+  timeline?: Record<string, number>; // from the device: speech_end, photos_ready, sent, reply, played (s since wake)
   followup?: string; // running | done | failed: ...
   followup_ms?: number;
 }

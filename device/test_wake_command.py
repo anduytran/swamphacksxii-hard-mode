@@ -207,8 +207,8 @@ def test_the_command_is_deferred_with_the_device_timings_then_followed_up(quiet)
                          "followup": 7}
             self.followed = threading.Event()
 
-        def followup(self, event_id):
-            self.followed_id = event_id
+        def followup(self, event_id, timeline=None):
+            self.followed_id, self.timeline = event_id, timeline
             self.followed.set()
             return {"followup": "done", "followup_ms": 2100}
 
@@ -217,3 +217,6 @@ def test_the_command_is_deferred_with_the_device_timings_then_followed_up(quiet)
     assert api.defer is True and api.client["photos"] == 4 and api.client["ended"] == "silence"
     assert set(api.client) >= {"recorded_s", "photo_at_s", "wake_score", "preroll_s"}
     assert api.followed.wait(2) and api.followed_id == 7 and b"RIFFanswer" in quiet
+    t = api.timeline
+    assert list(t) == ["speech_end", "photos_ready", "sent", "reply", "played"]
+    assert t["speech_end"] <= t["photos_ready"] <= t["sent"] <= t["reply"] <= t["played"]

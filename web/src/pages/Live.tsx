@@ -214,6 +214,7 @@ function EventCard({ e }: { e: VoiceEvent }) {
         </dl>
       </div>
 
+      <Timeline e={e} />
       {steps.length > 0 && (
         <div className="live-steps" aria-label="Time per step">
           {steps.map(([k, ms]) => (
@@ -229,6 +230,54 @@ function EventCard({ e }: { e: VoiceEvent }) {
         </p>
       )}
     </li>
+  );
+}
+
+type Group = "wearable" | "network" | "server" | "speaking";
+interface Segment { label: string; s: number; group: Group }
+
+/** The command from the wake to the end of the reply, in stages: what the wearable did, the network, each
+ * server step, and playing the reply. Without the device's timeline (older clients) only what's known. */
+export function timelineSegments(e: VoiceEvent): Segment[] {
+  const t = e.timeline ?? {};
+  const server = Object.entries(e.steps ?? {}).map(([k, ms]) => ({ label: STEP_LABEL[k] ?? k, s: ms / 1000, group: "server" as Group }));
+  const serverS = e.total_ms / 1000;
+  const listened = t.speech_end ?? e.device?.recorded_s;
+  const out: Segment[] = [];
+  if (listened !== undefined) out.push({ label: "listening", s: listened, group: "wearable" });
+  if (t.photos_ready !== undefined && t.speech_end !== undefined) out.push({ label: "last photo", s: t.photos_ready - t.speech_end, group: "wearable" });
+  if (t.sent !== undefined && t.photos_ready !== undefined) out.push({ label: "packing", s: t.sent - t.photos_ready, group: "wearable" });
+  const network = t.reply !== undefined && t.sent !== undefined ? t.reply - t.sent - serverS : undefined;
+  if (network !== undefined) out.push({ label: "upload + network", s: Math.max(0, network), group: "network" });
+  out.push(...server);
+  const stepsS = server.reduce((a, x) => a + x.s, 0);
+  if (serverS - stepsS > 0.05) out.push({ label: "server other", s: serverS - stepsS, group: "server" });
+  if (t.played !== undefined && t.reply !== undefined) out.push({ label: "playing reply", s: t.played - t.reply, group: "speaking" });
+  return out.filter((x) => x.s > 0.005);
+}
+
+function Timeline({ e }: { e: VoiceEvent }) {
+  const segs = timelineSegments(e);
+  const total = segs.reduce((a, x) => a + x.s, 0);
+  if (!segs.length || total <= 0) return null;
+  const full = e.timeline?.played !== undefined;
+  return (
+    <div className="live-timeline">
+      <div className="live-bar" role="img" aria-label={`Timeline, ${total.toFixed(1)} seconds: ${segs.map((x) => `${x.label} ${x.s.toFixed(1)} s`).join(", ")}`}>
+        {segs.map((x, i) => (
+          <span key={i} className={`seg ${x.group}`} style={{ flexGrow: x.s }} title={`${x.label}: ${x.s.toFixed(2)} s`} />
+        ))}
+      </div>
+      <p className="live-legend">
+        <span className="mono">{total.toFixed(1)} s</span> {full ? "wake to end of reply" : "so far (wearable timeline arrives after the reply)"} ·{" "}
+        {segs.map((x, i) => (
+          <span key={i} className="live-leg">
+            <span className={`dot ${x.group}`} aria-hidden="true" />
+            {x.label} <span className="mono">{x.s.toFixed(1)}</span>
+          </span>
+        ))}
+      </p>
+    </div>
   );
 }
 
