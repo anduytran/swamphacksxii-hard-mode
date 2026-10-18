@@ -98,8 +98,8 @@ class Config:
     wifi_interface: str = "wlan0"
     wake_word: str = ""  # path to the "Last Scene" .onnx (or a stock name like hey_jarvis); empty = buttons only
     wake_threshold: float = 0.6  # tune per model: with hey_jarvis, "hey Travis" scores ~0.45, the phrase ~1.0
-    wake_max_seconds: float = 5  # speech after the wake phrase is cut off here
-    wake_min_seconds: float = 3  # ...and never ends before this, however quiet it gets
+    wake_max_seconds: float = 7  # speech after the wake phrase is cut off here
+    wake_min_seconds: float = 5  # ...and never ends before this, however quiet it gets
     wake_drop_db: float = 15  # ...or ends sooner when loudness falls this far under the speech (0 = off)
     # Wake phrase as a command (WAKE_CONFIRM=true): the clip keeps the audio from just before the wake
     # (WAKE_PREROLL_SECONDS, so it holds "Last Scene" itself), a photo is taken at once and WAKE_PHOTOS - 1
@@ -151,8 +151,8 @@ class Config:
             wifi_interface=env.get("WIFI_INTERFACE", "wlan0"),
             wake_word=env.get("WAKE_WORD", ""),
             wake_threshold=float(env.get("WAKE_THRESHOLD", 0.6)),
-            wake_max_seconds=float(env.get("WAKE_MAX_SECONDS", 5)),
-            wake_min_seconds=float(env.get("WAKE_MIN_SECONDS", 3)),
+            wake_max_seconds=float(env.get("WAKE_MAX_SECONDS", 7)),
+            wake_min_seconds=float(env.get("WAKE_MIN_SECONDS", 5)),
             wake_drop_db=float(env.get("WAKE_DROP_DB", 15)),
             wake_confirm=env.get("WAKE_CONFIRM", "true").lower() not in ("0", "false", "no"),
             wake_preroll_seconds=float(env.get("WAKE_PREROLL_SECONDS", 1.5)),
