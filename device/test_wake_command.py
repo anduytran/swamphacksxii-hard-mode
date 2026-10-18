@@ -141,3 +141,17 @@ def test_config():
     cfg = Config.local({"WAKE_PHOTOS": "9", "WAKE_PHOTO_GAP_SECONDS": "1.5", "WAKE_CONFIRM": "false"})
     assert cfg.wake_photos == 4 and cfg.wake_photo_gap_seconds == 1.5 and cfg.wake_confirm is False
     assert Config.local({}).wake_confirm is True and Config.local({}).wake_preroll_seconds == 2.0
+
+
+def test_a_mic_device_that_cant_record_says_how_to_fix_it(caplog):
+    mic = dev.MicStream("default", lambda frame: None)
+    mic._proc = SimpleNamespace(
+        stdout=SimpleNamespace(read=lambda n: b""),
+        stderr=SimpleNamespace(read=lambda: b"ALSA lib pcm_asym.c:105:(_snd_pcm_asym_open) capture slave is not defined\n"
+                                            b"arecord: main:850: audio open error: Invalid argument\n"),
+        wait=lambda: 1,
+    )
+    with caplog.at_level("ERROR"):
+        mic._read()
+    text = caplog.text
+    assert "audio open error" in text and "AUDIO_IN_DEVICE=default can't record" in text and "plughw:1,0" in text

@@ -62,12 +62,16 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
    sudo apt update && sudo apt install -y python3-picamera2 python3-gpiozero python3-httpx python3-numpy python3-venv alsa-utils
    sudo python3 -m venv --system-site-packages /opt/lastscene/venv
    # openwakeword's own requirements pull in tflite-runtime, which has no wheel for Python 3.12+ (Raspberry Pi
-   # OS on Debian 13 has 3.13). The device runs its ONNX models, which need only these:
+   # OS on Debian 13 has 3.13). The device runs its ONNX models, which need only these. scipy and scikit-learn
+   # are imported when openwakeword loads (unused by the wake word); apt's builds install in minutes, pip's don't.
+   sudo apt install -y --no-install-recommends python3-scipy python3-sklearn
    sudo /opt/lastscene/venv/bin/pip install onnxruntime tqdm requests
    sudo /opt/lastscene/venv/bin/pip install --no-deps openwakeword==0.6.0
-   sudo /opt/lastscene/venv/bin/python -c "from openwakeword.utils import download_models; download_models(['hey_jarvis'])"
+   sudo /opt/lastscene/venv/bin/python -c "from openwakeword.utils import download_models; download_models(['last_scene'])"
    ```
-   (That fetches openWakeWord's shared feature models; the "Last Scene" model itself ships in `wake/`.)
+   (That fetches only openWakeWord's shared audio models: the name matches none of its ready-made wake words.
+   The "Last Scene" model itself ships in `wake/`. Without `--no-install-recommends`, apt also pulls in
+   matplotlib and SymPy, and "Setting up" sits at ~84% for 10+ minutes on a Zero 2 W.)
    The service runs from this venv. With `WAKE_WORD` empty, or its model missing, only the buttons work.
 
    **Speech-to-text on the Pi** (optional, recommended): with `STT_ENGINE=moonshine` the Pi transcribes what you said and sends only the words, so the recording never leaves the wearable. Moonshine tiny (quantized ONNX, 28 MB) is the default. `--no-deps` skips librosa/numba, which it only needs for reading audio files:

@@ -593,7 +593,7 @@ class MicStream:
     def start(self) -> None:
         self._proc = subprocess.Popen(
             ["arecord", "-q", "-D", self.device, "-f", "S16_LE", "-r", str(RATE), "-c", "1", "-t", "raw"],
-            stdout=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         threading.Thread(target=self._read, daemon=True).start()
 
@@ -602,7 +602,12 @@ class MicStream:
         while True:
             frame = self._proc.stdout.read(FRAME_BYTES)
             if len(frame) < FRAME_BYTES:
-                log.error("Microphone stream ended (arecord exited %s)", self._proc.poll())
+                why = (self._proc.stderr.read() or b"").decode(errors="replace").strip() if self._proc.stderr else ""
+                log.error("Microphone stream ended (arecord exited %s)%s", self._proc.wait(),
+                          f": {why.splitlines()[-1]}" if why else "")
+                if "capture slave is not defined" in why or "audio open error" in why:
+                    log.error("AUDIO_IN_DEVICE=%s can't record. Pick the mic's card from `arecord -l` "
+                              "(e.g. plughw:1,0 for the Voice Bonnet; README \"Voice Bonnet mic\")", self.device)
                 return
             try:
                 self.on_frame(frame)
