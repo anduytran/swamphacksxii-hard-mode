@@ -94,6 +94,7 @@ export default function LivePage() {
 
 const OUTCOME: Record<string, { label: string; tone: string }> = {
   saved: { label: "Saved", tone: "good" },
+  saving: { label: "Saving… (photos coming)", tone: "quiet" },
   answered: { label: "Answered", tone: "good" },
   found: { label: "Marked found", tone: "good" },
   ignored: { label: "Ignored: no wake phrase", tone: "quiet" },
@@ -205,8 +206,9 @@ function EventCard({ e }: { e: VoiceEvent }) {
             <>
               <dt>After reply</dt>
               <dd className={e.followup.startsWith("failed") ? "live-err" : undefined}>
-                {e.followup === "done" ? "indexed and logged" : e.followup}
+                {e.followup === "done" ? (e.memory_id ? "photo picked, saved and indexed" : "logged") : e.followup}
                 {e.followup_ms !== undefined && <span className="muted"> · {(e.followup_ms / 1000).toFixed(1)} s, not waited on</span>}
+                {e.photo_check_ms !== undefined && <span className="muted"> · photo check {(e.photo_check_ms / 1000).toFixed(1)} s</span>}
               </dd>
             </>
           )}

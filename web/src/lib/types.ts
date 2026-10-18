@@ -283,6 +283,7 @@ export interface VoiceEvent {
   timeline?: Record<string, number>; // from the device: speech_end, photos_ready, sent, reply, played (s since wake)
   followup?: string; // running | done | failed: ...
   followup_ms?: number;
+  photo_check_ms?: number; // picking the photo that shows the item, after the reply
 }
 
 /** The parts of /healthz the Live page shows. */

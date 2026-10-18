@@ -270,9 +270,12 @@ involve faker, and nothing is streamed or polled in between.
 ## Using it
 
 - **How a wake works** (`WAKE_CONFIRM=true`, the default): the Pi listens all the time with its own model and
-  sends nothing until that fires. It then takes a photo at once and beeps while already recording, takes 3 more
-  photos while you speak, and stops after `WAKE_MAX_SECONDS` (5) or sooner on silence or a sharp drop in loudness
-  (`WAKE_DROP_DB`). It all goes in one request. The server checks with speech-to-text that "Last Scene" was said
+  sends nothing until that fires. It then takes a photo at once and beeps while already recording, and stops
+  after `WAKE_MAX_SECONDS` (5), or on silence or a sharp drop in loudness (`WAKE_DROP_DB`) but never before
+  `WAKE_MIN_SECONDS` (3). The words and that photo go in one request, and the reply (the "saved" beep or the
+  spoken answer) plays the moment it lands. For a statement it then takes 2 more photos, 5 s apart
+  (`WAKE_PHOTOS`, `WAKE_PHOTO_GAP_SECONDS`), and sends all 3 afterwards; the server saves the one that shows
+  the item. The server checks with speech-to-text that "Last Scene" was said
   (if not, nothing happens and nothing is kept) and only the words after it count. A low-reasoning model reads only
   your words to decide what you asked; the photos go to a model only for a statement (to keep the photo that shows
   the item best) or a question (to say "I see your keys on the desk" when they're in view, checked while the

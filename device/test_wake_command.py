@@ -34,15 +34,24 @@ class Camera:
 
 
 class Api:
-    def __init__(self, answer=("remember", {"transcript": "keys on the counter", "photo": 2}), error=None):
+    def __init__(self, answer=("remember", {"transcript": "keys on the counter", "photos_wanted": True}), error=None):
         self.answer, self.error, self.sent = answer, error, []
+        self.followed = threading.Event()
 
     def voice(self, wav, jpegs, where, transcript=None, wake=False, defer=False, client=None):
         self.sent.append((wav, list(jpegs), wake))
         self.defer, self.client = defer, client
+        self.last = {"followup": 7}
         if self.error:
             raise self.error
         return self.answer
+
+    def followup(self, event_id, timeline=None, jpegs=None):
+        self.followed_up = (event_id, timeline, list(jpegs or []))
+        self.followed.set()
+        return {"followup": "done", "saved_photo": 1}
+
+    followed = None
 
 
 def device(api, camera=None, said=b"\x01\x00" * 800, **cfg):
@@ -50,9 +59,9 @@ def device(api, camera=None, said=b"\x01\x00" * 800, **cfg):
     d.cfg = config(**{"wake_photo_gap_seconds": 0.01, **cfg})
     d.api, d.camera = api, camera or Camera()
     d.led = SimpleNamespace(on=lambda: None, off=lambda: None, blink=lambda **k: None)
-    def listen(endpointer, timeout, keep_all=False):  # speaking long enough for every photo to be taken
+    def listen(endpointer, timeout, keep_all=False):  # long enough for photo 1, taken at the wake
         deadline = dev.time.monotonic() + 2
-        while d.camera.shots < d.cfg.wake_photos and dev.time.monotonic() < deadline:
+        while d.camera.shots < 1 and dev.time.monotonic() < deadline:
             threading.Event().wait(0.005)
         endpointer.reason = "silence"
         return said
@@ -71,20 +80,33 @@ def quiet(monkeypatch):
     return sounds
 
 
-def test_one_request_with_the_wake_phrase_audio_and_four_photos_in_order(quiet):
+def test_saved_beeps_at_once_and_the_photos_follow(quiet):
     api = Api()
-    preroll = b"\x07\x00" * 16000  # 2 s holding "Last Scene"
+    preroll = b"\x07\x00" * 16000  # holding "Last Scene"
     device(api)._wake_command(preroll)
     ((wav, jpegs, wake),) = api.sent
-    assert wake is True and jpegs == [b"\xff\xd8photo%d" % i for i in range(1, 5)]
+    assert wake is True and api.defer is True and jpegs == [b"\xff\xd8photo1"]  # only photo 1 with the words
     assert preroll in wav and wav.startswith(b"RIFF")  # the phrase is in the clip, for the server to confirm
-    assert quiet[-1] == dev.tone(1320, 90)  # "saved"
+    assert quiet[-1] == dev.tone(1320, 90)  # "saved", before any later photo was waited for
+    assert api.followed.wait(3)
+    event_id, timeline, photos = api.followed_up
+    assert event_id == 7 and photos == [b"\xff\xd8photo%d" % i for i in (1, 2, 3)]  # 1 at the wake, 2 and 3 after
+    assert timeline["speech_end"] <= timeline["sent"] <= timeline["reply"] <= timeline["played"]
 
 
-def test_photo_count_and_a_failed_photo(quiet):
+def test_a_failed_photo_still_sends_the_rest(quiet):
     api = Api()
-    device(api, Camera(fail_at={2}), wake_photos=3)._wake_command(b"")
-    assert api.sent[0][1] == [b"\xff\xd8photo1", b"\xff\xd8photo3"]  # photo 2 failed; the rest still go
+    device(api, Camera(fail_at={2}))._wake_command(b"")
+    assert api.followed.wait(3) and api.followed_up[2] == [b"\xff\xd8photo1", b"\xff\xd8photo3"]
+
+
+def test_a_question_takes_no_photos_after_speaking(quiet):
+    api, cam = Api(answer=("ask", b"RIFFanswer")), Camera()
+    device(api, cam, wake_photo_gap_seconds=0.3)._wake_command(b"")
+    assert api.followed.wait(3) and api.followed_up[2] == []
+    threading.Event().wait(0.5)
+    assert cam.shots == 2  # photo 1, and the one taken as speech ended; never the third
+    assert b"RIFFanswer" in quiet
 
 
 def test_a_false_wake_is_silent(quiet):
@@ -199,27 +221,12 @@ def test_speech_is_cut_off_at_the_limit():
     assert ep.reason == "max" and n == round(5 / 0.08)
 
 
-def test_the_command_is_deferred_with_the_device_timings_then_followed_up(quiet):
-    class Followed(Api):
-        def __init__(self):
-            super().__init__(answer=("ask", b"RIFFanswer"))
-            self.last = {"heard": "Last Scene, where are my keys", "answer": "On the desk.", "steps": "transcribe;dur=400",
-                         "followup": 7}
-            self.followed = threading.Event()
-
-        def followup(self, event_id, timeline=None):
-            self.followed_id, self.timeline = event_id, timeline
-            self.followed.set()
-            return {"followup": "done", "followup_ms": 2100}
-
-    api = Followed()
+def test_the_command_sends_the_device_timings(quiet):
+    api = Api(answer=("ask", b"RIFFanswer"))
     device(api)._wake_command(b"\x07\x00" * 100)
-    assert api.defer is True and api.client["photos"] == 4 and api.client["ended"] == "silence"
-    assert set(api.client) >= {"recorded_s", "photo_at_s", "wake_score", "preroll_s"}
-    assert api.followed.wait(2) and api.followed_id == 7 and b"RIFFanswer" in quiet
-    t = api.timeline
-    assert list(t) == ["speech_end", "photos_ready", "sent", "reply", "played"]
-    assert t["speech_end"] <= t["photos_ready"] <= t["sent"] <= t["reply"] <= t["played"]
+    assert api.client["photos"] == 1 and api.client["ended"] == "silence"
+    assert set(api.client) >= {"recorded_s", "wake_score", "preroll_s"}
+    assert api.followed.wait(2) and list(api.followed_up[1]) == ["speech_end", "sent", "reply", "played"]
 
 
 def test_a_late_beep_doesnt_set_the_peak_and_cut_the_speech_short():

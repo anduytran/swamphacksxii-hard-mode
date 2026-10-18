@@ -107,8 +107,8 @@ class Config:
     # (false wakes are dropped there) and a low-reasoning model reads the words and photos.
     wake_confirm: bool = True
     wake_preroll_seconds: float = 1.5
-    wake_photos: int = 4
-    wake_photo_gap_seconds: float = 0.75
+    wake_photos: int = 3  # photo 1 at the wake; the rest after speaking, for a statement only
+    wake_photo_gap_seconds: float = 5.0  # between the photos after speaking
     stt_engine: str = "server"  # moonshine | vosk | server (send the audio; the server transcribes)
     stt_model: str = ""  # model folder; empty = the default under /opt/lastscene/stt
     stt_fallback: bool = True  # local model missing or heard nothing: send the audio instead
@@ -156,8 +156,8 @@ class Config:
             wake_drop_db=float(env.get("WAKE_DROP_DB", 15)),
             wake_confirm=env.get("WAKE_CONFIRM", "true").lower() not in ("0", "false", "no"),
             wake_preroll_seconds=float(env.get("WAKE_PREROLL_SECONDS", 1.5)),
-            wake_photos=max(1, min(4, int(env.get("WAKE_PHOTOS", 4)))),
-            wake_photo_gap_seconds=float(env.get("WAKE_PHOTO_GAP_SECONDS", 0.75)),
+            wake_photos=max(1, min(4, int(env.get("WAKE_PHOTOS", 3)))),
+            wake_photo_gap_seconds=float(env.get("WAKE_PHOTO_GAP_SECONDS", 5.0)),
             stt_engine=env.get("STT_ENGINE", "server").lower(),
             stt_model=env.get("STT_MODEL", ""),
             stt_fallback=env.get("STT_FALLBACK", "true").lower() not in ("0", "false", "no"),
@@ -343,10 +343,12 @@ class ApiClient:
         self.last = {"heard": body.get("heard", ""), "steps": steps, "followup": body.get("followup")}
         return body.get("intent", "remember"), body
 
-    def followup(self, event_id, timeline: dict | None = None) -> dict:
-        """Run the slow work a deferred voice command left on the server (indexing, photo pass, logging), and
-        report the device's timeline of it (seconds since the wake) for the Live page."""
-        return self._post(f"/api/v1/memory/followup/{event_id}", json={"timeline": timeline or {}}).json()
+    def followup(self, event_id, timeline: dict | None = None, jpegs: list[bytes] | None = None) -> dict:
+        """Run the slow work a deferred voice command left on the server: save a statement with the photo that
+        shows the item (`jpegs`), index it, log a question. With the device's timeline (seconds since the
+        wake) for the Live page."""
+        files = [("image", (f"scene{i}.jpg", j, "image/jpeg")) for i, j in enumerate(jpegs or [])]
+        return self._post(f"/api/v1/memory/followup/{event_id}", files, {"timeline": json.dumps(timeline or {})}).json()
 
     def ask(self, wav: bytes | None, where: dict | None = None, transcript: str | None = None) -> tuple[bytes, str]:
         files, data = self._speech("question.wav", wav, transcript, where)
@@ -1395,25 +1397,25 @@ class Device:
             log.warning("Photo %d failed: %s", index + 1, exc)
 
     def _wake_command(self, preroll: bytes) -> None:
-        """Photo now and more while they speak, listen (WAKE_MAX_SECONDS at most, ending sooner on silence or
-        a sharp drop in loudness), then one request: the server confirms "Last Scene" was said, keeps the
-        words after it, and replies as soon as it can; its slow work runs on a follow-up call afterwards."""
+        """Everything the wearer hears comes first: photo 1, the beep and the Wi-Fi scan start at the wake, it
+        listens (WAKE_MIN_SECONDS to WAKE_MAX_SECONDS, ending on silence or a sharp drop in loudness), then the
+        words and photo 1 go in one request and the reply (the "saved" beep, or the spoken answer) plays the
+        moment it lands. For a statement, WAKE_PHOTOS - 1 more photos are taken after speaking,
+        WAKE_PHOTO_GAP_SECONDS apart, and sent on the follow-up, where the server keeps the one that shows the
+        item and saves the memory: nobody waits for that."""
         t0 = time.monotonic()
         score = getattr(getattr(self, "wake", None), "score", 0) or 0
-        log.info("Wake: \"Last Scene\" (score %.2f), listening up to %.0f s", score, self.cfg.wake_max_seconds)
+        log.info("Wake: \"Last Scene\" (score %.2f), listening %g-%g s", score, self.cfg.wake_min_seconds,
+                 self.cfg.wake_max_seconds)
         photos: list[tuple[int, bytes]] = []
-        shot_at: list[float] = []
-        stop_shooting = threading.Event()
+        shot_at: dict[int, float] = {}
 
-        def shoot() -> None:  # photo 1 right away, then one every WAKE_PHOTO_GAP_SECONDS while they speak
-            for index in range(self.cfg.wake_photos):
-                if index and stop_shooting.wait(self.cfg.wake_photo_gap_seconds):
-                    return
-                self._grab(photos, index)
-                shot_at.append(time.monotonic() - t0)
+        def grab(index: int) -> None:
+            self._grab(photos, index)
+            shot_at[index] = round(time.monotonic() - t0, 2)
 
-        shooter = threading.Thread(target=shoot, daemon=True)
-        shooter.start()
+        first = threading.Thread(target=grab, args=(0,), daemon=True)  # the scene as the phrase was said
+        first.start()
         place: dict = {}  # the Wi-Fi scan for the location runs while they speak, not after
         locating = threading.Thread(target=lambda: place.update(where=whereabouts(self.cfg)), daemon=True)
         locating.start()
@@ -1434,73 +1436,97 @@ class Device:
         pcm = self.voice.listen(ep, self.cfg.wake_max_seconds + 3, keep_all=True)
         recorded = time.monotonic() - t0
         timeline = {"speech_end": round(recorded, 2)}
-        stop_shooting.set()
         if pcm is None:
             log.info("Nothing said within 3 s after the wake phrase")
             play_wav(self.cfg.audio_out, tone(440))
             return
         self.led.blink(on_time=0.1, off_time=0.1)
-        shooter.join(timeout=1.5)  # a photo already on its way is worth a moment; no more than that
-        shots = [jpeg for _, jpeg in sorted(photos)]
-        timeline["photos_ready"] = round(time.monotonic() - t0, 2)
-        ended = {"drop": "loudness dropped", "silence": "silence", "max": f"{self.cfg.wake_max_seconds:g} s limit"}
-        log.info("Recorded %.1f s (%s), %d photo%s at %s s", recorded, ended.get(ep.reason, ep.reason), len(shots),
-                 "" if len(shots) == 1 else "s", ", ".join(f"{t:.1f}" for t in shot_at) or "-")
-        client = {"recorded_s": round(recorded, 2), "ended": ep.reason, "photos": len(shots),
-                  "photo_at_s": [round(t, 2) for t in shot_at], "wake_score": round(float(score), 2),
-                  "preroll_s": round(len(preroll) / 2 / RATE, 2)}
+
+        # Photos after speaking: one now, the rest WAKE_PHOTO_GAP_SECONDS apart, only if it's a statement.
+        not_needed = threading.Event()
+
+        def after() -> None:
+            for index in range(1, self.cfg.wake_photos):
+                if index > 1 and not_needed.wait(self.cfg.wake_photo_gap_seconds):
+                    return
+                grab(index)
+
+        later = threading.Thread(target=after, daemon=True)
+        later.start()
+        first.join(timeout=1.0)  # photo 1 goes along for the "is it in view now" check; never worth more wait
+        locating.join(timeout=0.5)
         wav = wav_bytes(preroll + pcm)  # with the wake phrase, for the server to confirm
-        locating.join(timeout=1.0)
         where = place.get("where") or {}
+        shots = [jpeg for i, jpeg in photos if i == 0]
+        ended = {"drop": "loudness dropped", "silence": "silence", "max": f"{self.cfg.wake_max_seconds:g} s limit"}
+        log.info("Recorded %.1f s (%s); sending the words%s", recorded, ended.get(ep.reason, ep.reason),
+                 " and photo 1" if shots else " (photo 1 not ready)")
+        client = {"recorded_s": round(recorded, 2), "ended": ep.reason, "photos": len(shots),
+                  "wake_score": round(float(score), 2), "preroll_s": round(len(preroll) / 2 / RATE, 2)}
         sent = time.monotonic()
         timeline["sent"] = round(sent - t0, 2)
         try:
             intent, result = self.api.voice(wav, shots, where, wake=True, defer=True, client=client)
         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            not_needed.set()
             if rejected(exc):
                 log.warning("Server rejected the command: %s", exc.response.text)
                 play_wav(self.cfg.audio_out, tone(440))
-            elif shots:
-                self.spool.add(wav, shots[0], where, kind="voice")
+            elif shots or photos:
+                self.spool.add(wav, (shots or [sorted(photos)[0][1]])[0], where, kind="voice")
                 log.warning("Offline; command spooled for later")
             else:
                 play_wav(self.cfg.audio_out, tone(440))
             return
         timeline["reply"] = round(time.monotonic() - t0, 2)
         info = getattr(self.api, "last", {}) or {}
-        server = " ".join(f"{p.split(';dur=')[0]} {p.split(';dur=')[1]}ms" for p in info.get("steps", "").split(", ") if ";dur=" in p)
-        log.info("Reply in %.1f s (%.1f s since the wake)%s", time.monotonic() - sent, time.monotonic() - t0,
-                 f" [server: {server}]" if server else "")
-        heard = info.get("heard") or ""
+        wants_photos = isinstance(result, dict) and bool(result.get("photos_wanted"))
+        if not wants_photos:
+            not_needed.set()
+        # What the wearer hears, first; the logging after.
         if intent in ("ask", "found"):
-            log.info("Heard \"%s\" -> %s: \"%s\" (%s)", heard, intent, info.get("answer", ""), info.get("answered_by") or "-")
             self.led.on()
             play_wav(self.cfg.audio_out, result)
         elif intent == "remember":
-            log.info("Heard \"%s\" -> saved \"%s\" (photo %s of %d)", heard, result.get("transcript"),
-                     result.get("photo", 0) + 1, len(shots))
             play_wav(self.cfg.audio_out, tone(1320, 90))  # "saved"
+        elif intent != "ignored":
+            play_wav(self.cfg.audio_out, tone(440))
+        timeline["played"] = round(time.monotonic() - t0, 2)
+        server = " ".join(f"{p.split(';dur=')[0]} {p.split(';dur=')[1]}ms" for p in info.get("steps", "").split(", ") if ";dur=" in p)
+        heard = info.get("heard") or ""
+        log.info("Reply in %.1f s (%.1f s since the wake)%s", timeline["reply"] - timeline["sent"], timeline["reply"],
+                 f" [server: {server}]" if server else "")
+        if intent in ("ask", "found"):
+            log.info("Heard \"%s\" -> %s: \"%s\" (%s)", heard, intent, info.get("answer", ""), info.get("answered_by") or "-")
+        elif intent == "remember":
+            log.info("Heard \"%s\" -> saving \"%s\" once the photos are in", heard, result.get("transcript"))
         elif intent == "ignored":
             log.info("Heard \"%s\": no \"Last Scene\" in it, ignored", heard)
         else:
             log.info("Heard \"%s\": not a request", heard)
-            play_wav(self.cfg.audio_out, tone(440))
-        timeline["played"] = round(time.monotonic() - t0, 2)
-        log.info("Timeline (s since wake): %s | listen %.1f, photos +%.1f, upload+server %.1f, play %.1f",
+        log.info("Timeline (s since wake): %s | listen %.1f, upload+server %.1f, play %.1f",
                  " ".join(f"{k}={v:.1f}" for k, v in timeline.items()), timeline["speech_end"],
-                 timeline["photos_ready"] - timeline["speech_end"], timeline["reply"] - timeline["sent"],
-                 timeline["played"] - timeline["reply"])
+                 timeline["reply"] - timeline["sent"], timeline["played"] - timeline["reply"])
         if info.get("followup"):
-            threading.Thread(target=self._followup, args=(info["followup"], timeline), daemon=True).start()
+            threading.Thread(target=self._followup, args=(info["followup"], timeline, later if wants_photos else None,
+                                                          photos, shot_at), daemon=True).start()
 
-    def _followup(self, event_id, timeline: dict | None = None) -> None:
-        """The server's slow work for that command (indexing, the photo pass, logging), after the wearer heard,
-        and this command's timeline for the Live page."""
+    def _followup(self, event_id, timeline: dict | None = None, later: threading.Thread | None = None,
+                  photos: list | None = None, shot_at: dict | None = None) -> None:
+        """After the wearer heard the reply: a statement's photos (once the last is taken) so the server can save
+        the memory with the one showing the item, the server's slow work, and this command's timeline."""
         try:
-            done = self.api.followup(event_id, timeline)
-            log.info("Follow-up %s: %s in %.1f s", event_id, done.get("followup", "nothing to do"),
-                     (done.get("followup_ms") or 0) / 1000)
-        except Exception as exc:  # the memory is saved either way; only its photo pass / indexing is missing
+            jpegs: list[bytes] = []
+            if later is not None:
+                later.join(timeout=self.cfg.wake_photo_gap_seconds * max(1, self.cfg.wake_photos - 2) + 5)
+                jpegs = [jpeg for _, jpeg in sorted(photos or [])]
+                log.info("Photos at %s s; sending %d to save the memory",
+                         ", ".join(f"{t:.1f}" for _, t in sorted((shot_at or {}).items())), len(jpegs))
+            done = self.api.followup(event_id, timeline, jpegs)
+            saved = f", saved photo {done['saved_photo'] + 1} of {len(jpegs)}" if "saved_photo" in done else ""
+            log.info("Follow-up %s: %s in %.1f s%s", event_id, done.get("followup", "nothing to do"),
+                     (done.get("followup_ms") or 0) / 1000, saved)
+        except Exception as exc:  # the reply was heard either way; the Live page shows what's missing
             log.warning("Follow-up %s failed: %s", event_id, exc)
 
     def _begin(self, mode: str) -> None:

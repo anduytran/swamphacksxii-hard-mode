@@ -13,7 +13,6 @@ from fastapi import (
     File,
     Form,
     Header,
-    Body,
     HTTPException,
     Response,
     UploadFile,
@@ -578,6 +577,12 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
     if intent == "none":
         trace.set(outcome="nothing to do")
         return {"intent": "none", "heard": heard}
+    if wake and trace.defer:
+        # Reply now (the wearer hears "saved" at once); the photos come with the device's follow-up, where the
+        # one showing the item is picked and the memory saved.
+        trace.event["pending"] = {"type": "remember", "words": words, "item": item, "where": asdict(where)}
+        trace.set(outcome="saving")
+        return {"intent": "remember", "transcript": words, "heard": heard, "photos_wanted": True}
     if not photos:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "A memory needs the photo; send image with the audio")
     view = await check_photos() if wake else None
@@ -593,9 +598,31 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
 
 
 async def _run_pending(db: MemoryDB, ai: AIServices, geo: Geolocator, settings: Settings | None, device_id: str,
-                       pending: dict) -> None:
-    """A wake command's deferred work: index and describe a saved memory, or log an answered question."""
+                       pending: dict, photos: list[tuple[bytes, str]] | None = None) -> dict:
+    """A wake command's deferred work, after the wearer has heard the reply: save a memory with the photo that
+    shows the item best, index and describe a saved memory, or log an answered question. What it did comes back
+    for the Live page."""
     where = Whereabouts(**pending.get("where", {}))
+    done: dict = {}
+    if pending["type"] == "remember":
+        if not photos:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "A memory needs the photo; send image")
+        words, item = pending["words"], pending.get("item") or ""
+        typed = [(data, kind if kind in ALLOWED_IMAGE_TYPES else "image/jpeg") for data, kind in photos]
+        started = time.perf_counter()
+        view = None
+        try:
+            view = await ai.look_for(item, words, typed)
+        except Exception as exc:  # photo 1 then
+            log.warning("Photo check unavailable (%s)", type(exc).__name__)
+            done["photo_error"] = type(exc).__name__
+        done["photos"], done["photo_check_ms"] = len(typed), round((time.perf_counter() - started) * 1000)
+        best = view.best_photo if view and 0 <= view.best_photo < len(typed) else 0
+        if view:
+            done.update(best_photo=view.best_photo, in_view=view.visible, seen_where=view.where or None)
+        record = await db.insert(device_id, words, typed[best][0], typed[best][1])
+        done.update(memory_id=record.id, saved_photo=best, outcome="saved")
+        pending = {"type": "memory", "memory_id": record.id, "words": words, "where": pending.get("where", {})}
     if pending["type"] == "memory":
         memory_id, words = pending["memory_id"], pending["words"]
         try:
@@ -607,12 +634,15 @@ async def _run_pending(db: MemoryDB, ai: AIServices, geo: Geolocator, settings: 
             await _enrich_memory(db, ai, geo, device_id, memory_id, words, stored[0], stored[1], where, settings)
     elif pending["type"] == "query":
         await _record_query(db, ai, geo, device_id, pending["question"], pending["answer"], where)
+    return done
 
 
 @router.post("/followup/{event_id}")
 async def followup(
     event_id: int,
-    report: dict | None = Body(None, description='{"timeline": {stage: seconds since the wake}} from the device'),
+    timeline: str | None = Form(None, description='JSON {stage: seconds since the wake} from the device'),
+    image: list[UploadFile] | None = File(None, description="a remember's photos (photo 1 at the wake, then the "
+                                          "ones after speaking); the one showing the item is saved"),
     device: Principal = Depends(require_device),
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
@@ -626,18 +656,23 @@ async def followup(
     event = await db.voice_event(device.sub, event_id) if hasattr(db, "voice_event") else None
     if event is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such command")
-    timeline = (report or {}).get("timeline")
-    if isinstance(timeline, dict):
-        clean = {str(k)[:40]: round(float(v), 2) for k, v in list(timeline.items())[:20] if isinstance(v, (int, float))}
+    try:
+        times = json.loads(timeline[:2000]) if timeline else None
+    except ValueError:
+        times = None
+    if isinstance(times, dict):
+        clean = {str(k)[:40]: round(float(v), 2) for k, v in list(times.items())[:20] if isinstance(v, (int, float))}
         await db.finish_voice_event(event_id, {"timeline": clean})
     pending = event.get("pending")
     if not pending:
         return {"done": False}
     await db.finish_voice_event(event_id, {"followup": "running"})  # claim it, so a retry doesn't run it twice
     started = time.perf_counter()
+    photos = [(await _read(i, MAX_IMAGE_BYTES, "image"), i.content_type) for i in (image or [])[:MAX_WAKE_PHOTOS]]
     try:
-        await _run_pending(db, ai, geo, settings, device.sub, pending)
-        result = {"followup": "done"}
+        result = {**await _run_pending(db, ai, geo, settings, device.sub, pending, photos), "followup": "done"}
+    except HTTPException as exc:
+        result = {"followup": f"failed: {exc.detail}", "outcome": "error"}
     except Exception as exc:
         log.exception("Follow-up %s failed", event_id)
         result = {"followup": f"failed: {type(exc).__name__}"}

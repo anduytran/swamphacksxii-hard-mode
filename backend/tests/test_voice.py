@@ -1,5 +1,6 @@
 """The wake-phrase route: one clip, and the words decide between saving a memory and answering."""
 
+import json
 from urllib.parse import unquote
 
 import pytest
@@ -435,25 +436,58 @@ def test_continue_with_nothing_before_it_does_nothing(client):  # noqa: F811
     assert resp.json()["intent"] == "none"
 
 
-def test_deferred_work_waits_for_the_followup_and_runs_once(client):  # noqa: F811
-    files = [("audio", ("v.wav", b"Last Scene, I'm putting my keys on the counter", "audio/wav")),
-             ("image", ("p.jpg", b"\xff\xd8photo", "image/jpeg"))]
+def test_a_remember_replies_at_once_and_saves_the_best_photo_on_followup(client):  # noqa: F811
+    async def fake_decipher(words):
+        return Command(intent="remember", item="banana")
+
+    looked = []
+
+    async def fake_look(item, words, pics):
+        looked.append((item, len(pics)))
+        return PhotoCheck(visible=True, best_photo=2, where="on the table")
+
+    client.app_state.ai.decipher, client.app_state.ai.look_for = fake_decipher, fake_look
+    files = [("audio", ("v.wav", b"Last Scene, my banana is on the table", "audio/wav")),
+             ("image", ("p0.jpg", b"\xff\xd8photo-0", "image/jpeg"))]
+    resp = client.post("/api/v1/memory/voice", headers=DEVICE, files=files,
+                       data={"wake": "true", "defer": "true", "client": '{"recorded_s": 3.1, "ended": "drop"}'})
+    body = resp.json()
+    assert body["intent"] == "remember" and body["photos_wanted"] and body["followup"]
+    assert client.app_state.db.rows == [] and looked == []  # nothing saved or looked at before the reply
+    event = live(client)[0]
+    assert event["outcome"] == "saving" and "pending" not in event and event["device"]["recorded_s"] == 3.1
+
+    photos = [("image", (f"p{i}.jpg", b"\xff\xd8photo-%d" % i, "image/jpeg")) for i in range(3)]
+    done = client.post(f"/api/v1/memory/followup/{body['followup']}", headers=DEVICE, files=photos,
+                       data={"timeline": '{"speech_end": 3.1, "reply": 4.0, "played": 4.2}'}).json()
+    assert done["done"] and done["followup"] == "done" and done["saved_photo"] == 2 and looked == [("banana", 3)]
+    (row,) = client.app_state.db.rows
+    assert row.transcript == "my banana is on the table" and client.app_state.db.images[row.id][0] == b"\xff\xd8photo-2"
+    assert client.app_state.db.chunks  # indexed too
+    event = live(client)[0]
+    assert event["outcome"] == "saved" and event["memory_id"] == row.id and event["image_url"]
+    assert event["timeline"]["played"] == 4.2 and event["seen_where"] == "on the table"
+    again = client.post(f"/api/v1/memory/followup/{body['followup']}", headers=DEVICE, files=photos)
+    assert again.json() == {"done": False} and len(client.app_state.db.rows) == 1  # runs once
+    assert client.post("/api/v1/memory/followup/999", headers=DEVICE).status_code == 404
+
+
+def test_a_remember_whose_photo_check_fails_keeps_photo_1(client):  # noqa: F811
     async def fake_decipher(words):
         return Command(intent="remember", item="keys")
 
-    client.app_state.ai.decipher = fake_decipher
-    resp = client.post("/api/v1/memory/voice", headers=DEVICE, files=files,
-                       data={"wake": "true", "defer": "true", "client": '{"recorded_s": 2.1, "ended": "drop"}'})
-    body = resp.json()
-    assert body["intent"] == "remember" and body["followup"]
-    event = live(client)[0]
-    assert "pending" not in event and event["device"] == {"recorded_s": 2.1, "ended": "drop"}
-    assert client.app_state.db.chunks == []  # not indexed yet
-    done = client.post(f"/api/v1/memory/followup/{body['followup']}", headers=DEVICE).json()
-    assert done["done"] and done["followup"] == "done" and client.app_state.db.chunks
-    assert client.post(f"/api/v1/memory/followup/{body['followup']}", headers=DEVICE).json() == {"done": False}
-    assert live(client)[0]["followup"] == "done"
-    assert client.post("/api/v1/memory/followup/999", headers=DEVICE).status_code == 404
+    async def fake_look(item, words, pics):
+        raise TimeoutError
+
+    client.app_state.ai.decipher, client.app_state.ai.look_for = fake_decipher, fake_look
+    files = [("audio", ("v.wav", b"Last Scene, keys on the desk", "audio/wav"))]
+    body = client.post("/api/v1/memory/voice", headers=DEVICE, files=files, data={"wake": "true", "defer": "true"}).json()
+    photos = [("image", (f"p{i}.jpg", b"\xff\xd8photo-%d" % i, "image/jpeg")) for i in range(3)]
+    done = client.post(f"/api/v1/memory/followup/{body['followup']}", headers=DEVICE, files=photos).json()
+    assert done["saved_photo"] == 0 and done["photo_error"] == "TimeoutError"
+    nothing = client.post("/api/v1/memory/voice", headers=DEVICE, files=files, data={"wake": "true", "defer": "true"}).json()
+    failed = client.post(f"/api/v1/memory/followup/{nothing['followup']}", headers=DEVICE).json()
+    assert failed["followup"].startswith("failed") and live(client)[0]["outcome"] == "error"
 
 
 def test_a_deferred_answer_logs_its_question_on_followup(client):  # noqa: F811
@@ -480,7 +514,7 @@ def test_every_deferred_command_gets_an_id_for_the_device_timeline(client):  # n
     body = client.post("/api/v1/memory/voice", headers=DEVICE, files=files, data={"wake": "true", "defer": "true"}).json()
     assert body["intent"] == "none" and body["followup"]
     timeline = {"speech_end": 2.1, "sent": 2.4, "reply": 3.9, "played": 4.2, "note": "x"}
-    resp = client.post(f"/api/v1/memory/followup/{body['followup']}", headers=DEVICE, json={"timeline": timeline})
+    resp = client.post(f"/api/v1/memory/followup/{body['followup']}", headers=DEVICE, data={"timeline": json.dumps(timeline)})
     assert resp.json() == {"done": False}  # no slow work for "never mind"
     assert live(client)[0]["timeline"] == {"speech_end": 2.1, "sent": 2.4, "reply": 3.9, "played": 4.2}
 
