@@ -3,6 +3,8 @@ import os, sys
 from pathlib import Path
 SHORT = Path.home() / ".lastscene" / "espeak-ng-data"
 import piper.phonemize_espeak as pe
+if SHORT.is_symlink() and SHORT.resolve() != Path(pe.ESPEAK_DATA_DIR).resolve():
+    SHORT.unlink()  # left by an earlier setup that's gone (a dangling link)
 if not SHORT.exists():  # link to the espeak data that ships with piper-tts
     SHORT.parent.mkdir(parents=True, exist_ok=True)
     SHORT.symlink_to(Path(pe.ESPEAK_DATA_DIR))

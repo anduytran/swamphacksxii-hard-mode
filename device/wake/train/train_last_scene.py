@@ -111,6 +111,15 @@ def resample_dir(src, dst):
         wf.write(dst / p.name, 16000, (np.clip(x, -1, 1) * 32767).astype(np.int16))
 
 
+# Heard in real use as "Last Scene" (Oct 18: "Let's see. Is my brother going?" woke it at 0.77). Taught as negatives
+# many times over, and kept out of training in HARD_TEST to measure them.
+HARD = ["let's see", "let me see", "let's see now", "let's see it", "let's see what", "let's see is my brother going",
+        "let's see if it works", "okay let's see", "so let's see", "let's say", "let's eat", "let's sing", "let's seem",
+        "lets see", "less seen", "lots of scenes", "last sea", "list scene", "lest we see", "let us see",
+        "let's sit", "last thing", "let's leave", "best scene", "let's see here", "well let's see"]
+HARD_TEST = ["let's see", "let's see is my brother going", "let me see", "let's say", "so let's see", "let's eat"]
+
+
 def adversarial_texts(n):
     from openwakeword.data import generate_adversarial_texts
 
@@ -120,7 +129,8 @@ def adversarial_texts(n):
              "last season", "last sign", "lost scenery", "class seen", "vast screen", "last minute", "scenic"]
     # "last seen" sounds exactly like "last scene" (scene = seen): never teach it as a negative.
     bad = {"last scene", "last seen", "lastscene"}
-    out = [t for t in texts + extra * 20 if t.strip().lower() not in bad and "last scene" not in t.lower() and "last seen" not in t.lower()]
+    out = [t for t in texts + extra * 20 + HARD * 40
+           if t.strip().lower() not in bad and "last scene" not in t.lower() and "last seen" not in t.lower()]
     random.shuffle(out)
     return out[:n] if len(out) >= n else (out * (n // max(1, len(out)) + 1))[:n]
 
@@ -219,7 +229,7 @@ def train(acav, valfp, total_length, steps):
              "adversarial_negative": str(OUT / "negative_features_train.npy")}
     data_transforms = {k: f for k in files}
     label_transforms = {k: ((lambda x: [1 for _ in x]) if k == "positive" else (lambda x: [0 for _ in x])) for k in files}
-    batches = mmap_batch_generator(files, n_per_class={**{f"ACAV100M_{i}": 384 for i in range(len(acav))}, "positive": 50, "adversarial_negative": 50},
+    batches = mmap_batch_generator(files, n_per_class={**{f"ACAV100M_{i}": 384 for i in range(len(acav))}, "positive": 50, "adversarial_negative": 100},
                                    data_transform_funcs=data_transforms, label_transform_funcs=label_transforms)
 
     class It(torch.utils.data.IterableDataset):
@@ -275,7 +285,8 @@ def main():
     adv = adversarial_texts(N_TRAIN + N_TEST)
     generate(adv[:N_TRAIN], HERE / "raw_neg_train", N_TRAIN)
     generate(adv[N_TRAIN:], HERE / "raw_neg_test", N_TEST)
-    for name in ("pos_train", "pos_test", "neg_train", "neg_test"):
+    generate(HARD_TEST, HERE / "raw_hard_test", 120)  # for eval_wake.py: "lookalikes=hard_test/*.wav"
+    for name in ("pos_train", "pos_test", "neg_train", "neg_test", "hard_test"):
         resample_dir(HERE / f"raw_{name}", HERE / name)
     import scipy.io.wavfile as wf
 
