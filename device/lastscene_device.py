@@ -99,6 +99,7 @@ class Config:
     wake_word: str = ""  # path to the "Last Scene" .onnx (or a stock name like hey_jarvis); empty = buttons only
     wake_threshold: float = 0.6  # tune per model: with hey_jarvis, "hey Travis" scores ~0.45, the phrase ~1.0
     wake_max_seconds: float = 5  # speech after the wake phrase is cut off here
+    wake_min_seconds: float = 3  # ...and never ends before this, however quiet it gets
     wake_drop_db: float = 15  # ...or ends sooner when loudness falls this far under the speech (0 = off)
     # Wake phrase as a command (WAKE_CONFIRM=true): the clip keeps the audio from just before the wake
     # (WAKE_PREROLL_SECONDS, so it holds "Last Scene" itself), a photo is taken at once and WAKE_PHOTOS - 1
@@ -151,6 +152,7 @@ class Config:
             wake_word=env.get("WAKE_WORD", ""),
             wake_threshold=float(env.get("WAKE_THRESHOLD", 0.6)),
             wake_max_seconds=float(env.get("WAKE_MAX_SECONDS", 5)),
+            wake_min_seconds=float(env.get("WAKE_MIN_SECONDS", 3)),
             wake_drop_db=float(env.get("WAKE_DROP_DB", 15)),
             wake_confirm=env.get("WAKE_CONFIRM", "true").lower() not in ("0", "false", "no"),
             wake_preroll_seconds=float(env.get("WAKE_PREROLL_SECONDS", 1.5)),
@@ -548,14 +550,14 @@ class Endpointer:
 
     The noise floor is learnt from the quiet before speech; speech is anything clearly louder; the
     clip ends after `silence_s` of quiet once speech started, or at `max_s`. `timeout_s` without
-    any speech means nothing was said. With `drop_db`, a large fall in loudness also ends it: `drop_s`
+    any speech means nothing was said. Neither silence nor a drop ends it before `min_s`. With `drop_db`, a large fall in loudness also ends it: `drop_s`
     of frames `drop_db` under the speech's recent peak (after at least `min_speech_s` of speech).
     The first `ignore_s`, and any frame while `ignoring()` is true (the "I'm listening" beep is playing),
     can't start speech or set the peak. `reason` says why it ended: "drop", "silence", "max" or "nothing"."""
 
     def __init__(self, max_s: float = 10, silence_s: float = 0.9, timeout_s: float = 4, floor: float = 300.0,
                  drop_db: float | None = None, drop_s: float = 0.5, min_speech_s: float = 1.0, ignore_s: float = 0.0,
-                 ignoring=None):
+                 ignoring=None, min_s: float = 0.0):
         self.frame_s = FRAME_SAMPLES / RATE
         self.max_frames = int(max_s / self.frame_s)
         self.silence_frames = int(silence_s / self.frame_s)
@@ -564,6 +566,7 @@ class Endpointer:
         self.min_speech_frames = round(min_speech_s / self.frame_s)
         self.ignore_frames = round(ignore_s / self.frame_s)
         self.ignoring = ignoring or (lambda: False)
+        self.min_frames = round(min_s / self.frame_s)  # neither silence nor a drop ends it before this
         self.floor = floor  # a starting guess; follows the room while nobody speaks
         self.frames = 0
         self.quiet = 0
@@ -599,9 +602,10 @@ class Endpointer:
         dropped = self.drop_db is not None and db < self.peak_db - self.drop_db
         self.declined = self.declined + 1 if dropped else 0
         self.quiet = 0 if loud else self.quiet + 1
-        if self.declined >= self.drop_frames and self.speech_frames >= self.min_speech_frames:
+        early = self.frames < self.min_frames
+        if self.declined >= self.drop_frames and self.speech_frames >= self.min_speech_frames and not early:
             self.reason = "drop"
-        elif self.quiet >= self.silence_frames:
+        elif self.quiet >= self.silence_frames and not early:
             self.reason = "silence"
         elif self.frames >= self.max_frames:
             self.reason = "max"
@@ -819,9 +823,13 @@ class RemoteCamera:
             raise ValueError("CAMERA=remote needs CAMERA_URL and CAMERA_TOKEN")
         self.url, self.token = url.rstrip("/"), token
         self.http = http or httpx.Client(timeout=httpx.Timeout(timeout, connect=3.0))
+        self.max_side = int(os.environ.get("PHOTO_MAX_SIDE", 768))
 
     def capture_jpeg(self, words: str | None = None) -> bytes:
-        params = {"for": words[:300]} if words else None
+        # PHOTO_MAX_SIDE: smaller photos upload faster and a model reads four of them in a second or two.
+        params = {"max": str(self.max_side)} if self.max_side else {}
+        if words:
+            params["for"] = words[:300]
         for attempt in (1, 2):  # one quick retry for a dropped connection; anything else is final
             try:
                 resp = self.http.get(f"{self.url}/photo", params=params, headers={"X-Camera-Token": self.token})
@@ -1406,6 +1414,9 @@ class Device:
 
         shooter = threading.Thread(target=shoot, daemon=True)
         shooter.start()
+        place: dict = {}  # the Wi-Fi scan for the location runs while they speak, not after
+        locating = threading.Thread(target=lambda: place.update(where=whereabouts(self.cfg)), daemon=True)
+        locating.start()
         # The beep plays while the mic already listens, so words said over it aren't lost; until it has
         # finished (aplay can take a moment to start) it neither counts as speech nor sets the loudness peak.
         beeped = threading.Event()
@@ -1418,7 +1429,7 @@ class Device:
                 beeped.set()
 
         threading.Thread(target=beep, daemon=True).start()
-        ep = Endpointer(max_s=self.cfg.wake_max_seconds, timeout_s=3, ignore_s=0.2,
+        ep = Endpointer(max_s=self.cfg.wake_max_seconds, timeout_s=3, ignore_s=0.2, min_s=self.cfg.wake_min_seconds,
                         drop_db=self.cfg.wake_drop_db or None, ignoring=lambda: not beeped.is_set())
         pcm = self.voice.listen(ep, self.cfg.wake_max_seconds + 3, keep_all=True)
         recorded = time.monotonic() - t0
@@ -1439,7 +1450,8 @@ class Device:
                   "photo_at_s": [round(t, 2) for t in shot_at], "wake_score": round(float(score), 2),
                   "preroll_s": round(len(preroll) / 2 / RATE, 2)}
         wav = wav_bytes(preroll + pcm)  # with the wake phrase, for the server to confirm
-        where = whereabouts(self.cfg)
+        locating.join(timeout=1.0)
+        where = place.get("where") or {}
         sent = time.monotonic()
         timeline["sent"] = round(sent - t0, 2)
         try:

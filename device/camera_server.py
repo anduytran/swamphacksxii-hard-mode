@@ -6,6 +6,7 @@ For each memory sreer makes a single request; questions never involve faker:
 
     GET /photo                    a photo now                          -> image/jpeg
     GET /photo?for=<the words>    with VISION_DIR: retried until the item the words name is in it
+    GET /photo?max=768            no side longer than 768 px (smaller to send, quicker for a model to read)
                                   (headers X-Item, X-Confidence, X-Attempts say what was found)
     GET /health                   {"camera": ..., "vision": ...}
 
@@ -60,6 +61,25 @@ class CameraService:
                 "vision": self.vision.detector.name if self.vision is not None else None}
 
 
+def shrink_jpeg(jpeg: bytes, max_side: int, quality: int = 85) -> bytes:
+    """The same photo with no side longer than `max_side` (unchanged if it already fits, or can't be read)."""
+    try:
+        import cv2
+        import numpy as np
+
+        frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    except Exception:  # no OpenCV, or not a JPEG it can read: the full-size photo still works
+        return jpeg
+    if frame is None:
+        return jpeg
+    h, w = frame.shape[:2]
+    if max(h, w) <= max_side:
+        return jpeg
+    scale = max_side / max(h, w)
+    small = cv2.resize(frame, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
+    return dev.jpeg_bytes(small, quality)
+
+
 def make_handler(service: CameraService, token: str):
     class Handler(BaseHTTPRequestHandler):
         server_version = "lastscene-camera"
@@ -85,9 +105,13 @@ def make_handler(service: CameraService, token: str):
                 return self._json(200, service.health())
             if url.path != "/photo":
                 return self._json(404, {"detail": "GET /photo or /health"})
-            words = (parse_qs(url.query).get("for") or [""])[0][:MAX_WORDS] or None
+            query = parse_qs(url.query)
+            words = (query.get("for") or [""])[0][:MAX_WORDS] or None
+            max_side = int((query.get("max") or ["0"])[0]) if (query.get("max") or ["0"])[0].isdigit() else 0
             try:
                 jpeg, headers = service.photo(words)
+                if max_side >= 160:
+                    jpeg = shrink_jpeg(jpeg, max_side)
             except Exception as exc:
                 log.exception("Photo failed")
                 return self._json(503, {"detail": f"camera error: {type(exc).__name__}"})

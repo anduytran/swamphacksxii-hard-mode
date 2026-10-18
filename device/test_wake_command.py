@@ -248,3 +248,15 @@ def test_a_second_client_is_spotted_but_not_a_check_or_its_shell(monkeypatch, tm
     assert dev.already_running() == 101
     del procs[101]
     assert dev.already_running() is None
+
+
+def test_never_ends_before_3_seconds_even_on_a_drop_or_silence():
+    ep = dev.Endpointer(max_s=5, drop_db=15, min_s=3)
+    n = feed(ep, [100] * 2 + [8000] * 14 + [600] * 60)  # a drop at 1.3 s, then quiet
+    assert n == round(3 / 0.08) and ep.reason in ("drop", "silence")  # held until 3 s
+    quiet = dev.Endpointer(max_s=5, min_s=3)
+    n = feed(quiet, [8000] * 5 + [50] * 60)
+    assert n == round(3 / 0.08) and quiet.reason == "silence"
+    nothing = dev.Endpointer(max_s=5, min_s=3, timeout_s=3)
+    feed(nothing, [50] * 60)
+    assert nothing.reason == "nothing"

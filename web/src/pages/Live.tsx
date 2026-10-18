@@ -101,6 +101,11 @@ const OUTCOME: Record<string, { label: string; tone: string }> = {
   error: { label: "Error", tone: "attention" },
 };
 
+// The order steps run in; the database doesn't keep the order they were saved in.
+const STEP_ORDER = ["transcribe", "decide", "photos", "embed", "retrieve", "answer", "save", "speak"];
+export const orderedSteps = (steps: Record<string, number> = {}) =>
+  Object.entries(steps).sort(([a], [b]) => (STEP_ORDER.indexOf(a) + 1 || 99) - (STEP_ORDER.indexOf(b) + 1 || 99));
+
 const ENDED: Record<string, string> = { drop: "loudness dropped", silence: "silence", max: "time limit" };
 
 const STEP_LABEL: Record<string, string> = {
@@ -116,7 +121,7 @@ const STEP_LABEL: Record<string, string> = {
 
 function EventCard({ e }: { e: VoiceEvent }) {
   const outcome = OUTCOME[e.outcome] ?? { label: e.outcome, tone: "quiet" };
-  const steps = Object.entries(e.steps ?? {});
+  const steps = orderedSteps(e.steps);
   const served = Object.entries(e.served ?? {});
   return (
     <li className="card live-event">
@@ -240,7 +245,7 @@ interface Segment { label: string; s: number; group: Group }
  * server step, and playing the reply. Without the device's timeline (older clients) only what's known. */
 export function timelineSegments(e: VoiceEvent): Segment[] {
   const t = e.timeline ?? {};
-  const server = Object.entries(e.steps ?? {}).map(([k, ms]) => ({ label: STEP_LABEL[k] ?? k, s: ms / 1000, group: "server" as Group }));
+  const server = orderedSteps(e.steps).map(([k, ms]) => ({ label: STEP_LABEL[k] ?? k, s: ms / 1000, group: "server" as Group }));
   const serverS = e.total_ms / 1000;
   const listened = t.speech_end ?? e.device?.recorded_s;
   const out: Segment[] = [];

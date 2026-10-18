@@ -653,7 +653,7 @@ class AIServices:
         parts = [types.Part.from_bytes(data=data, mime_type=kind) for data, kind in photos[:4]]
         system = PHOTO_SYSTEM_PROMPT.format(words=words.replace('"', "'"), item=item or "the item they mention")
         return await self.gemini.generate_json(system, [*parts, "Find the item."], PhotoCheck, fast=True,
-                                               timeout_s=self.s.command_timeout_seconds)
+                                               timeout_s=self.s.photo_check_timeout_seconds)
 
     @limited("maps")
     async def name_place(self, lat: float, lng: float) -> dict | None:

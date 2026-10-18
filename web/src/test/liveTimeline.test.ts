@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { timelineSegments } from "../pages/Live";
+import { orderedSteps, timelineSegments } from "../pages/Live";
 import type { VoiceEvent } from "../lib/types";
 
 const base: VoiceEvent = {
@@ -22,5 +22,13 @@ describe("timelineSegments", () => {
     const segs = timelineSegments({ ...base, device: { recorded_s: 2.0 } });
     expect(segs[0]).toEqual({ label: "listening", s: 2.0, group: "wearable" });
     expect(segs.some((s) => s.group === "network")).toBe(false);
+  });
+});
+
+describe("orderedSteps", () => {
+  it("puts steps in the order they run, whatever order the database returns", () => {
+    expect(orderedSteps({ save: 7, speak: 1, photos: 4010, transcribe: 598, decide: 740 }).map(([k]) => k)).toEqual([
+      "transcribe", "decide", "photos", "save", "speak",
+    ]);
   });
 });
