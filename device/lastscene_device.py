@@ -1730,10 +1730,13 @@ class Device:
         wants_photos = isinstance(result, dict) and bool(result.get("photos_wanted"))
         if not wants_photos:
             not_needed.set()
-        # What the wearer hears, first; the logging after. Any spoken reply is played (ask, found, place, ...).
+        # What the wearer hears, first; the logging after. Any spoken reply is played (ask, found, place, ...); a
+        # place named ("this is meeting room 2360") is saved, so its "saved" chime comes first, like a memory's.
         spoken = isinstance(result, (bytes, bytearray))
         if spoken:
             self.led.on()
+            if intent == "place":
+                play_wav(self.cfg.audio_out, tone(1320, 90))  # "saved"
             play_wav(self.cfg.audio_out, result)
         elif intent == "remember":
             play_wav(self.cfg.audio_out, tone(1320, 90))  # "saved"
