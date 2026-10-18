@@ -1658,7 +1658,29 @@ def main() -> None:
         Path("answer.wav").write_bytes(audio)
         print("Answer:", answer, "(saved answer.wav)")
     else:
+        if (other := already_running()) is not None:
+            sys.exit(f"LastScene is already running (pid {other}) and holds the mic and GPIO pins. Stop it first:\n"
+                     "  sudo systemctl stop lastscene-device; sudo pkill -f lastscene_device.py")
         Device(cfg).run()
+
+
+def already_running() -> int | None:
+    """Another lastscene_device.py on this Pi that's running the device (not a --check and the like)."""
+    try:
+        out = subprocess.run(["pgrep", "-f", "lastscene_device.py"], capture_output=True, text=True).stdout
+    except OSError:  # no pgrep: let the GPIO error speak for itself
+        return None
+    mine = {os.getpid(), os.getppid()}
+    for pid in (int(p) for p in out.split() if p.isdigit()):
+        if pid in mine:
+            continue
+        try:
+            cmd = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if any(c.endswith(b"python") or b"python3" in c for c in cmd[:1]) and not any(c.startswith(b"--") for c in cmd):
+            return pid
+    return None
 
 
 if __name__ == "__main__":

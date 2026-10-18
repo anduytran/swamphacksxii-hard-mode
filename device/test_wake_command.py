@@ -229,3 +229,22 @@ def test_a_late_beep_doesnt_set_the_peak_and_cut_the_speech_short():
     beeping[0] = False
     assert feed(ep, [3000] * 15) is None and ep.spoke  # ordinary speech, far quieter than the beep: still going
     assert ep.reason == ""
+
+
+def test_a_second_client_is_spotted_but_not_a_check_or_its_shell(monkeypatch, tmp_path):
+    procs = {101: [b"/opt/lastscene/venv/bin/python", b"/opt/lastscene/lastscene_device.py"],
+             102: [b"bash", b"-c", b"set -a; /opt/lastscene/venv/bin/python /opt/lastscene/lastscene_device.py"],
+             103: [b"/opt/lastscene/venv/bin/python", b"/opt/lastscene/lastscene_device.py", b"--check"]}
+    monkeypatch.setattr(dev.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="\n".join(map(str, procs))))
+    real = dev.Path
+
+    def fake_path(p):
+        if str(p).startswith("/proc/"):
+            pid = int(str(p).split("/")[2])
+            return SimpleNamespace(read_bytes=lambda: b"\0".join(procs[pid]))
+        return real(p)
+
+    monkeypatch.setattr(dev, "Path", fake_path)
+    assert dev.already_running() == 101
+    del procs[101]
+    assert dev.already_running() is None
