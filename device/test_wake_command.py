@@ -231,8 +231,8 @@ def test_the_command_sends_the_device_timings(quiet):
 
 def test_a_late_beep_doesnt_set_the_peak_and_cut_the_speech_short():
     beeping = [True]
-    ep = dev.Endpointer(max_s=5, drop_db=15, ignore_s=0.2, ignoring=lambda: beeping[0])
-    assert feed(ep, [100] * 3 + [30000] * 4) is None and not ep.spoke  # the beep, 0.25 s late
+    ep = dev.Endpointer(max_s=5, drop_db=15, ignore_s=0.2, ignoring=lambda: beeping[0], over_beep_s=0.32 + 0.25)
+    assert feed(ep, [100] * 3 + [30000] * 4) is None and not ep.spoke  # the beep (0.32 s), 0.25 s late
     beeping[0] = False
     assert feed(ep, [3000] * 15) is None and ep.spoke  # ordinary speech, far quieter than the beep: still going
     assert ep.reason == ""
@@ -326,7 +326,7 @@ def test_words_right_after_the_wake_are_kept_while_the_command_starts():
 def test_a_command_said_entirely_over_the_beep_still_counts():
     ep = dev.Endpointer(max_s=7, timeout_s=1, ignoring=lambda: ep.frames <= 8)
     n = feed(ep, [8000] * 8 + [50] * 40)  # talking while the beep plays, then quiet
-    assert ep.reason == "said over the beep" and n is not None
+    assert ep.spoke and ep.reason == "silence" and n is not None  # their speech, not "nothing"
     quiet = dev.Endpointer(max_s=7, timeout_s=1, ignoring=lambda: quiet.frames <= 2)
     feed(quiet, [8000] * 2 + [50] * 40)  # just the beep: nothing said
     assert quiet.reason == "nothing"
@@ -363,3 +363,40 @@ def test_with_no_fillers_on_the_server_the_saved_ones_are_deleted(tmp_path):
     f = dev.Fillers(folder, lambda i: None, lambda: [])
     f.load()
     assert f.clips == [] and f.pick() is None and list(folder.glob("*.wav")) == []
+
+
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def feed_timed(ep, clock, levels, wall_per_frame):
+    """Frames arriving faster or slower than real time: each advances the clock by wall_per_frame."""
+    for i, lv in enumerate(levels):
+        clock.t += wall_per_frame
+        if ep.feed(frame(lv)) in ("done", "nothing"):
+            return i + 1, clock.t
+    return None, clock.t
+
+
+def test_a_backlog_burst_doesnt_use_up_the_wait_for_the_chirp():
+    clock = Clock()
+    ep = dev.Endpointer(max_s=7, timeout_s=3, min_s=5, clock=clock)
+    n, _ = feed_timed(ep, clock, [50] * 60, 0.02)  # 4.8 s of backlog audio arriving in 1.2 s
+    assert n is None and not ep.spoke  # frame counts would have said "nothing" by now
+    n, t = feed_timed(ep, clock, [50] * 200, 0.08)  # real time from here: quiet
+    assert ep.reason == "nothing" and 2.9 < t < 3.2  # 3 s of the wearer's time, not 3 s of audio (0.74 s here)
+
+
+def test_speech_over_the_chirp_still_gets_the_5_second_minimum():
+    clock = Clock()
+    beeping = [True]
+    ep = dev.Endpointer(max_s=7, timeout_s=3, min_s=5, over_beep_s=0.4, ignoring=lambda: beeping[0], clock=clock)
+    feed_timed(ep, clock, [8000] * 8, 0.08)  # "Last Scene, where are..." over the chirp
+    assert ep.spoke
+    beeping[0] = False
+    n, t = feed_timed(ep, clock, [8000] * 5 + [50] * 200, 0.08)  # the rest, then quiet
+    assert ep.reason in ("silence", "drop") and t - 0.64 >= 5.0  # never before 5 s after the chirp

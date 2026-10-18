@@ -601,11 +601,15 @@ class Endpointer:
     any speech means nothing was said. Neither silence nor a drop ends it before `min_s`. With `drop_db`, a large fall in loudness also ends it: `drop_s`
     of frames `drop_db` under the speech's recent peak (after at least `min_speech_s` of speech).
     The first `ignore_s`, and any frame while `ignoring()` is true (the "I'm listening" beep is playing),
-    can't start speech or set the peak. `reason` says why it ended: "drop", "silence", "max" or "nothing"."""
+    can't start speech or set the peak; being loud through it all means they spoke over it (speech started).
+    With `clock`, the timeout, `min_s` and `max_s` are wall-clock seconds from when the beep finished, not counts
+    of audio frames: a Pi Zero running the wake model falls behind, then catches up in a burst once listening
+    starts, so frame counts would run out while the wearer is still waiting for the beep. `reason` says why it
+    ended: "drop", "silence", "max" or "nothing"."""
 
     def __init__(self, max_s: float = 10, silence_s: float = 0.9, timeout_s: float = 4, floor: float = 300.0,
                  drop_db: float | None = None, drop_s: float = 0.5, min_speech_s: float = 1.0, ignore_s: float = 0.0,
-                 ignoring=None, min_s: float = 0.0, over_beep_s: float = 0.32):
+                 ignoring=None, min_s: float = 0.0, over_beep_s: float = 0.32, clock=None):
         self.frame_s = FRAME_SAMPLES / RATE
         self.max_frames = int(max_s / self.frame_s)
         self.silence_frames = int(silence_s / self.frame_s)
@@ -616,6 +620,8 @@ class Endpointer:
         self.ignoring = ignoring or (lambda: False)
         self.min_frames = round(min_s / self.frame_s)  # neither silence nor a drop ends it before this
         self.over_beep_frames = math.ceil(over_beep_s / self.frame_s)  # loud for longer than the beep = speech
+        self.clock, self.t0 = clock, None
+        self.max_s, self.timeout_s, self.min_s = max_s, timeout_s, min_s
         self.floor = floor  # a starting guess; follows the room while nobody speaks
         self.frames = 0
         self.quiet = 0
@@ -625,6 +631,11 @@ class Endpointer:
         self.declined = 0
         self.early_loud = 0  # loud frames while the beep played: words said over it
         self.reason = ""
+
+    def _past(self, seconds: float, frames: int) -> bool:
+        if self.clock is not None:
+            return self.t0 is not None and self.clock() - self.t0 >= seconds
+        return self.frames >= frames
 
     def _nothing(self) -> str:
         """No speech after the beep. If they spoke over it (all of "Last Scene, where are my keys" said at once),
@@ -642,9 +653,13 @@ class Endpointer:
         if self.ignoring():  # our own beep: neither speech nor the room's quiet
             if level > max(self.floor * 2.5, 500):
                 self.early_loud += 1  # but someone may be talking over it
-            if self.frames >= self.timeout_frames + self.ignore_frames and not self.spoke:
-                return self._nothing()
+                if self.early_loud >= self.over_beep_frames:
+                    self.spoke = True  # longer than the beep itself: they're talking; listen on from here
+            if self.frames >= 3 * self.timeout_frames + self.ignore_frames and not self.spoke:
+                return self._nothing()  # a beep that never ends
             return "speaking" if self.spoke else "listening"
+        if self.t0 is None and self.clock is not None:
+            self.t0 = self.clock()  # the beep has finished: the wearer's time starts now
         loud = level > max(self.floor * 2.5, 500)
         if not self.spoke:
             if loud and self.frames > self.ignore_frames:
@@ -652,7 +667,7 @@ class Endpointer:
             else:
                 if not loud:
                     self.floor = 0.9 * self.floor + 0.1 * level
-                if self.frames >= self.timeout_frames:
+                if self._past(self.timeout_s, self.timeout_frames):
                     return self._nothing()
                 return "listening"
         self.speech_frames += 1
@@ -661,12 +676,12 @@ class Endpointer:
         dropped = self.drop_db is not None and db < self.peak_db - self.drop_db
         self.declined = self.declined + 1 if dropped else 0
         self.quiet = 0 if loud else self.quiet + 1
-        early = self.frames < self.min_frames
+        early = not self._past(self.min_s, self.min_frames)
         if self.declined >= self.drop_frames and self.speech_frames >= self.min_speech_frames and not early:
             self.reason = "drop"
         elif self.quiet >= self.silence_frames and not early:
             self.reason = "silence"
-        elif self.frames >= self.max_frames:
+        elif self._past(self.max_s, self.max_frames):
             self.reason = "max"
         else:
             return "speaking"
@@ -1592,7 +1607,7 @@ class Device:
         threading.Thread(target=beep, daemon=True).start()
         ep = Endpointer(max_s=self.cfg.wake_max_seconds, timeout_s=3, ignore_s=0.2, min_s=self.cfg.wake_min_seconds,
                         drop_db=self.cfg.wake_drop_db or None, ignoring=lambda: not beeped.is_set(),
-                        over_beep_s=wav_seconds(LISTENING) + 0.25)
+                        over_beep_s=wav_seconds(LISTENING) + 0.25, clock=time.monotonic)
         pcm = self.voice.listen(ep, self.cfg.wake_max_seconds + 3, keep_all=True)
         recorded = time.monotonic() - t0
         timeline = {"speech_end": round(recorded, 2)}
