@@ -174,8 +174,6 @@ class FakeAI:
 
     speech_media_type = "audio/wav"
 
-    async def look(self, system, contents, schema):  # AIServices.look, through the test's fake Gemini
-        return await self.gemini.generate_json(system, contents, schema, fast=True)
     scene = None  # set to a SceneText to simulate Gemini image-to-text
 
     async def embed(self, text, *, query=False):

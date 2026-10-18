@@ -1,5 +1,6 @@
 // A memory's photo, with the vision pipeline's detection boxes drawn over it.
 import { useState, type ReactNode } from "react";
+import { retryPhoto } from "../lib/photo";
 import type { Detection } from "../lib/types";
 
 interface Props {
@@ -23,7 +24,7 @@ export function Photo({ url, alt, boxes = [], className = "", children }: Props)
   return (
     <div className={`photo ${className}`.trim()}>
       {children}
-      <img src={url} alt={alt + detected} loading="lazy" onLoad={(e) => setSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })} />
+      <img src={url} alt={alt + detected} loading="lazy" onError={retryPhoto} onLoad={(e) => setSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })} />
       {size && boxes.length > 0 && <Boxes boxes={boxes} w={size.w} h={size.h} />}
     </div>
   );

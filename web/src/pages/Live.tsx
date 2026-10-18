@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { EmptyState } from "../components/bits";
 import { publicGet, useApi } from "../lib/api";
 import { clockTime } from "../lib/format";
+import { retryPhoto } from "../lib/photo";
 import type { Health, VoiceEvent } from "../lib/types";
 
 const POLL_MS = 2000;
@@ -130,7 +131,7 @@ function EventCard({ e }: { e: VoiceEvent }) {
       </div>
 
       <div className="live-body">
-        {e.image_url && <img className="live-photo" src={e.image_url} alt={`Saved photo ${(e.saved_photo ?? 0) + 1}`} loading="lazy" />}
+        {e.image_url && <img className="live-photo" src={e.image_url} alt={`Saved photo ${(e.saved_photo ?? 0) + 1}`} loading="lazy" onError={retryPhoto} />}
         <dl className="live-facts">
           <dt>Heard</dt>
           <dd>{e.heard ? `“${e.heard}”` : <span className="muted">nothing</span>}</dd>

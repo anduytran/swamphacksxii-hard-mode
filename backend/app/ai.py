@@ -634,11 +634,6 @@ class AIServices:
     async def caregiver_summary(self, facts: str, language: str = languages.DEFAULT_LANGUAGE) -> str | None:
         return await self._generate(f"{SUMMARY_SYSTEM_PROMPT}\n{languages.instruction(language)}", facts)
 
-    @limited("vision")
-    async def look(self, system: str, contents: list, schema: type[BaseModel]) -> BaseModel | None:
-        """A photo question with a JSON answer (e.g. Teach's suggested boxes), within the limits."""
-        return await self.gemini.generate_json(system, contents, schema, fast=True)
-
     @limited("command")
     async def decipher(self, words: str) -> Command | None:
         """What a wake-phrase command asks for, from the words alone (the fast command models, least

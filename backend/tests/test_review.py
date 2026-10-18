@@ -1,11 +1,10 @@
-"""Teach's "Needs a look": suggested boxes from Gemini, the review queue and the caregiver's answers."""
+"""Teach's "Needs a look": the review queue and the caregiver's answers."""
 
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.box_suggest import BoxSuggestion, box_2d_to_xywh
 from app.db_review import Review
 from app.db_training import MAX_SAMPLES_PER_ITEM
 from app.review import mentions
@@ -23,7 +22,6 @@ class FakeReviewDB(FakeTrainingDB):
         self.photos: dict[str, dict] = {}  # memory id -> {device, image, type, names, detections, at}
         self.answers: dict[tuple[str, str], Review] = {}
         self.sample_ids: dict[tuple[str, str], str] = {}
-        self.suggest_calls: list[tuple[str, datetime]] = []
 
     def photo(self, names=(), detections=(), device="dev1@clients", image_type="image/jpeg", minutes_ago=5):
         mid = str(uuid.uuid4())
@@ -49,25 +47,12 @@ class FakeReviewDB(FakeTrainingDB):
 
     async def decide_review(self, item_id, memory_id, decision, bbox, sample_id):
         old = self.answers.get((item_id, memory_id))
-        self.answers[(item_id, memory_id)] = Review(item_id, memory_id, decision, bbox or (old.bbox if old else None),
-                                                    old.note if old else "", bool(old and old.suggested))
+        self.answers[(item_id, memory_id)] = Review(item_id, memory_id, decision, bbox or (old.bbox if old else None))
         self.sample_ids[(item_id, memory_id)] = sample_id
-
-    async def cache_suggestion(self, item_id, memory_id, bbox, note):
-        old = self.answers.get((item_id, memory_id))
-        if not (old and old.decision):
-            self.answers[(item_id, memory_id)] = Review(item_id, memory_id, None, bbox, note, True)
 
     async def household_memory_image(self, memory_id, device_ids):
         p = self.photos.get(memory_id)
         return (p["image"], p["type"]) if p and p["device"] in device_ids else None
-
-    async def reserve_suggest_call(self, household_id, per_hour):
-        since = datetime.now(timezone.utc) - timedelta(hours=1)
-        if sum(1 for h, at in self.suggest_calls if h == household_id and at > since) >= per_hour:
-            return False
-        self.suggest_calls.append((household_id, datetime.now(timezone.utc)))
-        return True
 
     async def claim_review(self, item_id, memory_id, decision):
         old = self.answers.get((item_id, memory_id))
@@ -79,24 +64,12 @@ class FakeReviewDB(FakeTrainingDB):
     async def release_review(self, item_id, memory_id):
         old = self.answers.get((item_id, memory_id))
         if old and self.sample_ids.get((item_id, memory_id)) is None:
-            self.answers[(item_id, memory_id)] = Review(item_id, memory_id, None, old.bbox, old.note, old.suggested)
-
-
-class FakeGemini:
-    def __init__(self, answer=None, error=None):
-        self.answer, self.error, self.calls = answer, error, []
-
-    async def generate_json(self, system, contents, schema, *, fast=False):
-        self.calls.append((system, contents, schema))
-        if self.error:
-            raise self.error
-        return self.answer
+            self.answers[(item_id, memory_id)] = Review(item_id, memory_id, None, old.bbox)
 
 
 @pytest.fixture
 def api(client):  # noqa: F811
     client.app_state.db = FakeReviewDB()
-    client.app_state.ai.gemini = FakeGemini(BoxSuggestion(found=True, box_2d=[200, 100, 600, 500], quality=""))
     return client
 
 
@@ -109,72 +82,12 @@ def review_url(household=HOUSEHOLD):
     return f"/api/v1/households/{household}/training/review"
 
 
-def suggest(api, item_id, household=HOUSEHOLD, **data):
-    files = None if data else {"image": ("p.jpg", b"\xff\xd8jpeg", "image/jpeg")}
-    return api.post(f"{items_url(household)}/{item_id}/suggest-box", headers=CAREGIVER, files=files, data=data or None)
-
-
-# ---------------------------------------------------------------- box_2d
-
-
-def test_box_2d_converts_to_normalised_xywh():
-    assert box_2d_to_xywh([200, 100, 600, 500]) == [0.1, 0.2, 0.4, 0.4]  # [ymin, xmin, ymax, xmax] /1000
-    assert box_2d_to_xywh([0, 0, 1000, 1000]) == [0, 0, 1, 1]
-    assert box_2d_to_xywh([600, 500, 200, 100]) == [0.1, 0.2, 0.4, 0.4]  # corners reversed
-    assert box_2d_to_xywh([-50, 900, 400, 1200]) == [0.9, 0, 0.1, 0.4]  # clamped to the photo
-    assert box_2d_to_xywh([0, 0, 0, 0]) is None
-    assert box_2d_to_xywh([100, 100, 105, 500]) is None  # a sliver
-    assert box_2d_to_xywh([1, 2, 3]) is None
-
-
 def test_item_names_match_whole_words_and_plurals():
     from app.db_training import TrainingItem
 
     keys = TrainingItem("1", "keys", ["key ring"], NOW)
     assert mentions(keys, "keys") and mentions(keys, "car keys") and mentions(keys, "key") and mentions(keys, "blue key ring")
     assert not mentions(keys, "keyboard") and not mentions(keys, "monkeys") and not mentions(keys, "ring")
-
-
-# ---------------------------------------------------------------- suggest-box
-
-
-def test_suggest_box_returns_gemini_box_as_xywh(api, keys):
-    resp = suggest(api, keys)
-    assert resp.status_code == 200
-    assert resp.json() == {"bbox": [0.1, 0.2, 0.4, 0.4], "note": "", "status": "ok"}
-    system, contents, _ = api.app_state.ai.gemini.calls[0]
-    assert "keys" in system and "key ring" in system
-
-
-def test_suggest_box_not_found_and_quality_note(api, keys):
-    api.app_state.ai.gemini.answer = BoxSuggestion(found=False, box_2d=[0, 0, 0, 0], quality="blurry")
-    assert suggest(api, keys).json() == {"bbox": None, "note": "blurry", "status": "none"}
-
-
-def test_suggest_box_never_calls_gemini_when_vision_is_off(api, keys):
-    api.settings.vision_provider = "none"
-    assert suggest(api, keys).json()["status"] == "off"
-    assert api.app_state.ai.gemini.calls == []
-
-
-def test_suggest_box_fails_soft_on_quota(api, keys):
-    api.app_state.ai.gemini.error = RuntimeError("429 RESOURCE_EXHAUSTED")
-    resp = suggest(api, keys)
-    assert resp.status_code == 200 and resp.json() == {"bbox": None, "note": "", "status": "failed"}
-
-
-def test_suggest_box_is_rate_limited_per_household(api, keys):
-    api.settings.suggest_box_per_hour = 2
-    assert [suggest(api, keys).json()["status"] for _ in range(3)] == ["ok", "ok", "busy"]
-    assert len(api.app_state.ai.gemini.calls) == 2
-
-
-def test_suggest_box_is_for_members_only(api, keys):
-    assert suggest(api, keys, household=OTHER).status_code == 404
-    assert suggest(api, str(uuid.uuid4())).status_code == 404
-    db = api.app_state.db
-    stranger = db.photo(names=["keys"], device="someone-else@clients")
-    assert suggest(api, keys, memory_id=stranger).status_code == 404  # another household's photo
 
 
 # ---------------------------------------------------------------- queue
@@ -195,7 +108,7 @@ def test_queue_has_unsure_detections_and_unboxed_memory_photos(api, keys):
     first, second = body["candidates"]
     assert (first["memory_id"], first["kind"], first["bbox"], first["confidence"]) == (unsure, "detection", [0.1, 0.1, 0.2, 0.2], 0.42)
     assert first["image_url"].startswith(f"/api/v1/images/{unsure}?") and first["item_name"] == "keys"
-    assert (second["memory_id"], second["kind"], second["bbox"], second["suggested"]) == (said, "memory", None, False)
+    assert (second["memory_id"], second["kind"], second["bbox"]) == (said, "memory", None)
 
 
 def test_queue_band_comes_from_settings(api, keys):
@@ -209,12 +122,12 @@ def test_queue_is_for_members_only(api, keys):
     assert api.get(review_url(OTHER), headers=CAREGIVER).status_code == 404
 
 
-def test_memory_card_suggestion_is_cached(api, keys):
+def test_memory_cards_never_show_an_old_gemini_box(api, keys):
     db = api.app_state.db
     said = db.photo(names=["keys"])
-    assert suggest(api, keys, memory_id=said).json()["status"] == "ok"
+    db.answers[(keys, said)] = Review(keys, said, None, [0.1, 0.2, 0.4, 0.4])  # an undecided row left from suggest-box
     (card,) = api.get(review_url(), headers=CAREGIVER).json()["candidates"]
-    assert card["bbox"] == [0.1, 0.2, 0.4, 0.4] and card["suggested"] is True
+    assert card["bbox"] is None  # only the detector proposes boxes
 
 
 # ---------------------------------------------------------------- answers

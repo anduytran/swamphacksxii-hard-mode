@@ -6,10 +6,8 @@ photos whose items name a taught item but carry no box. Each answer is one row h
 (training item, memory), so a photo is never asked about twice for the same item:
     yes / fixed   the photo became a training sample (sample_id)
     not           it isn't that item
-A row with no decision only caches a Gemini box suggestion, so showing the card again costs
-no second call. Rows go with the memory (72-hour purge) or the item.
-
-training_suggest_calls counts Gemini box suggestions per household for the rate limit.
+Rows go with the memory (72-hour purge) or the item. (Rows with no decision, and the
+note / suggested columns, are left from the removed Gemini box suggestions and ignored.)
 """
 
 from dataclasses import dataclass
@@ -24,8 +22,6 @@ class Review:
     memory_id: str
     decision: str | None
     bbox: list[float] | None
-    note: str
-    suggested: bool
 
 
 class ReviewMixin:
@@ -47,17 +43,6 @@ class ReviewMixin:
                 PRIMARY KEY (item_id, memory_id)
             )
             """
-        )
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS training_suggest_calls (
-                household_id  uuid NOT NULL REFERENCES households (id) ON DELETE CASCADE,
-                called_at     timestamptz NOT NULL DEFAULT now()
-            )
-            """
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS training_suggest_calls_idx ON training_suggest_calls (household_id, called_at)"
         )
 
     async def review_detections(self, device_ids: list[str], low: float, high: float, hours: int) -> list[dict]:
@@ -114,7 +99,7 @@ class ReviewMixin:
     async def reviews(self, household_id: str) -> dict[tuple[str, str], Review]:
         rows = await self.pool.fetch(
             """
-            SELECT r.item_id, r.memory_id, r.decision, r.bbox, r.note, r.suggested
+            SELECT r.item_id, r.memory_id, r.decision, r.bbox
             FROM training_reviews r JOIN training_items t ON t.id = r.item_id
             WHERE t.household_id = $1::uuid
             """,
@@ -123,7 +108,7 @@ class ReviewMixin:
         return {
             (str(r["item_id"]), str(r["memory_id"])): Review(
                 str(r["item_id"]), str(r["memory_id"]), r["decision"],
-                [round(c, 5) for c in r["bbox"]] if r["bbox"] is not None else None, r["note"], r["suggested"],
+                [round(c, 5) for c in r["bbox"]] if r["bbox"] is not None else None,
             )
             for r in rows
         }
@@ -145,22 +130,6 @@ class ReviewMixin:
             sample_id,
         )
 
-    async def cache_suggestion(self, item_id: str, memory_id: str, bbox: list[float] | None, note: str) -> None:
-        """Remember Gemini's answer for an undecided card; a decided one keeps its decision."""
-        await self.pool.execute(
-            """
-            INSERT INTO training_reviews (item_id, memory_id, bbox, note, suggested)
-            VALUES ($1::uuid, $2::uuid, $3, $4, true)
-            ON CONFLICT (item_id, memory_id) DO UPDATE SET bbox = EXCLUDED.bbox, note = EXCLUDED.note,
-                suggested = true, updated_at = now()
-            WHERE training_reviews.decision IS NULL
-            """,
-            item_id,
-            memory_id,
-            bbox,
-            note,
-        )
-
     async def household_memory_image(self, memory_id: str, device_ids: list[str]) -> tuple[bytes, str] | None:
         """A memory's photo, only when one of these (the household's) devices took it."""
         row = await self.pool.fetchrow(
@@ -169,24 +138,6 @@ class ReviewMixin:
             device_ids,
         )
         return (bytes(row["image"]), row["image_type"] or "image/jpeg") if row else None
-
-    async def reserve_suggest_call(self, household_id: str, per_hour: int) -> bool:
-        """Take one of the household's hourly Gemini box suggestions, or False if none are left.
-        Count and insert happen under one lock, so parallel requests can't overshoot the limit."""
-        async with self.pool.acquire() as conn, conn.transaction():
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"suggest:{household_id}")
-            await conn.execute(
-                "DELETE FROM training_suggest_calls WHERE household_id = $1::uuid AND called_at < now() - interval '1 day'",
-                household_id,
-            )
-            used = await conn.fetchval(
-                "SELECT count(*) FROM training_suggest_calls WHERE household_id = $1::uuid AND called_at > now() - interval '1 hour'",
-                household_id,
-            )
-            if used >= per_hour:
-                return False
-            await conn.execute("INSERT INTO training_suggest_calls (household_id) VALUES ($1::uuid)", household_id)
-            return True
 
     async def claim_review(self, item_id: str, memory_id: str, decision: str) -> bool:
         """Record the answer only if the photo hasn't been answered yet; False if it has (e.g. a

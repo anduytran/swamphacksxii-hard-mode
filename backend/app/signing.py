@@ -15,7 +15,13 @@ def _sign(secret: str, record_id: str, exp: int) -> str:
 
 
 def image_url(secret: str, record_id: str, ttl_seconds: int) -> str:
+    """A link valid for at least ttl_seconds. The expiry is rounded up to a step of a third of the
+    TTL, so lists fetched again within a step give the same links and the browser reuses its
+    cached photos instead of asking for every one again."""
     exp = int(time.time()) + ttl_seconds
+    if ttl_seconds > 0:
+        step = max(1, ttl_seconds // 3)
+        exp = -(-exp // step) * step
     return f"/api/v1/images/{record_id}?exp={exp}&sig={_sign(secret, record_id, exp)}"
 
 

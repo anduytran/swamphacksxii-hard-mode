@@ -1,3 +1,5 @@
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from .. import signing
@@ -33,7 +35,7 @@ async def get_image(
         content=data,
         media_type=content_type,
         headers={
-            "Cache-Control": f"private, max-age={settings.image_url_ttl_seconds}",
+            "Cache-Control": f"private, max-age={max(0, exp - int(time.time()))}",  # as long as the link works
             "X-Content-Type-Options": "nosniff",
         },
     )

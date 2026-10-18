@@ -1606,7 +1606,6 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
 .box-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; }
 .box-actions-end { display: inline-flex; gap: 10px; }
 .sample-box.suggested { border-style: dashed; }
-.box-note { color: var(--pending-ink); }
 
 /* Teach "Needs a look": one photo at a time the camera was unsure about */
 .review { display: grid; gap: 14px; margin-bottom: 20px; }

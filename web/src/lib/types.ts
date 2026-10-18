@@ -221,14 +221,6 @@ export interface ModelStatus {
   up_to_date: boolean;
 }
 
-/** POST /households/{id}/training/items/{item}/suggest-box: Gemini's box for the box editor to pre-draw.
- * status: ok | none (not in the photo) | off (vision off) | busy (hourly limit) | failed (e.g. quota). */
-export interface BoxSuggestion {
-  bbox: [number, number, number, number] | null;
-  note: string;
-  status: "ok" | "none" | "off" | "busy" | "failed";
-}
-
 /** One "Needs a look" card: a photo the detector is unsure of (detection) or that names the item with no box (memory). */
 export interface ReviewCandidate {
   item_id: string;
@@ -241,8 +233,6 @@ export interface ReviewCandidate {
   confidence: number | null;
   width: number | null;
   height: number | null;
-  suggested: boolean;
-  note: string;
 }
 
 /** GET /households/{id}/training/review */

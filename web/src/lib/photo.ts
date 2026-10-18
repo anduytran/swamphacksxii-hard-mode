@@ -18,3 +18,15 @@ export async function openPhoto(file: File): Promise<ImageBitmap> {
     return heicTo({ blob: file, type: "bitmap", options: { imageOrientation: "from-image" } });
   }
 }
+
+/** onError for a server photo: try once more after a moment. A busy server can fail a few of the
+ * many photo requests a page makes at once; a second try nearly always loads. */
+export function retryPhoto(e: { currentTarget: HTMLImageElement }): void {
+  const img = e.currentTarget;
+  if (img.dataset.retried || img.src.startsWith("blob:")) return;
+  img.dataset.retried = "1";
+  const src = img.src;
+  setTimeout(() => {
+    if (img.src === src) img.src = `${src}${src.includes("?") ? "&" : "?"}retry=1`;
+  }, 1500);
+}

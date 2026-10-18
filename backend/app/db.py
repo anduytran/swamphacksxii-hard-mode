@@ -7,6 +7,7 @@ photo all go with their memory in the retention purge.
 """
 
 import asyncio
+import time
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -74,9 +75,22 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
         self.pool: asyncpg.Pool | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+        self._used_at = 0.0
 
     async def connect(self) -> None:
-        self.pool = await asyncpg.create_pool(self.dsn, min_size=0, max_size=5)
+        # Small and short-lived, because every serverless instance has its own pool and Postgres
+        # has few connection slots: a burst of requests (a page of photos) starts many instances,
+        # and idle connections they keep fill the slots, so later requests fail with
+        # "remaining connection slots are reserved". The pool drops connections idle for 10 s,
+        # and Postgres itself closes ones idle for 60 s, which also covers instances that
+        # Vercel froze between requests (their timers don't run).
+        self.pool = await asyncpg.create_pool(
+            self.dsn,
+            min_size=0,
+            max_size=3,
+            max_inactive_connection_lifetime=10,
+            server_settings={"idle_session_timeout": "60000"},
+        )
         self._loop = asyncio.get_running_loop()
 
     async def ensure_ready(self) -> None:
@@ -87,12 +101,20 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
         """
         loop = asyncio.get_running_loop()
         if self.pool is not None and self._loop is loop:
+            # Idle longer than the pool's own 10 s (e.g. frozen by Vercel): Postgres may have closed
+            # its connections, so open fresh ones rather than hand out a dead one.
+            if time.time() - self._used_at > 10:
+                await self.pool.expire_connections()
+            self._used_at = time.time()
             return
         async with self._locks.setdefault(loop, asyncio.Lock()):
             if self.pool is not None and self._loop is loop:
                 return
+            if self.pool is not None:  # made on another event loop: can't be closed from here, so drop it
+                self.pool.terminate()
             await self.connect()
             await self.init_schema()
+            self._used_at = time.time()
 
     async def close(self) -> None:
         if self.pool:

@@ -4,7 +4,7 @@ Two sources, newest first:
 - detection: the vision pipeline boxed a taught item with confidence in the unsure band
   (REVIEW_CONFIDENCE_MIN..MAX): "Is this the keys?" with the detector's box.
 - memory: a memory photo whose items name a taught item (or one of its other words) but
-  that no detector boxed; the card asks Gemini for a box when it's shown.
+  that no detector boxed; the caregiver draws the box (only the detector ever proposes one).
 A photo already answered for that item (db_review) is never asked again.
 """
 
@@ -25,8 +25,6 @@ class Candidate:
     confidence: float | None
     width: int | None
     height: int | None
-    suggested: bool  # a box suggestion was already asked for (bbox may still be None)
-    note: str
 
 
 def _words(text: str) -> list[str]:
@@ -56,7 +54,7 @@ def candidates(
                 continue
             if key not in out or (d["confidence"] or 0) > (out[key].confidence or 0):  # one card per frame
                 out[key] = Candidate(item, d["memory_id"], "detection", d["created_at"], d["bbox"], d["confidence"],
-                                     d["width"], d["height"], False, "")
+                                     d["width"], d["height"])
     for p in photos:
         for item in items:
             key = (item.id, p["memory_id"])
@@ -65,7 +63,5 @@ def candidates(
             if any(mentions(item, label) for label in p["boxed"]):  # a detector already boxed it
                 continue
             if any(mentions(item, n) for n in p["names"]):
-                cached = reviews.get(key)
-                out[key] = Candidate(item, p["memory_id"], "memory", p["created_at"], cached.bbox if cached else None, None,
-                                     None, None, bool(cached and cached.suggested), cached.note if cached else "")
+                out[key] = Candidate(item, p["memory_id"], "memory", p["created_at"], None, None, None, None)
     return sorted(out.values(), key=lambda c: c.captured_at, reverse=True)

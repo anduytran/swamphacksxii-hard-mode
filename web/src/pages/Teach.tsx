@@ -8,12 +8,12 @@ import { Icon } from "../components/Icons";
 import { ApiError, useApi, type Api } from "../lib/api";
 import { useLoadStatus } from "../lib/app";
 import { useResource } from "../lib/resource";
-import type { BoxSuggestion, Household, ModelStatus, ReviewCandidate, ReviewQueue, TrainingItem, TrainingList, TrainingSample } from "../lib/types";
+import type { Household, ModelStatus, ReviewCandidate, ReviewQueue, TrainingItem, TrainingList, TrainingSample } from "../lib/types";
 import { timeAgo } from "../lib/format";
 import { RANGES, rangeOf, spread, type Box } from "../lib/distance";
 import { usableBox } from "../lib/box";
 import { publishReviewCount } from "../lib/reviewCount";
-import { openPhoto, PHOTO_ACCEPT } from "../lib/photo";
+import { openPhoto, PHOTO_ACCEPT, retryPhoto } from "../lib/photo";
 
 const GOOD_ENOUGH = 10; // photos per item before it's "ready"
 const MAX_SIDE = 1024; // photos are shrunk to this before upload (the pipeline trains at 640)
@@ -239,7 +239,6 @@ function ItemCard({
         <BoxEditor
           item={item.name}
           files={queue}
-          suggest={(photo) => suggestBox(api, `${base}/items/${item.id}/suggest-box`, { image: photo.blob })}
           upload={async (photo, box) => {
             const form = new FormData();
             form.append("image", photo.blob, "photo.jpg");
@@ -262,7 +261,7 @@ function SampleThumb({ sample, alt }: { sample: TrainingSample; alt: string }) {
   const [x, y, w, h] = sample.bbox;
   return (
     <figure className="sample" style={{ aspectRatio: `${sample.width} / ${sample.height}` }}>
-      <img src={sample.image_url} alt={alt} loading="lazy" />
+      <img src={sample.image_url} alt={alt} loading="lazy" onError={retryPhoto} />
       <span className="sample-box" style={{ left: `${x * 100}%`, top: `${y * 100}%`, width: `${w * 100}%`, height: `${h * 100}%` }} />
     </figure>
   );
@@ -291,78 +290,49 @@ async function prepare(file: File): Promise<Prepared> {
 
 const clamp = (v: number) => Math.min(1, Math.max(0, v));
 
-interface Suggested {
-  bbox: Box;
-  note: string;
-}
-
-/** Gemini's box for a photo (an upload, or a memory photo by id), or null: no suggestion is never an error,
- * the caregiver just draws the box (vision off, the hourly limit, quota errors all land here). */
-async function suggestBox(api: Api, path: string, from: { image: Blob } | { memory_id: string }): Promise<Suggested | null> {
-  const form = new FormData();
-  if ("image" in from) form.append("image", from.image, "photo.jpg");
-  else form.append("memory_id", from.memory_id);
-  try {
-    const s = await api<BoxSuggestion>(path, { method: "POST", body: form });
-    return usableBox(s.bbox) ? { bbox: s.bbox, note: s.note } : null;
-  } catch {
-    return null;
-  }
-}
-
-/** One photo at a time: drag a box around the item, then save (or skip) and go to the next. With `suggest`,
- * a suggested box is pre-drawn while nobody has started drawing, so Save is one tap; dragging still redraws. */
+/** One photo at a time: drag a box around the item, then save (or skip) and go to the next. With `proposed`
+ * (the detector's box, never anyone else's), it's pre-drawn so Save is one tap; dragging still redraws. */
 function BoxEditor({
   item,
   files,
   upload,
-  suggest,
+  proposed,
   onClose,
 }: {
   item: string;
   files: File[];
   upload(photo: Prepared, box: Box): Promise<void>;
-  suggest?(photo: Prepared): Promise<Suggested | null>;
+  proposed?: Box;
   onClose(): void;
 }) {
   const [index, setIndex] = useState(0);
   const [photo, setPhoto] = useState<Prepared | null>(null);
   const [box, setBox] = useState<Box | null>(null);
-  const [suggested, setSuggested] = useState<Suggested | null>(null);
-  const [looking, setLooking] = useState(false);
+  const [suggested, setSuggested] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(0);
   const start = useRef<[number, number] | null>(null);
   const frame = useRef<HTMLDivElement>(null);
-  const touched = useRef(false); // the caregiver drew on this photo: a late suggestion mustn't replace it
-  const suggestRef = useRef(suggest);
-  suggestRef.current = suggest;
+  const proposedRef = useRef(proposed);
+  proposedRef.current = proposed;
 
   useEffect(() => {
     let url = "";
     let gone = false;
     setPhoto(null);
     setBox(null);
-    setSuggested(null);
-    setLooking(false);
+    setSuggested(false);
     setError("");
-    touched.current = false;
     prepare(files[index]).then(
       (p) => {
         url = p.url;
         if (gone) return URL.revokeObjectURL(url);
         setPhoto(p);
-        if (!suggestRef.current) return;
-        setLooking(true);
-        suggestRef.current(p).then((s) => {
-          if (gone) return;
-          setLooking(false);
-          if (s && !touched.current) {
-            setSuggested(s);
-            setBox(s.bbox);
-          }
-        });
+        if (proposedRef.current) {
+          setSuggested(true);
+          setBox(proposedRef.current);
+        }
       },
       () => setError("Couldn't open that photo. JPEG, PNG, WebP and iPhone HEIC photos work; skip this one or try another."),
     );
@@ -372,8 +342,7 @@ function BoxEditor({
     };
   }, [files, index]);
   const own = (b: Box | null) => {
-    touched.current = true;
-    setSuggested(null);
+    setSuggested(false);
     setBox(b);
   };
 
@@ -414,12 +383,9 @@ function BoxEditor({
             Photo {index + 1} of {files.length}
             {saved > 0 && ` · ${saved} saved`}.{" "}
             {suggested
-              ? `Suggested box: save if it's tight around the ${item}, or drag to draw your own.`
-              : looking
-                ? `Looking for the ${item}… or drag from one corner to the other.`
-                : `Drag from one corner to the other, tight around the ${item}.`}
+              ? `The camera's box: save if it's tight around the ${item}, or drag to draw your own.`
+              : `Drag from one corner to the other, tight around the ${item}.`}
           </p>
-          {suggested?.note && <p className="hint box-note">Photo note: {suggested.note}</p>}
           <p className="hint box-range" aria-live="polite">
             {box && !tooSmall ? (
               <>
@@ -572,33 +538,14 @@ function NeedsALook({ queue, base, api, onChange }: { queue: ReviewQueue; base: 
 }
 
 function ReviewCard({ card, base, api, onSkip, onChange }: { card: ReviewCandidate; base: string; api: Api; onSkip(): void; onChange(): void }) {
-  const [box, setBox] = useState<Box | null>(usableBox(card.bbox) ? card.bbox : null);
-  const [note, setNote] = useState(card.note);
-  const [looking, setLooking] = useState(false);
+  // Only the detector's own box is ever proposed; a memory card starts with none.
+  const box = card.kind === "detection" && usableBox(card.bbox) ? card.bbox : null;
   // The photo's real pixel size, read when it loads: the box is drawn over it and sent with Yes / Fix.
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
   const [fixing, setFixing] = useState<File[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const item = card.item_name;
-
-  useEffect(() => {
-    // A memory photo has no detector box: ask Gemini once (the server caches its answer for this card).
-    if (card.kind !== "memory" || card.bbox || card.suggested) return;
-    let gone = false;
-    setLooking(true);
-    suggestBox(api, `${base}/items/${card.item_id}/suggest-box`, { memory_id: card.memory_id }).then((s) => {
-      if (gone) return;
-      setLooking(false);
-      if (s) {
-        setBox(s.bbox);
-        setNote(s.note);
-      }
-    });
-    return () => {
-      gone = true;
-    };
-  }, [api, base, card]);
 
   const decide = async (decision: "yes" | "fix" | "not", bbox: Box | null = null) => {
     const body = { item_id: card.item_id, memory_id: card.memory_id, decision, bbox, width: size?.width, height: size?.height };
@@ -634,6 +581,7 @@ function ReviewCard({ card, base, api, onSkip, onChange }: { card: ReviewCandida
         <img
           src={card.image_url}
           alt={`Photo that may show the ${item}`}
+          onError={retryPhoto}
           onLoad={(e) => setSize({ width: e.currentTarget.naturalWidth, height: e.currentTarget.naturalHeight })}
         />
         {box && (
@@ -649,9 +597,8 @@ function ReviewCard({ card, base, api, onSkip, onChange }: { card: ReviewCandida
           {card.kind === "detection"
             ? `The camera thought so ${when}${card.confidence != null ? `, ${Math.round(card.confidence * 100)}% sure` : ""}.`
             : `From a memory ${when} that mentions the ${item}.`}{" "}
-          {box ? "Check the box." : looking ? "Looking for it…" : "No box yet: draw one if it's there."}
+          {box ? "Check the box." : "No box yet: draw one if it's there."}
         </p>
-        {note && <p className="hint box-note">Photo note: {note}</p>}
         <div className="review-actions">
           {box && (
             <button type="button" className="primary" disabled={busy || !size} onClick={() => run("yes")}>
@@ -674,7 +621,7 @@ function ReviewCard({ card, base, api, onSkip, onChange }: { card: ReviewCandida
         <BoxEditor
           item={item}
           files={fixing}
-          suggest={async () => (box ? { bbox: box, note } : null)}
+          proposed={box ?? undefined}
           upload={async (_photo, drawn) => {
             await decide("fix", drawn);
             onChange();

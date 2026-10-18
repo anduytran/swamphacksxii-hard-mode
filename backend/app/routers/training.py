@@ -7,7 +7,6 @@ Dashboard (household members, caregiver token):
     DELETE /api/v1/households/{household_id}/training/items/{item_id}
     POST   /api/v1/households/{household_id}/training/items/{item_id}/samples  multipart image + bbox + width + height
     DELETE /api/v1/households/{household_id}/training/samples/{sample_id}
-    POST   /api/v1/households/{household_id}/training/items/{item_id}/suggest-box  image or memory_id -> Gemini's box
     GET    /api/v1/households/{household_id}/training/review    "Needs a look": photos the detector is unsure of
     POST   /api/v1/households/{household_id}/training/review    {item_id, memory_id, decision, bbox?, width?, height?}
 
@@ -40,7 +39,6 @@ from pydantic import BaseModel, Field, field_validator
 
 from .. import signing
 from ..auth import Principal, require_caregiver, require_device
-from ..box_suggest import suggest_box
 from ..config import Settings, get_settings
 from ..db import MemoryDB
 from ..db_training import (
@@ -53,7 +51,7 @@ from ..db_training import (
     TrainedModel,
     TrainingItem,
 )
-from ..deps import get_ai, get_db
+from ..deps import get_db
 from ..review import Candidate, candidates
 from .households import _require_member
 from .memory import ALLOWED_IMAGE_TYPES, MAX_IMAGE_BYTES, _read
@@ -283,14 +281,7 @@ async def delete_sample(
     return {"deleted": True}
 
 
-# ---------------------------------------------------------------- suggested boxes and review
-
-
-async def _item(db: MemoryDB, household_id: str, item_id: str) -> TrainingItem:
-    item = next((i for i in await db.training_items(household_id) if i.id == item_id), None)
-    if item is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found")
-    return item
+# ---------------------------------------------------------------- review
 
 
 async def _memory_photo(db: MemoryDB, household_id: str, memory_id: str) -> tuple[bytes, str]:
@@ -299,51 +290,6 @@ async def _memory_photo(db: MemoryDB, household_id: str, memory_id: str) -> tupl
     if found is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Photo not found")
     return found
-
-
-async def _suggest(db: MemoryDB, ai, settings: Settings, household_id: str, item: TrainingItem, image: bytes, content_type: str) -> dict:
-    """Gemini's box, or why there isn't one. Never raises: the caregiver can always draw by hand.
-    status: ok (bbox set) | none (item not found in the photo) | off (VISION_PROVIDER isn't gemini)
-            | busy (this household's hourly limit) | failed (Gemini errored, e.g. quota)"""
-    if settings.vision_provider != "gemini":
-        return {"bbox": None, "note": "", "status": "off"}
-    if not await db.reserve_suggest_call(household_id, settings.suggest_box_per_hour):
-        return {"bbox": None, "note": "", "status": "busy"}
-    try:
-        bbox, note = await suggest_box(ai, image, content_type, item.name, item.aliases)
-    except Exception as exc:  # quota (429), network, a malformed answer: fall back to drawing
-        log.warning("box suggestion failed: %s", type(exc).__name__)
-        return {"bbox": None, "note": "", "status": "failed"}
-    return {"bbox": bbox, "note": note, "status": "ok" if bbox else "none"}
-
-
-@router.post("/households/{household_id}/training/items/{item_id}/suggest-box")
-async def suggest_item_box(
-    household_id: UUID,
-    item_id: UUID,
-    image: UploadFile | None = File(None, description="A JPEG (or PNG/WebP) about to be added"),
-    memory_id: UUID | None = Form(None, description="Or a memory photo from the household's wearable"),
-    user: Principal = Depends(require_caregiver),
-    db: MemoryDB = Depends(get_db),
-    ai=Depends(get_ai),
-    settings: Settings = Depends(get_settings),
-):
-    """Where Gemini thinks the item is: {bbox: [x, y, w, h] | null, note, status}, for the box editor to pre-draw."""
-    hid = str(household_id)
-    await _require_member(db, hid, user)
-    item = await _item(db, hid, str(item_id))
-    if memory_id is not None:
-        data, content_type = await _memory_photo(db, hid, str(memory_id))
-    elif image is not None:
-        if image.content_type not in ALLOWED_IMAGE_TYPES:
-            raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Photos must be JPEG, PNG or WebP")
-        data, content_type = await _read(image, MAX_IMAGE_BYTES, "image"), image.content_type
-    else:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Send an image or a memory_id")
-    result = await _suggest(db, ai, settings, hid, item, data, content_type)
-    if memory_id is not None and result["status"] in ("ok", "none"):  # the review card won't ask again
-        await db.cache_suggestion(item.id, str(memory_id), result["bbox"], result["note"])
-    return result
 
 
 def _candidate_json(settings: Settings, c: Candidate) -> dict:
@@ -358,8 +304,6 @@ def _candidate_json(settings: Settings, c: Candidate) -> dict:
         "confidence": c.confidence,
         "width": c.width,
         "height": c.height,
-        "suggested": c.suggested,
-        "note": c.note,
     }
 
 
