@@ -8,7 +8,7 @@
 # else plughw:1,0 (the Voice Bonnet) for both.
 # Install as a command (no root; ~/.local/bin is on PATH at login on Raspberry Pi OS):
 #   mkdir -p ~/.local/bin && install -m 755 audio_check.sh ~/.local/bin/audiotest
-#   install -m 644 play_scale.py ~/.local/bin/play_scale.py
+#   install -m 644 play_scale.py speaker_eq.py ~/.local/bin/
 set -u
 
 OUT=plughw:1,0
@@ -16,6 +16,10 @@ IN=plughw:1,0
 if [ -r /etc/lastscene/device.env ]; then
     v=$(sed -n 's/^AUDIO_OUT_DEVICE=//p' /etc/lastscene/device.env | tail -1); [ -n "$v" ] && [ "$v" != default ] && OUT=$v
     v=$(sed -n 's/^AUDIO_IN_DEVICE=//p' /etc/lastscene/device.env | tail -1); [ -n "$v" ] && [ "$v" != default ] && IN=$v
+    # The speaker's level and EQ (speaker_eq.py), so the scale sounds the way answers will
+    for k in AUDIO_GAIN_DB SPEAKER_EQ; do
+        grep -q "^$k=" /etc/lastscene/device.env && export "$k=$(sed -n "s/^$k=//p" /etc/lastscene/device.env | tail -1)"
+    done
 fi
 HERE=$(dirname "$(readlink -f "$0")")
 FAILED=0

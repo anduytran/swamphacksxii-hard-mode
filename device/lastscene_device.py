@@ -67,6 +67,11 @@ from urllib.parse import unquote
 
 import httpx
 
+try:  # speaker_eq.py sits next to this file (README step 4 copies it); without it sound plays flat
+    import speaker_eq
+except ImportError:
+    speaker_eq = None
+
 log = logging.getLogger("lastscene")
 
 
@@ -483,6 +488,8 @@ class Recorder:
 
 
 def play_wav(device: str, data: bytes) -> None:
+    if speaker_eq is not None:
+        data = speaker_eq.apply_wav(data)  # AUDIO_GAIN_DB and SPEAKER_EQ
     with tempfile.NamedTemporaryFile(suffix=".wav") as f:
         f.write(data)
         f.flush()
@@ -947,8 +954,11 @@ class PcmPlayer:
         self.device, self.rate, self.tail_s, self.clock = device, rate, tail_s, clock
         self._proc: subprocess.Popen | None = None
         self._until = 0.0
+        self._eq = speaker_eq.from_env(rate) if speaker_eq is not None else None
 
     def play(self, pcm: bytes) -> None:
+        if self._eq is not None:
+            pcm = self._eq.process(pcm)
         if self._proc is None or self._proc.poll() is not None:
             self._proc = subprocess.Popen(
                 ["aplay", "-q", "-D", self.device, "-t", "raw", "-f", "S16_LE", "-r", str(self.rate), "-c", "1"],
@@ -1123,6 +1133,8 @@ class Device:
         from gpiozero import LED, Button  # preinstalled on Raspberry Pi OS
 
         self.cfg = cfg
+        if speaker_eq is None:
+            optional_missing("speaker_eq.py not next to lastscene_device.py; sound plays without AUDIO_GAIN_DB/SPEAKER_EQ")
         self.api = ApiClient(cfg)
         self.spool = Spool(cfg.spool_dir)
         self.camera = make_camera(cfg)

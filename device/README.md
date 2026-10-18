@@ -119,7 +119,7 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
    sudo useradd --system --groups gpio,video,audio lastscene
    sudo mkdir -p /opt/lastscene /etc/lastscene /var/lib/lastscene/spool
    sudo chown lastscene /var/lib/lastscene/spool
-   sudo cp -r lastscene_device.py wake /opt/lastscene/
+   sudo cp -r lastscene_device.py speaker_eq.py wake /opt/lastscene/
    sudo install -m 640 -g lastscene device.env.example /etc/lastscene/device.env
    ```
    Fill in `/etc/lastscene/device.env` with the **Wearable** M2M app's Client ID/Secret and your API's HTTPS URL.
@@ -139,6 +139,8 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
 The bonnet's speaker plays spoken answers: set `AUDIO_OUT_DEVICE=plughw:1,0` and check it with `python3 play_scale.py -D plughw:1,0` (a C major scale; `--loop` repeats it until Ctrl-C), or `audio_check.sh --mic` for the speaker and mic together.
 
 The speaker comes up muted: the codec's `Speaker Channel Switch` is off, so playback succeeds and nothing is heard. `audio_check.sh` turns it and the DAC-to-speaker path on; then `sudo alsactl store` keeps them across reboots for the client.
+
+**Level and EQ:** the mixer stays at full gain and the client sets the level in software (`speaker_eq.py`), so one setting covers beeps and answers. To aim for a level (80 dB at arm's length for the demo), play `python3 play_scale.py --tone` (1 kHz at about speech level), read a phone sound-meter app, and set `AUDIO_GAIN_DB` = target − reading in `device.env`. `SPEAKER_EQ` evens out the speaker: the default cuts A4 and B4 (440/494 Hz), which this speaker plays much louder, by 13 dB (67 dB when the rest is at 80).
 
 **Voice Bonnet mic:** its mics are analog, and on a fresh boot nothing routes them to the recorder (recordings are silent). Turn the route on, then `sudo alsactl store` to keep it across reboots, and set `AUDIO_IN_DEVICE=plughw:1,0`:
 ```bash
