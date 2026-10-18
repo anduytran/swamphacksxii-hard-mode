@@ -10,12 +10,14 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import unquote
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app.auth import Principal, require_caregiver, require_device
 from app.config import get_settings
 from app.main import create_app
+from app.raia import Raia
 
 pytestmark = pytest.mark.skipif(not os.environ.get("RUN_DB_TESTS"), reason="set RUN_DB_TESTS=1 to run against DATABASE_URL")
 RUN = uuid.uuid4().hex[:8]
@@ -58,6 +60,7 @@ def c():
         client.who, client.settings = who, settings
         yield client
         db, run = app.state.db, client.portal.call
+        run(db.pool.execute, "DELETE FROM raia_contexts WHERE scope LIKE $1", f"it-{RUN}-%")
         run(db.pool.execute, "DELETE FROM item_last_seen WHERE scope LIKE $1 OR scope IN (SELECT id::text FROM households WHERE created_by LIKE $1)", f"it-{RUN}-%")
         run(db.pool.execute, "DELETE FROM query_logs WHERE device_id LIKE $1", f"it-{RUN}-%")
         run(db.pool.execute, "DELETE FROM memory_logs WHERE device_id LIKE $1", f"it-{RUN}-%")
@@ -208,3 +211,56 @@ def test_delete_removes_last_seen_left_in_pre_household_scope(c):
     assert c.delete(f"/api/v1/observations/{early['observation_id']}").status_code == 200
     left = c.portal.call(c.app.state.db.pool.fetchval, "SELECT count(*) FROM item_last_seen WHERE scope = $1", DEVICE)
     assert left == 0
+
+
+def test_raia_reads_a_logged_item_once_per_cooldown(c):
+    """raia frame context (app/raia.py) on the real tables: logged items, the cooldown claim, the saved chunk."""
+    sent = []
+
+    def api(req: httpx.Request) -> httpx.Response:
+        path = req.url.path.removeprefix("/external")
+        sent.append(path)
+        if req.url.host == "storage.example":
+            return httpx.Response(200)
+        return {
+            "/users/search": httpx.Response(404),
+            "/users": httpx.Response(201, json={"id": "u-1"}),
+            "/conversations": httpx.Response(201, json={"id": "conv-1"}),
+            "/conversations/conv-1/message-files/upload-url": httpx.Response(
+                200, json={"signedUrl": "https://storage.example/put", "storagePath": "conversations/conv-1/f.jpg"}),
+            "/conversations/conv-1/messages": httpx.Response(201, json={"message": json.dumps({
+                "visible": True, "where": "on the hallway table", "surface": "table", "nearby": ["bowl"],
+                "room": "hallway", "visible_text": "", "summary": "The keys are on the hallway table."})}),
+        }[path]
+
+    settings = c.settings.model_copy(update={"raia_agent_key": "k"})
+    c.app.dependency_overrides[get_settings] = lambda: settings
+    c.app.state.raia = Raia(settings, http=httpx.AsyncClient(transport=httpx.MockTransport(api)))
+    db, run = c.app.state.db, c.portal.call
+
+    # Not one of the user's items yet: nothing is sent.
+    assert post(c, obs(label="keys")).status_code == 201
+    assert sent == []
+
+    # A spoken memory names the keys; then a sighting is read, and the next one within 30 min isn't.
+    spoken = run(db.insert, DEVICE, "I put my keys on the hallway table", None, None)
+    run(db.add_items, spoken.id, [("Keys", "hallway table")])
+    first = post(c, obs(label="keys", conf=0.71))
+    assert first.status_code == 201 and sent.count("/conversations/conv-1/messages") == 1
+    assert post(c, obs(label="keys", conf=0.9)).status_code == 201
+    assert sent.count("/conversations/conv-1/messages") == 1
+
+    # Saved as a memory of its own, "LastScene: ...", with the item and place indexed.
+    row = run(db.raia_context, DEVICE, "keys")
+    assert json.loads(row["context"])["surface"] == "table" and row["error"] is None
+    memory_id = str(row["memory_id"])
+    saved = run(db.pool.fetchrow, "SELECT transcript, image IS NOT NULL AS has_image FROM memory_logs WHERE id = $1::uuid", memory_id)
+    assert saved["transcript"] == "LastScene: The keys are on the hallway table." and saved["has_image"]
+    chunks = run(db.chunks_for, [memory_id])[memory_id]
+    assert ("item", "keys: on the hallway table") in [(ch.kind, ch.content) for ch in chunks]
+    assert "hallway table" in run(db.pool.fetchval, "SELECT location FROM memory_items WHERE memory_id = $1::uuid", memory_id)
+
+    # Past the cooldown it's read again.
+    run(db.pool.execute, "UPDATE raia_contexts SET claimed_at = now() - interval '31 minutes' WHERE scope = $1", DEVICE)
+    assert post(c, obs(label="keys", conf=0.9)).status_code == 201
+    assert sent.count("/conversations/conv-1/messages") == 2

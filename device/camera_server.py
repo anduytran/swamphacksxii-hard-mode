@@ -58,7 +58,9 @@ class CameraService:
 
     def health(self) -> dict:
         return {"camera": type(self.camera).__name__,
-                "vision": self.vision.detector.name if self.vision is not None else None}
+                "vision": self.vision.detector.name if self.vision is not None else None,
+                # The background loop that posts sightings: {"state": "running" | "off" | "stopped", "error"}.
+                "passive": getattr(self.vision, "background", None) if self.vision is not None else None}
 
 
 def shrink_jpeg(jpeg: bytes, max_side: int, quality: int = 85) -> bytes:
@@ -136,9 +138,13 @@ def main() -> None:
     service = CameraService(cfg)
     server = serve(service, os.environ.get("CAMERA_TOKEN", ""), os.environ.get("CAMERA_BIND", "0.0.0.0"),
                    int(os.environ.get("CAMERA_PORT", 8765)))
-    if service.vision is not None and cfg.vision_every > 0:
-        service.vision.start_background()
-        log.info("Watching for taught items every %.1f s when the scene changes", cfg.vision_every)
+    if service.vision is None:
+        log.warning("Passive item detection OFF: no item detector (set VISION_DIR and a model)")
+    elif cfg.vision_every <= 0:
+        log.warning("Passive item detection OFF: VISION_EVERY=%s", cfg.vision_every)
+    elif service.vision.start_background():
+        log.info("Passive item detection on: every %.1f s when the scene changes, posting sightings at >= %.2f "
+                 "to %s", cfg.vision_every, cfg.min_confidence, os.environ.get("API_URL", "https://www.lastscene.photo"))
     log.info("Camera ready on port %d (%s)", server.server_address[1], service.health())
     server.serve_forever()
 

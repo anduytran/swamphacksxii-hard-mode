@@ -975,6 +975,19 @@ def intent_of(transcript: str) -> str:
 
 # ---------------------------------------------------------------- item detection on the device
 
+def passive_missing(env) -> list[str]:
+    """What the background loop still needs to post observations (lastscene_bridge.auth's names)."""
+    if env.get("LASTSCENE_DEVICE_TOKEN"):
+        return []
+    need = {
+        "DEVICE_CLIENT_ID": env.get("DEVICE_CLIENT_ID") or env.get("AUTH0_CLIENT_ID"),
+        "DEVICE_CLIENT_SECRET": env.get("DEVICE_CLIENT_SECRET") or env.get("AUTH0_CLIENT_SECRET"),
+        "AUTH0_DOMAIN": env.get("AUTH0_DOMAIN"),
+        "AUTH0_AUDIENCE": env.get("AUTH0_AUDIENCE"),
+    }
+    return [k for k, v in need.items() if not v]
+
+
 class Vision:
     """The vision pipeline's detector, loaded once and shared by voice commands and the background loop.
 
@@ -998,6 +1011,8 @@ class Vision:
         self.detector = ReloadingDetector(pointer, None, build, log=log.info)
         self._read_json = read_json
         self.stats = None
+        # The background loop's state, for the camera Pi's /health: "off", "running", or why it isn't.
+        self.background = {"state": "off", "error": None}
 
     @property
     def names(self) -> dict[str, list[str]]:
@@ -1037,8 +1052,15 @@ class Vision:
                 return frame, max(hits, key=lambda d: d.conf), attempt + 1
         return frame, None, attempts
 
-    def start_background(self, dry_run: bool = False, stop=lambda: False) -> threading.Thread:
-        """The detect loop on motion-gated frames from the shared camera, on a daemon thread."""
+    def start_background(self, dry_run: bool = False, stop=lambda: False) -> threading.Thread | None:
+        """The detect loop on motion-gated frames from the shared camera, on a daemon thread. Each sighting
+        it confirms is posted as an observation (the server keeps the frame and reads it with raia, silently).
+        None, with a warning, when it can't post: without device credentials it would only stop at once."""
+        if not dry_run and (missing := passive_missing(os.environ)):
+            self.background = {"state": "off", "error": f"missing {', '.join(missing)}"}
+            log.warning("Passive item detection OFF: set %s in this Pi's env so sightings are posted",
+                        ", ".join(missing))
+            return None
         from lastscene_pipeline.detect import build_parser, run
         from lastscene_pipeline.gated import GatedFrames
 
@@ -1054,9 +1076,12 @@ class Vision:
         args = build_parser().parse_args(argv)
 
         def loop():
+            self.background = {"state": "running", "error": None}
             try:
                 run(args, frames=gate, detector=self.detector)
-            except Exception:
+                self.background = {"state": "off", "error": None}
+            except BaseException as exc:  # PipelineError is a SystemExit
+                self.background = {"state": "stopped", "error": f"{type(exc).__name__}: {exc}"[:300]}
                 log.exception("Background item detection stopped")
 
         thread = threading.Thread(target=loop, name="lastscene-vision", daemon=True)
@@ -1734,8 +1759,7 @@ class Device:
             self.busy.release()
 
     def run(self) -> None:
-        if self.vision is not None and self.cfg.vision_every > 0:
-            self.vision.start_background()
+        if self.vision is not None and self.cfg.vision_every > 0 and self.vision.start_background():
             log.info("Watching for taught items every %.1f s when the scene changes", self.cfg.vision_every)
         if self.mic:
             self.mic.start()

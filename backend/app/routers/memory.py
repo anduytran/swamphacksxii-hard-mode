@@ -24,7 +24,7 @@ from ..ai import (BUSY, DIDNT_CATCH, FILLERS, GLAD_YOU_FOUND, IN_VIEW, NO_ANSWER
 from ..auth import Principal, require_device
 from ..config import Settings, get_settings
 from ..db import MemoryDB
-from ..deps import device_limit, get_ai, get_db, get_geo
+from ..deps import device_limit, get_ai, get_db, get_geo, get_raia
 from ..geo import Geolocator, locate_and_record, record_public, resolve_location
 from ..intent import after_wake_phrase, classify, continue_command, fallback_command, strip_wake_phrase
 from ..observations import scope_for
@@ -32,6 +32,7 @@ from ..languages import is_english, normalize, phrase
 from ..limits import RateLimited
 from ..maps_names import name_memory_place
 from ..pipeline import ingest_image, ingest_speech, retrieve
+from ..raia import Raia, context_from_photos
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
 log = logging.getLogger(__name__)
@@ -438,6 +439,7 @@ async def voice(
     ai: AIServices = Depends(get_ai),
     geo: Geolocator = Depends(get_geo),
     settings: Settings = Depends(get_settings),
+    raia: Raia | None = Depends(get_raia),
 ):
     """Wake phrase, no button: the words decide. A statement is saved like /log (JSON back, with
     "intent": "remember"); a question is answered like /query (spoken audio back, X-Intent: ask).
@@ -456,8 +458,8 @@ async def voice(
         except ValueError:
             pass
     return await _traced(background, db, device.sub, trace, lambda: _voice(
-        background, audio, image, transcript, wake, where, pairing_code, device, db, ai, geo, settings, trace),
-        deps=(ai, geo, settings))
+        background, audio, image, transcript, wake, where, pairing_code, device, db, ai, geo, settings, trace,
+        raia=raia), deps=(ai, geo, settings))
 
 
 TRUSTED_WAKE_SCORE = 0.9  # a wake this sure counts even when speech-to-text doesn't hear "Last Scene"
@@ -479,7 +481,7 @@ async def _previous_exchange(db: MemoryDB, device_id: str) -> tuple[str, str] | 
 
 
 async def _voice(background, audio, image, transcript, wake, where, pairing_code, device, db, ai, geo, settings,
-                 trace: Trace):
+                 trace: Trace, raia: Raia | None = None):
     photos = [(await _read(i, MAX_IMAGE_BYTES, "image"), i.content_type) for i in (image or [])[:MAX_WAKE_PHOTOS]]
     heard = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub)))
     trace.lap("transcribe")
@@ -561,11 +563,14 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
         look = wake and photos
         started = time.perf_counter()
         photo_task = asyncio.create_task(check_photos()) if look else None
+        if photo_task is not None and raia is not None and raia.configured:
+            # The item in view goes to raia (raia.py) after the response, once the photo check is done.
+            background.add_task(context_from_photos, db, ai, raia, settings, device.sub, item, photo_task, photos, "ask")
         answered = await _answer_text(db, ai, settings, device.sub, words)
         view = None
         if photo_task is not None:
-            try:
-                view = await asyncio.wait_for(photo_task, settings.in_view_grace_seconds)
+            try:  # shielded: the check keeps going for raia when the answer doesn't wait for it
+                view = await asyncio.wait_for(asyncio.shield(photo_task), settings.in_view_grace_seconds)
             except TimeoutError:
                 trace.set(photo_error="still looking when the answer was ready; answered without it")
             trace.event["steps"]["photos"] = round((time.perf_counter() - started) * 1000)
@@ -608,13 +613,15 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
     best = view.best_photo if view and 0 <= view.best_photo < len(photos) else 0
     data, kind = photos[best]
     saved = await _save_memory(background, db, ai, geo, settings, device.sub, words, data, kind, where, trace=trace)
+    if wake and raia is not None and raia.configured:
+        background.add_task(context_from_photos, db, ai, raia, settings, device.sub, item, view, photos, "remember")
     trace.lap("save")
     trace.set(outcome="saved", memory_id=saved["id"], saved_photo=best)
     return {**saved, "intent": "remember", "photo": best, "heard": heard}
 
 
 async def _run_pending(db: MemoryDB, ai: AIServices, geo: Geolocator, settings: Settings | None, device_id: str,
-                       pending: dict, photos: list[tuple[bytes, str]] | None = None) -> dict:
+                       pending: dict, photos: list[tuple[bytes, str]] | None = None, raia: Raia | None = None) -> dict:
     """A wake command's deferred work, after the wearer has heard the reply: save a memory with the photo that
     shows the item best, index and describe a saved memory, or log an answered question. What it did comes back
     for the Live page."""
@@ -638,6 +645,9 @@ async def _run_pending(db: MemoryDB, ai: AIServices, geo: Geolocator, settings: 
             done.update(best_photo=view.best_photo, in_view=view.visible, seen_where=view.where or None)
         record = await db.insert(device_id, words, typed[best][0], typed[best][1])
         done.update(memory_id=record.id, saved_photo=best, outcome="saved")
+        if raia is not None and raia.configured and settings is not None:  # the wearer heard the reply already
+            if raia_memory := await context_from_photos(db, ai, raia, settings, device_id, item, view, typed, "remember"):
+                done["raia_memory_id"] = raia_memory
         pending = {"type": "memory", "memory_id": record.id, "words": words, "where": pending.get("where", {})}
     if pending["type"] == "memory":
         memory_id, words = pending["memory_id"], pending["words"]
@@ -679,6 +689,7 @@ async def followup(
     ai: AIServices = Depends(get_ai),
     geo: Geolocator = Depends(get_geo),
     settings: Settings = Depends(get_settings),
+    raia: Raia | None = Depends(get_raia),
 ):
     """The slow work a wake command left for later (its "followup" id). The device calls this right after
     the wearer heard the reply and doesn't wait on it, with the device's timeline of the command (wake, speech
@@ -701,7 +712,8 @@ async def followup(
     started = time.perf_counter()
     photos = [(await _read(i, MAX_IMAGE_BYTES, "image"), i.content_type) for i in (image or [])[:MAX_WAKE_PHOTOS]]
     try:
-        result = {**await _run_pending(db, ai, geo, settings, device.sub, pending, photos), "followup": "done"}
+        result = {**await _run_pending(db, ai, geo, settings, device.sub, pending, photos, raia=raia),
+                  "followup": "done"}
     except HTTPException as exc:
         result = {"followup": f"failed: {exc.detail}", "outcome": "error"}
     except Exception as exc:

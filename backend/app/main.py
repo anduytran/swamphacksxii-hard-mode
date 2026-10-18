@@ -14,6 +14,7 @@ from .db import MemoryDB
 from .geo import Geolocator, usage_month
 from .limits import Limiter, RateLimited, Rule
 from .live import LiveTokens
+from .raia import Raia
 from .mcp_server import router as mcp_router
 from .routers import mcp_keys
 from .routers import admin, dashboard, households, images, live, memory, observations, public, training
@@ -73,6 +74,7 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
     app.state.db = MemoryDB(settings)
     app.state.ai = AIServices(settings, limiter=Limiter(app.state.db))
     app.state.geo = Geolocator(settings, app.state.db)
+    app.state.raia = Raia(settings)
     app.state.live_tokens = LiveTokens()
 
     @app.exception_handler(RateLimited)
@@ -164,6 +166,7 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
             "ok": not missing,
             "missing_settings": missing,
             "wifi_positioning": bool(settings.google_geolocation_api_key),
+            "raia_context": bool(settings.raia_agent_key),
             "geolocation_budget": await geolocation_budget(settings),
             "model_usage": await model_usage(settings),
             "speech": await speech_usage(settings),

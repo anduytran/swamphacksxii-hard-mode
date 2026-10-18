@@ -6,6 +6,7 @@ from .config import Settings, get_settings
 from .db import MemoryDB
 from .geo import Geolocator
 from .limits import Limiter, per
+from .raia import Raia
 
 
 async def get_db(request: Request) -> MemoryDB:
@@ -18,6 +19,10 @@ async def get_db(request: Request) -> MemoryDB:
 
 def get_ai(request: Request) -> AIServices:
     return request.app.state.ai
+
+
+def get_raia(request: Request) -> Raia | None:
+    return getattr(request.app.state, "raia", None)
 
 
 def get_geo(request: Request) -> Geolocator:

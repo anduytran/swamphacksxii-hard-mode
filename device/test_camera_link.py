@@ -82,7 +82,8 @@ def test_the_token_is_required(faker):
 
 def test_health_and_unknown_paths(faker):
     url, service = faker
-    assert httpx.get(f"{url}/health", headers={"X-Camera-Token": TOKEN}).json() == {"camera": "FakeCamera", "vision": None}
+    assert httpx.get(f"{url}/health", headers={"X-Camera-Token": TOKEN}).json() == {"camera": "FakeCamera", "vision": None,
+                                                                                 "passive": None}
     assert httpx.get(f"{url}/stream", headers={"X-Camera-Token": TOKEN}).status_code == 404
 
 
@@ -132,3 +133,30 @@ def test_the_audio_pi_asks_with_the_words_and_beeps_if_the_camera_pi_is_down(mon
     with pytest.raises(httpx.ConnectError):
         d._photo("my keys are on the hook")
     assert len(beeps) == 1  # the low "didn't work" beep
+
+
+def test_passive_detection_needs_device_credentials_and_says_so(caplog):
+    """Without them the background loop would stop at once; it stays off, with the reason in /health."""
+    assert dev.passive_missing({}) == ["DEVICE_CLIENT_ID", "DEVICE_CLIENT_SECRET", "AUTH0_DOMAIN", "AUTH0_AUDIENCE"]
+    assert dev.passive_missing({"DEVICE_CLIENT_ID": "id", "DEVICE_CLIENT_SECRET": "s", "AUTH0_DOMAIN": "d",
+                                "AUTH0_AUDIENCE": "a"}) == []
+    assert dev.passive_missing({"AUTH0_CLIENT_ID": "id", "AUTH0_CLIENT_SECRET": "s", "AUTH0_DOMAIN": "d",
+                                "AUTH0_AUDIENCE": "a"}) == []
+    assert dev.passive_missing({"LASTSCENE_DEVICE_TOKEN": "t"}) == []
+
+    vision = dev.Vision.__new__(dev.Vision)  # no model needed for the preflight
+    vision.cfg, vision.camera, vision.paused = Config.local({}), FakeCamera(), lambda: False
+    vision.background = {"state": "off", "error": None}
+    import os
+    saved = {k: os.environ.pop(k) for k in ("DEVICE_CLIENT_ID", "AUTH0_CLIENT_ID", "LASTSCENE_DEVICE_TOKEN")
+             if k in os.environ}
+    try:
+        assert vision.start_background() is None
+    finally:
+        os.environ.update(saved)
+    assert vision.background["state"] == "off" and "DEVICE_CLIENT_ID" in vision.background["error"]
+    assert "Passive item detection OFF" in caplog.text
+
+    vision.detector = SimpleNamespace(name="yolo11s-int8")
+    service = camera_server.CameraService(Config.local({}), camera=FakeCamera(), vision=vision)
+    assert service.health()["passive"]["state"] == "off"

@@ -32,6 +32,7 @@ async def purge(
     deleted = await db.delete_older_than(settings.retention_hours)
     last_seen = await db.purge_last_seen(settings.last_seen_retention_hours)
     geo_cache = await db.purge_geolocation_cache(settings.geolocation_cache_days)
+    raia = await db.purge_raia_contexts(settings.retention_hours) if hasattr(db, "purge_raia_contexts") else 0
     if hasattr(db, "prune_limits"):  # rate-limit counters older than any window still in use
         await db.prune_limits(datetime.now(timezone.utc) - timedelta(days=2))
     return {
@@ -39,4 +40,5 @@ async def purge(
         "retention_hours": settings.retention_hours,
         "last_seen_deleted": last_seen,
         "geolocation_cache_deleted": geo_cache,
+        "raia_contexts_deleted": raia,
     }

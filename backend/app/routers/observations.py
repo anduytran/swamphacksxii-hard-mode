@@ -13,7 +13,7 @@ import json
 from datetime import datetime, timezone
 
 import asyncpg
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile, status
 from pydantic import BaseModel, ValidationError
 
 from .. import signing
@@ -22,8 +22,9 @@ from ..auth import Principal, require_device
 from ..config import Settings, get_settings
 from ..db import MemoryDB
 from ..db_observations import LastSeen
-from ..deps import device_limit, get_ai, get_db
+from ..deps import device_limit, get_ai, get_db, get_raia
 from ..observations import Observation, scope_for, store_observation, too_far_ahead
+from ..raia import Raia, candidates, extract_contexts
 from .memory import ALLOWED_IMAGE_TYPES, MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, _read
 
 router = APIRouter(prefix="/api/v1", tags=["observations"])
@@ -63,6 +64,7 @@ def _last_seen_json(request: Request, settings: Settings, ls: LastSeen) -> dict:
 @router.post("/observations", status_code=status.HTTP_201_CREATED)
 async def ingest_observation(
     response: Response,
+    background: BackgroundTasks,
     image: UploadFile = File(...),
     observation: str = Form(..., description="JSON, see the integration contract"),
     audio: UploadFile | None = File(None),
@@ -71,6 +73,7 @@ async def ingest_observation(
     db: MemoryDB = Depends(get_db),
     ai: AIServices = Depends(get_ai),
     settings: Settings = Depends(get_settings),
+    raia: Raia | None = Depends(get_raia),
 ):
     try:
         obs = Observation.model_validate(json.loads(observation))
@@ -120,6 +123,13 @@ async def ingest_observation(
         existing = await db.find_observation(str(obs.observation_id))
         response.status_code = status.HTTP_200_OK
         return {"memory_id": existing[0] if existing else None, "items": [], "duplicate": True}
+    # Context from the frame for the user's items (raia.py), after the response like the memory enrichment.
+    if raia is not None and raia.configured and candidates(obs, settings.raia_min_confidence):
+        args = (db, ai, raia, settings, device.sub, stored.memory_id, obs, image_bytes, image_type)
+        if settings.enrich_in_background:
+            background.add_task(extract_contexts, *args)
+        else:
+            await extract_contexts(*args)
     return {"memory_id": stored.memory_id, "items": stored.items, "duplicate": False}
 
 

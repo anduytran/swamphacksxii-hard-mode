@@ -108,13 +108,15 @@ loss, said: "{words}". Look for this item: {item}.
 - visible: true only if the item is clearly in at least one photo.
 - best_photo: the number (from 0) of the photo that shows it most clearly; 0 if none does.
 - where: if visible, where it is in 2 to 4 words, starting with a preposition ("on the desk", "by the \
-laptop"); otherwise ""."""
+laptop"); otherwise "".
+- confidence: from 0 to 1, how sure you are that it is this item in that photo; 0 if not visible."""
 
 
 class PhotoCheck(BaseModel):
     visible: bool = False
     best_photo: int = 0
     where: str = ""
+    confidence: float = 0.0  # the photo model's own 0-1, not a detector score; raia.py's trigger reads it
 
 
 SUMMARY_SYSTEM_PROMPT = """\
