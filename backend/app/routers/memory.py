@@ -528,7 +528,7 @@ async def _name_place(db, ai: AIServices, settings: Settings, device_id: str, pl
     if usable(scan) and hasattr(db, "save_wifi_place"):
         scope, _ = await scope_for(db, device_id)
         saved = await name_place(db, scope, name, scan, room.id if room else None)
-        answer = f"Got it, this is the {room.name}." if room else f"Got it, this is {display(saved['name'])}."
+        answer = f"Got it, this is {_spoken_room(room.name)}." if room else f"Got it, this is {display(saved['name'])}."
         trace.set(outcome="named place", wifi_aps=len(scan))
     else:
         answer = "I can't hear enough Wi-Fi here to remember this place."
@@ -538,6 +538,11 @@ async def _name_place(db, ai: AIServices, settings: Settings, device_id: str, pl
     trace.set(answer=answer)
     return Response(content=speech, media_type=ai.speech_media_type,
                     headers={"X-Intent": "place", "X-Answer": quote(answer), "X-Heard": quote(heard)})
+
+
+def _spoken_room(name: str) -> str:
+    """How a floor-plan room is said back: "meeting room 2360", "the Grand Ballroom"."""
+    return "meeting room " + name.removeprefix("Meeting Room ") if name.startswith("Meeting Room ") else f"the {name}"
 
 
 async def _previous_turn(db: MemoryDB, device_id: str) -> dict | None:

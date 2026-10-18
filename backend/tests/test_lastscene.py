@@ -224,6 +224,7 @@ def test_naming_a_floor_plan_room_ties_the_place_to_it(client):  # noqa: F811
     resp = client.post("/api/v1/memory/voice", headers=DEVICE, files=files,
                        data={"wake": "true", "wifi": json_scan(HOME_SCAN)})
     assert unquote(resp.headers["x-answer"]) == "Got it, this is the Kitchen."
+    assert __import__("app.routers.memory", fromlist=["x"])._spoken_room("Meeting Room 2360") == "meeting room 2360"
     assert saved == {"name": "kitchen", "room_id": "kitchen"}
 
 
