@@ -1610,6 +1610,14 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
 .box-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; }
 .box-actions-end { display: inline-flex; gap: 10px; }
 .sample-box.suggested { border-style: dashed; }
+.box-grip { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 2px rgba(20, 19, 43, 0.7); }
+.box-grip.n, .box-grip.s { left: 50%; width: 18px; height: 8px; margin: -4px 0 0 -9px; border-radius: 4px; }
+.box-grip.e, .box-grip.w { top: 50%; width: 8px; height: 18px; margin: -9px 0 0 -4px; border-radius: 4px; }
+.box-grip.nw, .box-grip.n, .box-grip.ne { top: 0; }
+.box-grip.sw, .box-grip.s, .box-grip.se { top: 100%; }
+.box-grip.nw, .box-grip.w, .box-grip.sw { left: 0; }
+.box-grip.ne, .box-grip.e, .box-grip.se { left: 100%; }
+@media (pointer: coarse) { .box-grip { transform: scale(1.4); } }
 
 /* Teach "Needs a look": one photo at a time the camera was unsure about */
 .review { display: grid; gap: 14px; margin-bottom: 20px; }

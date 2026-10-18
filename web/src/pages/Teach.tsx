@@ -343,8 +343,55 @@ async function prepare(file: File): Promise<Prepared> {
 
 const clamp = (v: number) => Math.min(1, Math.max(0, v));
 
+/** The smallest box a resize may leave (a side of the photo); Save needs 0.02, so a resize never disables it. */
+const MIN_SIDE = 0.03;
+/** Which sides of the box a drag moves: a corner moves two, an edge one. */
+type Grip = { l?: true; r?: true; t?: true; b?: true };
+type Drag = { draw: [number, number] } | { grip: Grip; from: Box };
+/** The handles drawn on the box, by compass point (their CSS classes). */
+const GRIPS = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+const gripCursor = (g: Grip | null) =>
+  !g ? "crosshair" : (g.t || g.b) && (g.l || g.r) ? ((g.t && g.l) || (g.b && g.r) ? "nwse-resize" : "nesw-resize") : g.t || g.b ? "ns-resize" : "ew-resize";
+
+/** The box's corner or edge under the pointer (corners win), within a finger's reach on touch. */
+function gripAt(e: ReactPointerEvent, frame: HTMLElement, box: Box | null): Grip | null {
+  if (!box) return null;
+  const r = frame.getBoundingClientRect();
+  const px = e.clientX - r.left;
+  const py = e.clientY - r.top;
+  const [x0, y0, x1, y1] = [box[0] * r.width, box[1] * r.height, (box[0] + box[2]) * r.width, (box[1] + box[3]) * r.height];
+  const reach = e.pointerType === "mouse" ? 10 : 22;
+  // A small box can't take the full reach on both sides, or one side would shadow the other.
+  const rx = Math.min(reach, (x1 - x0) / 3);
+  const ry = Math.min(reach, (y1 - y0) / 3);
+  if (px < x0 - reach || px > x1 + reach || py < y0 - reach || py > y1 + reach) return null;
+  // Full reach outside the box, a third of the box inside it.
+  const near = (d: number, outside: boolean, inner: number) => Math.abs(d) <= (outside ? reach : inner);
+  const grip: Grip = {};
+  if (near(px - x0, px < x0, rx)) grip.l = true;
+  else if (near(px - x1, px > x1, rx)) grip.r = true;
+  if (near(py - y0, py < y0, ry)) grip.t = true;
+  else if (near(py - y1, py > y1, ry)) grip.b = true;
+  return grip.l || grip.r || grip.t || grip.b ? grip : null;
+}
+
+/** `from` with the gripped sides moved to the pointer, kept inside the photo and at least MIN_SIDE wide and tall. */
+function resized(from: Box, grip: Grip, [x, y]: [number, number]): Box {
+  let [x0, y0, x1, y1] = [from[0], from[1], from[0] + from[2], from[1] + from[3]];
+  if (grip.l) x0 = Math.min(x, x1 - MIN_SIDE);
+  if (grip.r) x1 = Math.max(x, x0 + MIN_SIDE);
+  if (grip.t) y0 = Math.min(y, y1 - MIN_SIDE);
+  if (grip.b) y1 = Math.max(y, y0 + MIN_SIDE);
+  x0 = clamp(x0);
+  y0 = clamp(y0);
+  x1 = clamp(x1);
+  y1 = clamp(y1);
+  return [x0, y0, x1 - x0, y1 - y0];
+}
+
 /** One photo at a time: drag a box around the item, then save (or skip) and go to the next. With `proposed`
- * (the detector's box, never anyone else's), it's pre-drawn so Save is one tap; dragging still redraws. */
+ * (the detector's box, never anyone else's), it's pre-drawn so Save is one tap. Dragging a corner or edge of the
+ * box resizes it; dragging anywhere else draws a new one. */
 function BoxEditor({
   item,
   files,
@@ -365,7 +412,8 @@ function BoxEditor({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(0);
-  const start = useRef<[number, number] | null>(null);
+  const dragging = useRef<Drag | null>(null);
+  const [cursor, setCursor] = useState("crosshair");
   const frame = useRef<HTMLDivElement>(null);
   const proposedRef = useRef(proposed);
   proposedRef.current = proposed;
@@ -404,9 +452,11 @@ function BoxEditor({
     return [clamp((e.clientX - r.left) / r.width), clamp((e.clientY - r.top) / r.height)];
   };
   const drag = (e: ReactPointerEvent) => {
-    if (!start.current) return;
-    const [x0, y0] = start.current;
+    const d = dragging.current;
+    if (!d) return setCursor(gripCursor(gripAt(e, frame.current!, box)));
     const [x1, y1] = at(e);
+    if ("grip" in d) return own(resized(d.from, d.grip, [x1, y1]));
+    const [x0, y0] = d.draw;
     setBox([Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0)]);
   };
   const tooSmall = !box || box[2] < 0.02 || box[3] < 0.02;
@@ -436,8 +486,10 @@ function BoxEditor({
             Photo {index + 1} of {files.length}
             {saved > 0 && ` · ${saved} saved`}.{" "}
             {suggested
-              ? `The camera's box: save if it's tight around the ${item}, or drag to draw your own.`
-              : `Drag from one corner to the other, tight around the ${item}.`}
+              ? `The camera's box: save if it's tight around the ${item}, drag its corners or edges to fit, or draw your own.`
+              : box
+                ? `Drag a corner or edge to adjust, or drag elsewhere to draw again, tight around the ${item}.`
+                : `Drag from one corner to the other, tight around the ${item}.`}
           </p>
           <p className="hint box-range" aria-live="polite">
             {box && !tooSmall ? (
@@ -459,24 +511,38 @@ function BoxEditor({
             ref={frame}
             className="box-frame"
             // Exactly the photo's shape (never letterboxed), so the box maps onto its pixels.
-            style={{ aspectRatio: `${photo.width} / ${photo.height}`, width: `min(100%, calc(62dvh * ${photo.width / photo.height}))` }}
+            style={{
+              aspectRatio: `${photo.width} / ${photo.height}`,
+              width: `min(100%, calc(62dvh * ${photo.width / photo.height}))`,
+              cursor,
+            }}
             onPointerDown={(e) => {
+              if (e.button !== 0 || dragging.current) return;
               e.currentTarget.setPointerCapture(e.pointerId);
-              start.current = at(e);
-              own(null);
+              const grip = gripAt(e, e.currentTarget, box);
+              if (grip && box) {
+                dragging.current = { grip, from: box };
+                setCursor(gripCursor(grip));
+              } else {
+                dragging.current = { draw: at(e) };
+                own(null);
+              }
             }}
             onPointerMove={drag}
             onPointerUp={(e) => {
               drag(e);
-              start.current = null;
+              dragging.current = null;
             }}
+            onPointerCancel={() => (dragging.current = null)}
           >
             <img src={photo.url} alt={`Photo ${index + 1} of the ${item}`} draggable={false} />
             {box && (
               <span
                 className={suggested ? "sample-box drawing suggested" : "sample-box drawing"}
                 style={{ left: `${box[0] * 100}%`, top: `${box[1] * 100}%`, width: `${box[2] * 100}%`, height: `${box[3] * 100}%` }}
-              />
+              >
+                {!tooSmall && GRIPS.map((name) => <i key={name} className={`box-grip ${name}`} aria-hidden />)}
+              </span>
             )}
           </div>
         ) : (
