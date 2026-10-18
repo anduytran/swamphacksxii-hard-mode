@@ -159,7 +159,7 @@ def wake_clip(client, said, photos=4, decipher=None, look=None):  # noqa: F811
 
 def test_a_false_wake_is_dropped_before_anything_else(client):  # noqa: F811
     resp = wake_clip(client, "so the last thing I said was", decipher=Command(intent="remember", item="keys"))
-    assert resp.status_code == 200 and resp.json() == {"intent": "ignored"}
+    assert resp.status_code == 200 and resp.json()["intent"] == "ignored"
     assert client.app_state.db.rows == [] and not hasattr(client, "deciphered") and client.looked == []
 
 
@@ -177,7 +177,7 @@ def test_ask_says_so_when_the_item_is_in_view_now(client):  # noqa: F811
     resp = wake_clip(client, "Last Scene, where are my keys", decipher=Command(intent="ask", item="keys"),
                      look=PhotoCheck(visible=True, best_photo=1, where="on the desk next to the laptop."))
     assert resp.headers["x-intent"] == "ask" and resp.headers["x-answered-by"] == "camera"
-    assert unquote(resp.headers["x-answer"]) == "I can see your keys right now, on the desk next to the laptop."
+    assert unquote(resp.headers["x-answer"]) == "I see your keys on the desk next to the laptop."
     assert client.app_state.db.rows == []
 
 
@@ -214,7 +214,7 @@ def test_found_marks_the_item_and_says_so(client):  # noqa: F811
 
 def test_not_a_request_does_nothing(client):  # noqa: F811
     resp = wake_clip(client, "Last Scene, never mind", decipher=Command(intent="none"))
-    assert resp.json() == {"intent": "none"} and client.app_state.db.rows == []
+    assert resp.json()["intent"] == "none" and client.app_state.db.rows == []
 
 
 def test_when_the_word_model_is_busy_the_rules_decide(client):  # noqa: F811
@@ -364,7 +364,7 @@ def test_live_shows_each_wake_command_with_its_decision_and_steps(client):  # no
     assert {"transcribe", "decide", "photos", "save"} <= set(saved["steps"]) and saved["total_ms"] >= 0
     (answered,) = live(client, after=2)  # only what's new
     assert answered["outcome"] == "answered" and answered["answered_by"] == "camera"
-    assert answered["answer"] == "I can see your keys right now, on the desk."
+    assert answered["answer"] == "I see your keys on the desk."
 
 
 def test_live_shows_the_rules_deciding_and_errors(client):  # noqa: F811
@@ -396,4 +396,76 @@ def test_a_failure_to_record_never_breaks_the_command(client):  # noqa: F811
 
     client.app_state.db.add_voice_event = broken
     resp = wake_clip(client, "Last Scene, never mind", decipher=Command(intent="none"))
-    assert resp.status_code == 200 and resp.json() == {"intent": "none"}
+    assert resp.status_code == 200 and resp.json()["intent"] == "none"
+
+
+# ---------------------------------------------------------------- only the words after "Last Scene"; continue; defer
+
+def test_only_the_words_after_the_wake_phrase_count(client):  # noqa: F811
+    resp = wake_clip(client, "so I was telling her, Last Scene, I'm putting my keys on the counter",
+                     decipher=Command(intent="remember", item="keys"), look=PhotoCheck(visible=True))
+    assert resp.json()["intent"] == "remember" and client.deciphered == "I'm putting my keys on the counter"
+    (row,) = client.app_state.db.rows
+    assert row.transcript == "I'm putting my keys on the counter"
+
+
+def test_the_wake_phrase_alone_does_nothing(client):  # noqa: F811
+    resp = wake_clip(client, "Last Scene.", decipher=Command(intent="remember", item="keys"))
+    assert resp.json()["intent"] == "none" and not hasattr(client, "deciphered")
+
+
+def test_continue_follows_on_from_the_last_answer(client):  # noqa: F811
+    seen = []
+
+    async def answer(question, memories, language="en", previous=None):
+        seen.append((question, previous))
+        return "Your glasses are by the sink."
+
+    client.app_state.ai.answer = answer
+    wake_clip(client, "Last Scene, where are my keys", decipher=Command(intent="ask", item="keys"), look=PhotoCheck())
+    first = live(client)[0]["answer"]
+    resp = wake_clip(client, "Last Scene, continue, what about my glasses?", decipher=RuntimeError("unused"))
+    assert resp.headers["x-intent"] == "ask"
+    assert seen[-1] == ("what about my glasses?", ("where are my keys", first))
+    assert live(client)[0]["continued"] == "where are my keys"
+
+
+def test_continue_with_nothing_before_it_does_nothing(client):  # noqa: F811
+    resp = wake_clip(client, "Last Scene, continue")
+    assert resp.json()["intent"] == "none"
+
+
+def test_deferred_work_waits_for_the_followup_and_runs_once(client):  # noqa: F811
+    files = [("audio", ("v.wav", b"Last Scene, I'm putting my keys on the counter", "audio/wav")),
+             ("image", ("p.jpg", b"\xff\xd8photo", "image/jpeg"))]
+    async def fake_decipher(words):
+        return Command(intent="remember", item="keys")
+
+    client.app_state.ai.decipher = fake_decipher
+    resp = client.post("/api/v1/memory/voice", headers=DEVICE, files=files,
+                       data={"wake": "true", "defer": "true", "client": '{"recorded_s": 2.1, "ended": "drop"}'})
+    body = resp.json()
+    assert body["intent"] == "remember" and body["followup"]
+    event = live(client)[0]
+    assert "pending" not in event and event["device"] == {"recorded_s": 2.1, "ended": "drop"}
+    assert client.app_state.db.chunks == []  # not indexed yet
+    done = client.post(f"/api/v1/memory/followup/{body['followup']}", headers=DEVICE).json()
+    assert done["done"] and done["followup"] == "done" and client.app_state.db.chunks
+    assert client.post(f"/api/v1/memory/followup/{body['followup']}", headers=DEVICE).json() == {"done": False}
+    assert live(client)[0]["followup"] == "done"
+    assert client.post("/api/v1/memory/followup/999", headers=DEVICE).status_code == 404
+
+
+def test_a_deferred_answer_logs_its_question_on_followup(client):  # noqa: F811
+    async def fake_decipher(words):
+        return Command(intent="ask", item="keys")
+
+    client.app_state.ai.decipher = fake_decipher
+    voice(client, "I am putting my keys on the counter")
+    files = [("audio", ("v.wav", b"Last Scene, where are my keys", "audio/wav"))]
+    resp = client.post("/api/v1/memory/voice", headers=DEVICE, files=files, data={"wake": "true", "defer": "true"})
+    followup = resp.headers["x-followup"]
+    assert unquote(resp.headers["x-heard"]) == "Last Scene, where are my keys"
+    assert client.app_state.db.queries == []
+    client.post(f"/api/v1/memory/followup/{followup}", headers=DEVICE)
+    assert [q.question for q in client.app_state.db.queries] == ["where are my keys"]

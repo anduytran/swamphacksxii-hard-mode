@@ -37,10 +37,11 @@ how long ago it happened, what the user said, and what the wearable's camera saw
 (a description, the items and where they are, and any readable text). Answer using \
 only those memories; when several are about the same item, the most recent one is \
 where it is now.
-- Reply in one or two short, warm, plain sentences. No lists, markdown or emoji.
-- Say where the item is and roughly when it was left there, e.g. "about two hours ago".
-- If none of the notes are about what they asked, say kindly that you don't have a \
-note about it yet and suggest they tell you next time they put it down.
+- Reply in ONE professional, concise sentence of 30 to 40 characters (never over 60). \
+Plain words only: no lists, markdown or emoji. It is spoken, so shorter is faster.
+- Say where the item is and roughly when, e.g. "Your keys are on the desk, 2 hours ago."
+- If none of the notes are about what they asked, say "I have no note about that yet."
+- If an earlier exchange is given, this is a follow-up to it: answer in that context.
 - Latency-sensitive; begin your visible answer immediately."""
 
 
@@ -103,7 +104,7 @@ These are up to four photos from a chest-worn camera, taken moments apart while 
 loss, said: "{words}". Look for this item: {item}.
 - visible: true only if the item is clearly in at least one photo.
 - best_photo: the number (from 0) of the photo that shows it most clearly; 0 if none does.
-- where: if visible, where it is, as a short phrase you would say to the wearer ("on the desk next to the \
+- where: if visible, where it is in 2 to 4 words, starting with a preposition ("on the desk", "by the \
 laptop"); otherwise ""."""
 
 
@@ -190,7 +191,7 @@ NO_ANSWER = "Sorry, I couldn't come up with an answer just now."
 # With their translations (languages.py), so every language's audio is cached as well.
 BUSY = "I'm getting a lot of questions right now. Please ask me again in a minute."
 GLAD_YOU_FOUND = "Glad you found your {item}. I'll remember."
-IN_VIEW = "I can see your {item} right now, {where}."
+IN_VIEW = "I see your {item} {where}."
 FIXED_PHRASES = frozenset().union(*(languages.all_translations(p) for p in (DIDNT_CATCH, REFUSED, NO_ANSWER, BUSY)))
 
 _PREPOSITIONS = ("on", "in", "inside", "under", "underneath", "by", "next", "beside", "behind", "near",
@@ -254,8 +255,7 @@ def template_answer(question: str, memories: list[RetrievedMemory], now: datetim
         return None
     name, location = found[0]
     plural = name.endswith("s") and not name.endswith("ss")
-    return (f"Your {name} {'are' if plural else 'is'} {_place(location)}. "
-            f"You put {'them' if plural else 'it'} there {humanize_ago(top.created_at, now)}.")
+    return f"Your {name} {'are' if plural else 'is'} {_place(location)}, {humanize_ago(top.created_at, now)}."
 
 
 def audio_seconds(audio: bytes) -> int:
@@ -588,10 +588,13 @@ class AIServices:
             return None
         return response.parsed_output
 
-    async def answer(self, question: str, memories: list[RetrievedMemory], language: str = languages.DEFAULT_LANGUAGE) -> str:
+    async def answer(self, question: str, memories: list[RetrievedMemory], language: str = languages.DEFAULT_LANGUAGE,
+                     previous: tuple[str, str] | None = None) -> str:
+        """`previous`: the last (question, answer) when this is a "continue" follow-up."""
         notes = "\n".join(_note(m) for m in memories) or "(nothing retrieved)"
         system = f"{ANSWER_SYSTEM_PROMPT}\n- {languages.instruction(language)}"
-        text = await self._generate(system, f"Memories:\n{notes}\n\nQuestion: {question}", fast=True)
+        earlier = f"Earlier exchange:\nQ: {previous[0]}\nA: {previous[1]}\n\n" if previous else ""
+        text = await self._generate(system, f"{earlier}Memories:\n{notes}\n\nQuestion: {question}", fast=True)
         if text is None:
             return languages.phrase(REFUSED, language)
         return text or languages.phrase(NO_ANSWER, language)

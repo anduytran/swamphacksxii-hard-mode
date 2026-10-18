@@ -449,6 +449,7 @@ async def live(
         return {"events": []}
     events = await db.voice_events(devices, after)
     for e in events:
+        e.pop("pending", None)  # the follow-up's inputs (Wi-Fi scan included) stay server-side
         if e.get("memory_id"):
             e["image_url"] = _image_url(settings, e["memory_id"])
     return {"events": events}

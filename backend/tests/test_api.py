@@ -91,9 +91,17 @@ class FakeDB(MemorySlots):  # shared rate limits, counted in memory
     async def add_voice_event(self, device_id, event):
         self.voice_log = [*self.voice_log, {**event, "id": len(self.voice_log) + 1, "device_id": device_id,
                                             "created_at": datetime.now(timezone.utc).isoformat()}]
+        return len(self.voice_log)
+
+    async def voice_event(self, device_id, event_id):
+        return next((dict(e) for e in self.voice_log if e["id"] == event_id and e["device_id"] == device_id), None)
+
+    async def finish_voice_event(self, event_id, fields):
+        self.voice_log = [({k: v for k, v in e.items() if k != "pending"} | fields) if e["id"] == event_id else e
+                          for e in self.voice_log]
 
     async def voice_events(self, device_ids, after=0, limit=50):
-        return [e for e in reversed(self.voice_log) if e["device_id"] in device_ids and e["id"] > after][:limit]
+        return [dict(e) for e in reversed(self.voice_log) if e["device_id"] in device_ids and e["id"] > after][:limit]
 
     async def household_of_device(self, device_id):
         return None
@@ -554,10 +562,10 @@ def test_a_confident_question_is_answered_without_the_language_model(client):
     log(client, "I am putting my keys on the kitchen counter")
     log(client, "I am putting my wallet on the shelf")
     resp = ask(client, "Where are my keys?")
-    assert unquote(resp.headers["x-answer"]) == "Your keys are on the kitchen counter. You put them there just now."
+    assert unquote(resp.headers["x-answer"]) == "Your keys are on the kitchen counter, just now."
     assert resp.headers["x-answered-by"] == "template"
     assert client.app_state.ai.answered_with is None
-    assert [t.split(";")[0] for t in resp.headers["server-timing"].split(", ")] == ["embed", "retrieve", "answer", "speak"]
+    assert [t.split(";")[0] for t in resp.headers["server-timing"].split(", ")] == ["transcribe", "embed", "retrieve", "answer", "speak"]
 
 
 @pytest.mark.parametrize(

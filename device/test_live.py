@@ -224,7 +224,7 @@ class FakeVoice:
     def __init__(self, pcm):
         self.pcm = pcm
 
-    def listen(self, endpointer, timeout_s):
+    def listen(self, endpointer, timeout_s, keep_all=False):
         return self.pcm
 
 

@@ -37,8 +37,9 @@ class Api:
     def __init__(self, answer=("remember", {"transcript": "keys on the counter", "photo": 2}), error=None):
         self.answer, self.error, self.sent = answer, error, []
 
-    def voice(self, wav, jpegs, where, transcript=None, wake=False):
+    def voice(self, wav, jpegs, where, transcript=None, wake=False, defer=False, client=None):
         self.sent.append((wav, list(jpegs), wake))
+        self.defer, self.client = defer, client
         if self.error:
             raise self.error
         return self.answer
@@ -46,10 +47,17 @@ class Api:
 
 def device(api, camera=None, said=b"\x01\x00" * 800, **cfg):
     d = dev.Device.__new__(dev.Device)
-    d.cfg = config(**cfg)
+    d.cfg = config(**{"wake_photo_gap_seconds": 0.01, **cfg})
     d.api, d.camera = api, camera or Camera()
     d.led = SimpleNamespace(on=lambda: None, off=lambda: None, blink=lambda **k: None)
-    d.voice = SimpleNamespace(listen=lambda endpointer, timeout: said)
+    def listen(endpointer, timeout, keep_all=False):  # speaking long enough for every photo to be taken
+        deadline = dev.time.monotonic() + 2
+        while d.camera.shots < d.cfg.wake_photos and dev.time.monotonic() < deadline:
+            threading.Event().wait(0.005)
+        endpointer.reason = "silence"
+        return said
+
+    d.voice = SimpleNamespace(listen=listen)
     d.spool = SimpleNamespace(added=[], add=lambda *a, **k: d.spool.added.append((a, k)))
     return d
 
@@ -140,7 +148,7 @@ def test_the_frame_handler_hands_the_preroll_to_the_wake():
 def test_config():
     cfg = Config.local({"WAKE_PHOTOS": "9", "WAKE_PHOTO_GAP_SECONDS": "1.5", "WAKE_CONFIRM": "false"})
     assert cfg.wake_photos == 4 and cfg.wake_photo_gap_seconds == 1.5 and cfg.wake_confirm is False
-    assert Config.local({}).wake_confirm is True and Config.local({}).wake_preroll_seconds == 2.0
+    assert Config.local({}).wake_confirm is True and Config.local({}).wake_preroll_seconds == 1.5
 
 
 def test_a_mic_device_that_cant_record_says_how_to_fix_it(caplog):
@@ -155,3 +163,57 @@ def test_a_mic_device_that_cant_record_says_how_to_fix_it(caplog):
         mic._read()
     text = caplog.text
     assert "audio open error" in text and "AUDIO_IN_DEVICE=default can't record" in text and "plughw:1,0" in text
+
+
+# ---------------------------------------------------------------- how long it listens, and the follow-up
+
+def frame(level: int) -> bytes:
+    return (level.to_bytes(2, "little", signed=True) + (-level).to_bytes(2, "little", signed=True)) * 640
+
+
+def feed(ep, levels):
+    for i, lv in enumerate(levels):
+        if ep.feed(frame(lv)) in ("done", "nothing"):
+            return i + 1
+    return None
+
+
+def test_a_sharp_drop_in_loudness_ends_the_clip_quickly():
+    ep = dev.Endpointer(max_s=5, drop_db=15)
+    n = feed(ep, [100] * 3 + [8000] * 10 + [600] * 20)  # speech, then a fall of ~22 dB (still above the floor)
+    assert ep.reason == "drop" and n == 3 + 10 + 5  # 0.4 s of the drop
+    plain = dev.Endpointer(max_s=5)
+    feed(plain, [100] * 3 + [8000] * 10 + [600] * 20)
+    assert plain.reason != "drop"
+
+
+def test_short_dips_between_words_and_the_beep_dont_end_it():
+    ep = dev.Endpointer(max_s=5, drop_db=15, ignore_s=0.4)
+    assert feed(ep, [9000] * 4) is None and not ep.spoke  # the beep, while the mic listens
+    assert feed(ep, [8000] * 8 + [600] * 2 + [8000] * 8) is None and ep.spoke  # a 160 ms gap between words
+
+
+def test_speech_is_cut_off_at_the_limit():
+    ep = dev.Endpointer(max_s=5, drop_db=15)
+    n = feed(ep, [8000] * 200)
+    assert ep.reason == "max" and n == round(5 / 0.08)
+
+
+def test_the_command_is_deferred_with_the_device_timings_then_followed_up(quiet):
+    class Followed(Api):
+        def __init__(self):
+            super().__init__(answer=("ask", b"RIFFanswer"))
+            self.last = {"heard": "Last Scene, where are my keys", "answer": "On the desk.", "steps": "transcribe;dur=400",
+                         "followup": 7}
+            self.followed = threading.Event()
+
+        def followup(self, event_id):
+            self.followed_id = event_id
+            self.followed.set()
+            return {"followup": "done", "followup_ms": 2100}
+
+    api = Followed()
+    device(api)._wake_command(b"\x07\x00" * 100)
+    assert api.defer is True and api.client["photos"] == 4 and api.client["ended"] == "silence"
+    assert set(api.client) >= {"recorded_s", "photo_at_s", "wake_score", "preroll_s"}
+    assert api.followed.wait(2) and api.followed_id == 7 and b"RIFFanswer" in quiet

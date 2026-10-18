@@ -260,6 +260,9 @@ export interface VoiceEvent {
   kind: string; // wake | voice | button: remember | button: ask
   outcome: string; // saved | answered | found | ignored | nothing to do | error
   heard?: string;
+  words?: string; // what counts: the words after "Last Scene"
+  question?: string;
+  continued?: string; // "continue": the earlier question it follows on from
   intent?: string;
   item?: string;
   item_from?: string;
@@ -279,6 +282,16 @@ export interface VoiceEvent {
   steps: Record<string, number>; // step -> ms, in the order they ran
   served: Record<string, string>; // step -> provider/model
   total_ms: number;
+  device?: {
+    recorded_s?: number;
+    ended?: string; // drop | silence | max
+    photos?: number;
+    photo_at_s?: number[];
+    wake_score?: number;
+    preroll_s?: number;
+  };
+  followup?: string; // running | done | failed: ...
+  followup_ms?: number;
 }
 
 /** The parts of /healthz the Live page shows. */

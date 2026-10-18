@@ -36,6 +36,30 @@ def strip_wake_phrase(text: str) -> str:
     return t
 
 
+# "Last Scene" as speech-to-text writes it, anywhere in the clip (the clip starts up to WAKE_PREROLL_SECONDS
+# before the wake, so other talk can come first).
+_WAKE_ANYWHERE = re.compile(
+    r"\b(?:(?:hey|okay|ok)\W+)?(?:last\W*scenes?|last\W+seen|lost\W+scene|hey\W+jarvis)\b[\W_]*", re.IGNORECASE
+)
+
+
+def after_wake_phrase(transcript: str) -> str | None:
+    """The words after "Last Scene" (the command), or None when the phrase isn't there at all: a false
+    wake. Anything said before the phrase is dropped."""
+    m = _WAKE_ANYWHERE.search(transcript or "")
+    return None if m is None else transcript[m.end():].strip()
+
+
+_CONTINUE = re.compile(r"^\W*(?:continue|go on|and also|follow(?:ing)? up)\b[\W_]*", re.IGNORECASE)
+
+
+def continue_command(words: str) -> str | None:
+    """'continue, what about my glasses' -> 'what about my glasses' (a follow-up in the same conversation);
+    'continue' alone -> ''. None when it isn't a continue command."""
+    m = _CONTINUE.match(words or "")
+    return None if m is None else words[m.end():].strip()
+
+
 def has_wake_phrase(transcript: str) -> bool:
     """Whether the words start with the wake phrase, allowing a word or two before it ("Okay, Last Scene").
     The wearer's own wake model can fire on other speech; speech-to-text then confirms it was said."""

@@ -98,13 +98,14 @@ class Config:
     wifi_interface: str = "wlan0"
     wake_word: str = ""  # path to the "Last Scene" .onnx (or a stock name like hey_jarvis); empty = buttons only
     wake_threshold: float = 0.6  # tune per model: with hey_jarvis, "hey Travis" scores ~0.45, the phrase ~1.0
-    wake_max_seconds: int = 10
+    wake_max_seconds: float = 5  # speech after the wake phrase is cut off here
+    wake_drop_db: float = 15  # ...or ends sooner when loudness falls this far under the speech (0 = off)
     # Wake phrase as a command (WAKE_CONFIRM=true): the clip keeps the audio from just before the wake
     # (WAKE_PREROLL_SECONDS, so it holds "Last Scene" itself), a photo is taken at once and WAKE_PHOTOS - 1
     # more after speaking, WAKE_PHOTO_GAP_SECONDS apart; the server confirms the phrase with speech-to-text
     # (false wakes are dropped there) and a low-reasoning model reads the words and photos.
     wake_confirm: bool = True
-    wake_preroll_seconds: float = 2.0
+    wake_preroll_seconds: float = 1.5
     wake_photos: int = 4
     wake_photo_gap_seconds: float = 0.75
     stt_engine: str = "server"  # moonshine | vosk | server (send the audio; the server transcribes)
@@ -149,9 +150,10 @@ class Config:
             wifi_interface=env.get("WIFI_INTERFACE", "wlan0"),
             wake_word=env.get("WAKE_WORD", ""),
             wake_threshold=float(env.get("WAKE_THRESHOLD", 0.6)),
-            wake_max_seconds=int(env.get("WAKE_MAX_SECONDS", 10)),
+            wake_max_seconds=float(env.get("WAKE_MAX_SECONDS", 5)),
+            wake_drop_db=float(env.get("WAKE_DROP_DB", 15)),
             wake_confirm=env.get("WAKE_CONFIRM", "true").lower() not in ("0", "false", "no"),
-            wake_preroll_seconds=float(env.get("WAKE_PREROLL_SECONDS", 2.0)),
+            wake_preroll_seconds=float(env.get("WAKE_PREROLL_SECONDS", 1.5)),
             wake_photos=max(1, min(4, int(env.get("WAKE_PHOTOS", 4)))),
             wake_photo_gap_seconds=float(env.get("WAKE_PHOTO_GAP_SECONDS", 0.75)),
             stt_engine=env.get("STT_ENGINE", "server").lower(),
@@ -257,6 +259,7 @@ class ApiClient:
     """Talks to the LastScene API with a cached Auth0 M2M token."""
 
     def __init__(self, cfg: Config, http: httpx.Client | None = None):
+        self.last: dict = {}  # what the last voice command's reply said (heard, answer, steps, followup)
         self.cfg = cfg
         self.http = http or httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0))
         self._token: str | None = None
@@ -312,7 +315,8 @@ class ApiClient:
         return self._post("/api/v1/memory/log", files, data).json()
 
     def voice(self, wav: bytes | None, jpeg: bytes | list[bytes] | None, where: dict | None = None,
-              transcript: str | None = None, wake: bool = False) -> tuple[str, bytes | dict]:
+              transcript: str | None = None, wake: bool = False, defer: bool = False,
+              client: dict | None = None) -> tuple[str, bytes | dict]:
         """Wake-phrase clip, with one photo or several. Spoken audio back for "ask" and "found";
         otherwise the JSON's intent: "remember" (saved), "none" (not a request), "ignored" (wake=True and
         the clip didn't start with the wake phrase: a false wake)."""
@@ -321,11 +325,25 @@ class ApiClient:
         parts = list(files.items()) + [("image", (f"scene{i}.jpg", j, "image/jpeg")) for i, j in enumerate(jpegs)]
         if wake:
             data["wake"] = "true"
+        if defer:  # reply first; the slow work waits for followup()
+            data["defer"] = "true"
+        if client:
+            data["client"] = json.dumps(client)
         resp = self._post("/api/v1/memory/voice", parts, data)
-        if resp.headers.get("content-type", "").startswith("audio/"):
-            return resp.headers.get("x-intent", "ask"), resp.content
+        h = resp.headers
+        if h.get("content-type", "").startswith("audio/"):
+            self.last = {"heard": unquote(h.get("x-heard", "")), "answer": unquote(h.get("x-answer", "")),
+                         "answered_by": h.get("x-answered-by", ""), "steps": h.get("server-timing", ""),
+                         "followup": h.get("x-followup")}
+            return h.get("x-intent", "ask"), resp.content
         body = resp.json()
+        steps = ", ".join(f"{k};dur={v}" for k, v in (body.get("steps") or {}).items())
+        self.last = {"heard": body.get("heard", ""), "steps": steps, "followup": body.get("followup")}
         return body.get("intent", "remember"), body
+
+    def followup(self, event_id) -> dict:
+        """Run the slow work a deferred voice command left on the server (indexing, photo pass, logging)."""
+        return self._post(f"/api/v1/memory/followup/{event_id}").json()
 
     def ask(self, wav: bytes | None, where: dict | None = None, transcript: str | None = None) -> tuple[bytes, str]:
         files, data = self._speech("question.wav", wav, transcript, where)
@@ -529,17 +547,28 @@ class Endpointer:
 
     The noise floor is learnt from the quiet before speech; speech is anything clearly louder; the
     clip ends after `silence_s` of quiet once speech started, or at `max_s`. `timeout_s` without
-    any speech means nothing was said."""
+    any speech means nothing was said. With `drop_db`, a large fall in loudness also ends it: `drop_s`
+    of frames `drop_db` under the speech's recent peak (after at least `min_speech_s` of speech).
+    The first `ignore_s` can't start speech (the "I'm listening" beep plays then). `reason` says why
+    it ended: "drop", "silence", "max" or "nothing"."""
 
-    def __init__(self, max_s: float = 10, silence_s: float = 0.9, timeout_s: float = 4, floor: float = 300.0):
+    def __init__(self, max_s: float = 10, silence_s: float = 0.9, timeout_s: float = 4, floor: float = 300.0,
+                 drop_db: float | None = None, drop_s: float = 0.4, min_speech_s: float = 0.6, ignore_s: float = 0.0):
         self.frame_s = FRAME_SAMPLES / RATE
         self.max_frames = int(max_s / self.frame_s)
         self.silence_frames = int(silence_s / self.frame_s)
         self.timeout_frames = int(timeout_s / self.frame_s)
+        self.drop_db, self.drop_frames = drop_db, max(1, round(drop_s / self.frame_s))
+        self.min_speech_frames = round(min_speech_s / self.frame_s)
+        self.ignore_frames = round(ignore_s / self.frame_s)
         self.floor = floor  # a starting guess; follows the room while nobody speaks
         self.frames = 0
         self.quiet = 0
         self.spoke = False
+        self.speech_frames = 0
+        self.peak_db = 0.0  # the speech's recent loudest, falling 1 dB a frame
+        self.declined = 0
+        self.reason = ""
 
     def feed(self, frame: bytes) -> str:
         """'listening', 'speaking', 'done' or 'nothing'."""
@@ -547,15 +576,30 @@ class Endpointer:
         self.frames += 1
         loud = level > max(self.floor * 2.5, 500)
         if not self.spoke:
-            if loud:
+            if loud and self.frames > self.ignore_frames:
                 self.spoke = True
             else:
-                self.floor = 0.9 * self.floor + 0.1 * level
-                return "nothing" if self.frames >= self.timeout_frames else "listening"
+                if not loud:
+                    self.floor = 0.9 * self.floor + 0.1 * level
+                if self.frames >= self.timeout_frames:
+                    self.reason = "nothing"
+                    return "nothing"
+                return "listening"
+        self.speech_frames += 1
+        db = 20 * math.log10(level + 1)
+        self.peak_db = max(db, self.peak_db - 1.0)
+        dropped = self.drop_db is not None and db < self.peak_db - self.drop_db
+        self.declined = self.declined + 1 if dropped else 0
         self.quiet = 0 if loud else self.quiet + 1
-        if self.quiet >= self.silence_frames or self.frames >= self.max_frames:
-            return "done"
-        return "speaking"
+        if self.declined >= self.drop_frames and self.speech_frames >= self.min_speech_frames:
+            self.reason = "drop"
+        elif self.quiet >= self.silence_frames:
+            self.reason = "silence"
+        elif self.frames >= self.max_frames:
+            self.reason = "max"
+        else:
+            return "speaking"
+        return "done"
 
 
 class WakeListener:
@@ -576,7 +620,8 @@ class WakeListener:
         import numpy as np
 
         scores = self.model.predict(np.frombuffer(frame, dtype=np.int16))
-        if max(scores.values(), default=0) < self.threshold or self.clock() - self._last < self.cooldown_s:
+        self.score = max(scores.values(), default=0)
+        if self.score < self.threshold or self.clock() - self._last < self.cooldown_s:
             return False
         self._last = self.clock()
         self.reset()
@@ -653,9 +698,11 @@ class VoiceCapture:
         self._done = threading.Event()
         self._said = False
 
-    def listen(self, endpointer: Endpointer, timeout_s: float) -> bytes | None:
-        """Blocks until speech ends; the PCM spoken, or None when nothing was said."""
+    def listen(self, endpointer: Endpointer, timeout_s: float, keep_all: bool = False) -> bytes | None:
+        """Blocks until speech ends; the PCM spoken, or None when nothing was said. `keep_all`: every frame
+        from the start (words said while the beep played aren't lost), not just from when speech began."""
         self._endpointer, self._frames, self._preroll, self._said = endpointer, [], [], False
+        self._keep_all = keep_all
         self._done.clear()
         self.listening = True
         self._done.wait(timeout_s)
@@ -667,7 +714,9 @@ class VoiceCapture:
             return
         was_quiet = not self._endpointer.spoke
         state = self._endpointer.feed(frame)
-        if self._endpointer.spoke:
+        if getattr(self, "_keep_all", False):
+            self._frames.append(frame)
+        elif self._endpointer.spoke:
             if was_quiet:  # speech just started: keep ~240 ms before it, so soft first sounds aren't cut
                 self._frames = self._preroll[-3:]
             self._frames.append(frame)
@@ -1330,27 +1379,50 @@ class Device:
             log.warning("Photo %d failed: %s", index + 1, exc)
 
     def _wake_command(self, preroll: bytes) -> None:
-        """Photo now, listen to the end, WAKE_PHOTOS - 1 more photos spaced out, then one request: the
-        server confirms "Last Scene" was said and has a model read the words and the photos."""
+        """Photo now and more while they speak, listen (WAKE_MAX_SECONDS at most, ending sooner on silence or
+        a sharp drop in loudness), then one request: the server confirms "Last Scene" was said, keeps the
+        words after it, and replies as soon as it can; its slow work runs on a follow-up call afterwards."""
+        t0 = time.monotonic()
+        score = getattr(getattr(self, "wake", None), "score", 0) or 0
+        log.info("Wake: \"Last Scene\" (score %.2f), listening up to %.0f s", score, self.cfg.wake_max_seconds)
         photos: list[tuple[int, bytes]] = []
-        first = threading.Thread(target=self._grab, args=(photos, 0), daemon=True)
-        first.start()  # the moment the wake phrase was heard, without waiting for the beep
-        play_wav(self.cfg.audio_out, tone(880))
-        pcm = self.voice.listen(Endpointer(max_s=self.cfg.wake_max_seconds), self.cfg.wake_max_seconds + 3)
+        shot_at: list[float] = []
+        stop_shooting = threading.Event()
+
+        def shoot() -> None:  # photo 1 right away, then one every WAKE_PHOTO_GAP_SECONDS while they speak
+            for index in range(self.cfg.wake_photos):
+                if index and stop_shooting.wait(self.cfg.wake_photo_gap_seconds):
+                    return
+                self._grab(photos, index)
+                shot_at.append(time.monotonic() - t0)
+
+        shooter = threading.Thread(target=shoot, daemon=True)
+        shooter.start()
+        # The beep plays while the mic already listens, so words said over it aren't lost.
+        threading.Thread(target=play_wav, args=(self.cfg.audio_out, tone(880)), daemon=True).start()
+        ep = Endpointer(max_s=self.cfg.wake_max_seconds, timeout_s=3, ignore_s=0.4,
+                        drop_db=self.cfg.wake_drop_db or None)
+        pcm = self.voice.listen(ep, self.cfg.wake_max_seconds + 3, keep_all=True)
+        recorded = time.monotonic() - t0
+        stop_shooting.set()
         if pcm is None:
-            log.info("Wake phrase heard, but nothing said after it")
+            log.info("Nothing said within 3 s after the wake phrase")
             play_wav(self.cfg.audio_out, tone(440))
             return
         self.led.blink(on_time=0.1, off_time=0.1)
-        for index in range(1, self.cfg.wake_photos):
-            time.sleep(self.cfg.wake_photo_gap_seconds)
-            self._grab(photos, index)
-        first.join(timeout=15)
+        shooter.join(timeout=1.5)  # a photo already on its way is worth a moment; no more than that
         shots = [jpeg for _, jpeg in sorted(photos)]
+        ended = {"drop": "loudness dropped", "silence": "silence", "max": f"{self.cfg.wake_max_seconds:g} s limit"}
+        log.info("Recorded %.1f s (%s), %d photo%s at %s s", recorded, ended.get(ep.reason, ep.reason), len(shots),
+                 "" if len(shots) == 1 else "s", ", ".join(f"{t:.1f}" for t in shot_at) or "-")
+        client = {"recorded_s": round(recorded, 2), "ended": ep.reason, "photos": len(shots),
+                  "photo_at_s": [round(t, 2) for t in shot_at], "wake_score": round(float(score), 2),
+                  "preroll_s": round(len(preroll) / 2 / RATE, 2)}
         wav = wav_bytes(preroll + pcm)  # with the wake phrase, for the server to confirm
         where = whereabouts(self.cfg)
+        sent = time.monotonic()
         try:
-            intent, result = self.api.voice(wav, shots, where, wake=True)
+            intent, result = self.api.voice(wav, shots, where, wake=True, defer=True, client=client)
         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
             if rejected(exc):
                 log.warning("Server rejected the command: %s", exc.response.text)
@@ -1361,17 +1433,36 @@ class Device:
             else:
                 play_wav(self.cfg.audio_out, tone(440))
             return
+        info = getattr(self.api, "last", {}) or {}
+        server = " ".join(f"{p.split(';dur=')[0]} {p.split(';dur=')[1]}ms" for p in info.get("steps", "").split(", ") if ";dur=" in p)
+        log.info("Reply in %.1f s (%.1f s since the wake)%s", time.monotonic() - sent, time.monotonic() - t0,
+                 f" [server: {server}]" if server else "")
+        heard = info.get("heard") or ""
         if intent in ("ask", "found"):
+            log.info("Heard \"%s\" -> %s: \"%s\" (%s)", heard, intent, info.get("answer", ""), info.get("answered_by") or "-")
             self.led.on()
             play_wav(self.cfg.audio_out, result)
         elif intent == "remember":
-            log.info("Saved: %s (photo %s of %d)", result.get("transcript"), result.get("photo", 0) + 1, len(shots))
+            log.info("Heard \"%s\" -> saved \"%s\" (photo %s of %d)", heard, result.get("transcript"),
+                     result.get("photo", 0) + 1, len(shots))
             play_wav(self.cfg.audio_out, tone(1320, 90))  # "saved"
         elif intent == "ignored":
-            log.info("Not \"Last Scene\" after all (speech-to-text): ignored")
+            log.info("Heard \"%s\": no \"Last Scene\" in it, ignored", heard)
         else:
-            log.info("Heard, but not a request")
+            log.info("Heard \"%s\": not a request", heard)
             play_wav(self.cfg.audio_out, tone(440))
+        log.info("Done %.1f s after the wake", time.monotonic() - t0)
+        if info.get("followup"):
+            threading.Thread(target=self._followup, args=(info["followup"],), daemon=True).start()
+
+    def _followup(self, event_id) -> None:
+        """The server's slow work for that command (indexing, the photo pass, logging), after the wearer heard."""
+        try:
+            done = self.api.followup(event_id)
+            log.info("Follow-up %s: %s in %.1f s", event_id, done.get("followup", "nothing to do"),
+                     (done.get("followup_ms") or 0) / 1000)
+        except Exception as exc:  # the memory is saved either way; only its photo pass / indexing is missing
+            log.warning("Follow-up %s failed: %s", event_id, exc)
 
     def _begin(self, mode: str) -> None:
         if (live := self.live) is not None:  # any button ends a live conversation

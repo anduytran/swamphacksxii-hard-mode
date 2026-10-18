@@ -1,8 +1,9 @@
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timezone
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from urllib.parse import quote
 
 from fastapi import (
@@ -24,7 +25,7 @@ from ..config import Settings, get_settings
 from ..db import MemoryDB
 from ..deps import device_limit, get_ai, get_db, get_geo
 from ..geo import Geolocator, locate_and_record, record_public, resolve_location
-from ..intent import classify, fallback_command, has_wake_phrase, strip_wake_phrase
+from ..intent import after_wake_phrase, classify, continue_command, fallback_command, strip_wake_phrase
 from ..observations import scope_for
 from ..languages import is_english, normalize, phrase
 from ..limits import RateLimited
@@ -176,7 +177,8 @@ class Trace:
     """One voice command as the dashboard's Live view shows it (db_voice_events.py): what was heard, what
     was decided and by which model, the photo picked, what was said back, and how long each step took."""
 
-    def __init__(self, kind: str):
+    def __init__(self, kind: str, defer: bool = False):
+        self.defer = defer  # slow follow-on work waits in event["pending"] for the device's follow-up request
         self.started = self.clock = time.perf_counter()
         self.served: dict[str, str] = {}  # step -> provider/model (ai.served)
         served.set(self.served)
@@ -198,16 +200,17 @@ class Trace:
         return {**self.event, "served": dict(self.served), "total_ms": round((time.perf_counter() - self.started) * 1000)}
 
 
-async def _record_trace(db: MemoryDB, device_id: str, event: dict) -> None:
+async def _record_trace(db: MemoryDB, device_id: str, event: dict) -> int | None:
     if not hasattr(db, "add_voice_event"):
-        return
+        return None
     try:
-        await db.add_voice_event(device_id, event)
+        return await db.add_voice_event(device_id, event)
     except Exception:  # the Live view is for watching; never let it break a command
         log.exception("Recording a voice event failed")
+        return None
 
 
-async def _traced(background: BackgroundTasks, db: MemoryDB, device_id: str, trace: Trace, run):
+async def _traced(background: BackgroundTasks, db: MemoryDB, device_id: str, trace: Trace, run, deps=None):
     """Run a voice route's body; record its trace after the response (or before an error is raised)."""
     try:
         response = await run()
@@ -219,17 +222,38 @@ async def _traced(background: BackgroundTasks, db: MemoryDB, device_id: str, tra
         trace.set(error=type(exc).__name__)
         await _record_trace(db, device_id, trace.done())
         raise
-    background.add_task(_record_trace, db, device_id, trace.done())
-    return response
+    steps = trace.event["steps"]  # for the device's own log
+    if isinstance(response, Response):
+        response.headers["Server-Timing"] = ", ".join(f"{k};dur={v}" for k, v in steps.items())
+    else:
+        response = {**response, "steps": steps}
+    if "pending" not in trace.event:
+        background.add_task(_record_trace, db, device_id, trace.done())
+        return response
+    # Slow work waits in the event; the device asks for it with a follow-up request once the wearer has heard.
+    event_id = await _record_trace(db, device_id, trace.done())
+    if event_id is None:  # nowhere to keep it: do it after the response instead
+        if deps:
+            background.add_task(_run_pending, db, *deps, device_id, trace.event["pending"])
+        return response
+    if isinstance(response, Response):
+        response.headers["X-Followup"] = str(event_id)
+        return response
+    return {**response, "followup": event_id}
 
 
 async def _save_memory(
     background: BackgroundTasks, db: MemoryDB, ai: AIServices, geo: Geolocator, settings: Settings,
     device_id: str, transcript: str, image_bytes: bytes, image_content_type: str | None, where: Whereabouts,
+    trace: "Trace | None" = None,
 ) -> dict:
     # The type is echoed back when the dashboard loads the photo, so never trust it blindly.
     image_type = image_content_type if image_content_type in ALLOWED_IMAGE_TYPES else "image/jpeg"
     record = await db.insert(device_id, transcript, image_bytes, image_type)
+    if trace is not None and trace.defer:  # indexing and the photo pass wait for the wearable's follow-up
+        trace.event["pending"] = {"type": "memory", "memory_id": record.id, "words": transcript,
+                                  "image_type": image_type, "where": asdict(where)}
+        return {"id": record.id, "timestamp": record.created_at.isoformat(), "transcript": transcript}
     try:
         await ingest_speech(db, ai, record.id, transcript)
     except RateLimited as busy:  # the memory is saved; only its search index waits for the photo pass
@@ -251,11 +275,12 @@ async def _language(db: MemoryDB, device_id: str) -> str:
         return "en"
 
 
-async def _spoken_answer(
-    background: BackgroundTasks, db: MemoryDB, ai: AIServices, geo: Geolocator, settings: Settings,
-    device_id: str, question: str, where: Whereabouts, extra_headers: dict | None = None, trace: Trace | None = None,
-) -> Response:
-    timings: dict[str, float] = {}  # stage -> milliseconds, in the order they ran
+async def _answer_text(
+    db: MemoryDB, ai: AIServices, settings: Settings, device_id: str, question: str,
+    previous: tuple[str, str] | None = None,
+) -> tuple[str, str, dict[str, float]]:
+    """(answer, answered_by, stage -> ms) for a question, from the saved memories; nothing spoken yet."""
+    timings: dict[str, float] = {}
     clock = time.perf_counter()
 
     def lap(stage: str) -> None:
@@ -264,49 +289,61 @@ async def _spoken_answer(
         timings[stage] = (now - clock) * 1000
         clock = now
 
-    record_args = None
-    answered_by = "fixed"
-    if question:
-        language = None
-        try:
-            embedding, language = await asyncio.gather(ai.embed(question, query=True), _language(db, device_id))
-            lap("embed")
-            memories = await retrieve(db, ai, question, [device_id], settings.query_lookback_hours, embedding=embedding)
-            lap("retrieve")
-            # Template answers are English sentences; other languages always go to the model.
-            use_template = settings.template_answers and is_english(language)
-            answer = template_answer(question, memories) if use_template else None
-            answered_by = "template"
-            if answer is None:
-                answer = await ai.answer(question, memories, language)
-                answered_by = "llm"
-            lap("answer")
-            record_args = (db, ai, geo, device_id, question, answer, where)
-            if settings.enrich_in_background:
-                background.add_task(_record_query, *record_args)
-        except RateLimited as busy:  # over a model's limit: say so (a cached phrase, no model call)
-            log.warning("Answer rate limited: %s", busy)
-            answer = phrase(BUSY, language or await _language(db, device_id))
-            answered_by = "busy"
-    else:
-        answer = phrase(DIDNT_CATCH, await _language(db, device_id))
+    if not question and not previous:
+        return phrase(DIDNT_CATCH, await _language(db, device_id)), "fixed", timings
+    language = None
+    try:
+        embedding, language = await asyncio.gather(ai.embed(question or previous[0], query=True), _language(db, device_id))
+        lap("embed")
+        memories = await retrieve(db, ai, question or previous[0], [device_id], settings.query_lookback_hours,
+                                  embedding=embedding)
+        lap("retrieve")
+        # Template answers are English sentences; other languages and follow-ups always go to the model.
+        use_template = settings.template_answers and is_english(language) and not previous
+        answer = template_answer(question, memories) if use_template else None
+        answered_by = "template"
+        if answer is None:
+            answer = await (ai.answer(question or "Tell me more.", memories, language, previous) if previous
+                            else ai.answer(question, memories, language))
+            answered_by = "llm"
+        lap("answer")
+    except RateLimited as busy:  # over a model's limit: say so (a cached phrase, no model call)
+        log.warning("Answer rate limited: %s", busy)
+        answer, answered_by = phrase(BUSY, language or await _language(db, device_id)), "busy"
+    return answer, answered_by, timings
 
-    speech = await ai.speak(answer)
-    lap("speak")
+
+async def _spoken_answer(
+    background: BackgroundTasks, db: MemoryDB, ai: AIServices, geo: Geolocator, settings: Settings,
+    device_id: str, question: str, where: Whereabouts, extra_headers: dict | None = None, trace: Trace | None = None,
+    previous: tuple[str, str] | None = None, answer: tuple[str, str, dict[str, float]] | None = None,
+) -> Response:
+    """Answer out loud. `answer`: an (answer, answered_by, timings) already worked out (_answer_text)."""
+    answer_text, answered_by, timings = answer or await _answer_text(db, ai, settings, device_id, question, previous)
+    clock = time.perf_counter()
+    speech = await ai.speak(answer_text)
+    timings["speak"] = (time.perf_counter() - clock) * 1000
     timing_log.info("Spoken answer (%s): %s, total %.0f ms", answered_by,
-             ", ".join(f"{k} {v:.0f} ms" for k, v in timings.items()), sum(timings.values()))
+                    ", ".join(f"{k} {v:.0f} ms" for k, v in timings.items()), sum(timings.values()))
     if trace:
         trace.add_steps(timings)
-        trace.set(answer=answer, answered_by=answered_by, outcome="answered")
-    if record_args and not settings.enrich_in_background:
-        await _record_query(*record_args)
+        trace.set(question=question or None, answer=answer_text, answered_by=answered_by, outcome="answered")
+    if answered_by in ("template", "llm"):  # a real answer: log the question (for Insights)
+        record_args = (db, ai, geo, device_id, question or (previous[0] if previous else ""), answer_text, where)
+        if trace is not None and trace.defer:
+            trace.event["pending"] = {"type": "query", "question": record_args[4], "answer": answer_text,
+                                      "where": asdict(where)}
+        elif settings.enrich_in_background:
+            background.add_task(_record_query, *record_args)
+        else:
+            await _record_query(*record_args)
     return Response(
         content=speech,
         media_type=ai.speech_media_type,
         # Handy for debugging from curl / serial logs; the device can ignore them.
         headers={
             "X-Question": quote(question),
-            "X-Answer": quote(answer),
+            "X-Answer": quote(answer_text),
             "X-Answered-By": answered_by,
             "Server-Timing": ", ".join(f"{k};dur={v:.0f}" for k, v in timings.items()),
             **(extra_headers or {}),
@@ -381,6 +418,9 @@ async def voice(
     image: list[UploadFile] | None = File(None, description="photos from the wake phrase on: one, or up to 4"),
     transcript: str | None = TRANSCRIPT_FORM,
     wake: bool = Form(False, description="the device's wake model fired: speech-to-text must confirm the phrase"),
+    defer: bool = Form(False, description="reply as soon as the wearer can hear it; the slow follow-on work "
+                       "(indexing, the photo pass, logging the question) runs when the device calls /followup/{id}"),
+    client: str | None = Form(None, description="the device's own timings as JSON, shown on the Live page"),
     where: Whereabouts = Depends(whereabouts),
     pairing_code: str | None = Header(None, alias="X-Pairing-Code"),
     device: Principal = Depends(device_limit()),
@@ -392,14 +432,39 @@ async def voice(
     """Wake phrase, no button: the words decide. A statement is saved like /log (JSON back, with
     "intent": "remember"); a question is answered like /query (spoken audio back, X-Intent: ask).
 
-    With wake=true (the device heard something like "Last Scene" on its own model) the clip must start
-    with the wake phrase, or nothing happens ({"intent": "ignored"}): that filters the wake model's false
-    alarms. Then a low-reasoning model reads the words alone to decide the command (remember, ask, found,
-    none; the rules in intent.py decide if it can't). Only for remember and ask do the photos go to a
-    model: to pick the one showing the item, and to say so when what's asked about is in view now."""
-    trace = Trace("wake" if wake else "voice")
+    With wake=true (the device heard something like "Last Scene" on its own model) only the words after
+    "Last Scene" count, and if speech-to-text doesn't hear the phrase at all nothing happens
+    ({"intent": "ignored"}): that filters the wake model's false alarms. Then a low-reasoning model reads
+    the words alone to decide the command (remember, ask, found, none; the rules in intent.py decide if it
+    can't). Only for remember and ask do the photos go to a model: to pick the one showing the item, and to
+    say so when what's asked about is in view now. "Last Scene, continue ..." is a follow-up question that
+    keeps the last answer as context."""
+    trace = Trace("wake" if wake else "voice", defer=defer)
+    if client:
+        try:
+            trace.set(device=json.loads(client[:2000]))
+        except ValueError:
+            pass
     return await _traced(background, db, device.sub, trace, lambda: _voice(
-        background, audio, image, transcript, wake, where, pairing_code, device, db, ai, geo, settings, trace))
+        background, audio, image, transcript, wake, where, pairing_code, device, db, ai, geo, settings, trace),
+        deps=(ai, geo, settings))
+
+
+CONTINUE_WITHIN_S = 600  # "continue" follows on from an answer this recent
+
+
+async def _previous_exchange(db: MemoryDB, device_id: str) -> tuple[str, str] | None:
+    """The last (question, answer) this device heard, for "continue"."""
+    if not hasattr(db, "voice_events"):
+        return None
+    now = datetime.now(timezone.utc)
+    for e in await db.voice_events([device_id], 0, 10):
+        when = datetime.fromisoformat(e["created_at"])
+        if (now - when).total_seconds() > CONTINUE_WITHIN_S:
+            return None
+        if e.get("answer") and (e.get("question") or e.get("heard")):
+            return e.get("question") or e["heard"], e["answer"]
+    return None
 
 
 async def _voice(background, audio, image, transcript, wake, where, pairing_code, device, db, ai, geo, settings,
@@ -409,18 +474,37 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
     trace.lap("transcribe")
     trace.set(heard=heard, photos=len(photos))
     await _note_pairing(db, device.sub, pairing_code)
-    if wake and audio is not None and not has_wake_phrase(heard or ""):
-        log.info("Wake model fired, but the clip doesn't start with the wake phrase: ignored")
-        trace.set(outcome="ignored", intent="ignored")
-        return {"intent": "ignored"}
-    if not heard:
+    if wake and audio is not None:
+        words = after_wake_phrase(heard or "")
+        if words is None:
+            log.info("Wake model fired, but speech-to-text didn't hear the wake phrase: ignored")
+            trace.set(outcome="ignored", intent="ignored")
+            return {"intent": "ignored", "heard": heard}
+    else:
+        words = strip_wake_phrase(heard or "")
+    trace.set(words=words)
+    if not words:
+        if wake:
+            trace.set(outcome="nothing to do", intent="none")
+            return {"intent": "none", "heard": heard}
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "No speech detected")
-    words = strip_wake_phrase(heard)
+
+    # "continue": a follow-up to the last answer, with it as context.
+    follow_up = continue_command(words)
+    if follow_up is not None:
+        previous = await _previous_exchange(db, device.sub)
+        trace.set(intent="ask", continued=previous[0] if previous else None, decided_by="rules")
+        trace.lap("decide")
+        if previous is None and not follow_up:
+            trace.set(outcome="nothing to do")
+            return {"intent": "none", "heard": heard}
+        return await _spoken_answer(background, db, ai, geo, settings, device.sub, follow_up, where,
+                                    {"X-Intent": "ask", "X-Heard": quote(heard)}, trace=trace, previous=previous)
 
     # Step 1, words only: what is being asked (the photos stay out of it). The item comes from matching the
     # household's own saved item names whenever they're said, so it's always the name they taught; the
     # model's item is used only when none matches, and the rules decide when the model is slow or down.
-    intent, item, decided_by = classify(heard), "", "rules"
+    intent, item, decided_by = classify(words), "", "rules"
     if wake:
         command, names = await asyncio.gather(ai.decipher(words), saved_item_names(db, device.sub, settings.query_lookback_hours),
                                               return_exceptions=True)
@@ -428,37 +512,50 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
             log.warning("Command model unavailable (%s); using the rules", type(command).__name__)
             trace.set(command_error=type(command).__name__)
             command = None
-        rule_intent, rule_item = fallback_command(heard, names if isinstance(names, dict) else {})
+        rule_intent, rule_item = fallback_command(words, names if isinstance(names, dict) else {})
         intent = command.intent if command else rule_intent
         item = rule_item or (command.item if command else "")
         decided_by = "model" if command else "rules"
         trace.set(item_from="saved name" if rule_item else "model" if item else None)
         trace.lap("decide")
     trace.set(intent=intent, item=item or None, decided_by=decided_by)
+    heard_header = {"X-Heard": quote(heard)}
 
-    # Step 2, only for remember and ask: the photos, to pick the one showing the item / see if it's in view.
-    view = None
-    if wake and photos and intent in ("remember", "ask"):
+    async def check_photos():
+        """Only for remember and ask: which photo shows the item, and whether it's in view now."""
         try:
             typed = [(data, kind if kind in ALLOWED_IMAGE_TYPES else "image/jpeg") for data, kind in photos]
-            view = await ai.look_for(item, words, typed)
+            return await ai.look_for(item, words, typed)
         except Exception as exc:  # remember keeps photo 1; ask answers from the memories
             log.warning("Photo check unavailable (%s)", type(exc).__name__)
             trace.set(photo_error=type(exc).__name__)
-        trace.lap("photos")
+            return None
+
+    def note_view(view) -> None:
         if view:
             trace.set(best_photo=view.best_photo, in_view=view.visible, seen_where=view.where or None)
 
     if intent == "ask":
+        # The photo check and the memory search run side by side: whichever answer is used, nobody waits twice.
+        look = wake and photos
+        started = time.perf_counter()
+        view, answered = await asyncio.gather(
+            check_photos() if look else asyncio.sleep(0, None),
+            _answer_text(db, ai, settings, device.sub, words),
+        )
+        if look:
+            trace.event["steps"]["photos"] = round((time.perf_counter() - started) * 1000)
+            note_view(view)
+        trace.clock = time.perf_counter()
         if view and view.visible and item and view.where and is_english(await _language(db, device.sub)):
             answer = IN_VIEW.format(item=item, where=view.where.strip().rstrip("."))
             speech = await ai.speak(answer)
             trace.lap("speak")
             trace.set(answer=answer, answered_by="camera", outcome="answered")
             return Response(content=speech, media_type=ai.speech_media_type,
-                            headers={"X-Intent": "ask", "X-Answer": quote(answer), "X-Answered-By": "camera"})
-        return await _spoken_answer(background, db, ai, geo, settings, device.sub, words, where, {"X-Intent": "ask"},
-                                    trace=trace)
+                            headers={"X-Intent": "ask", "X-Answer": quote(answer), "X-Answered-By": "camera", **heard_header})
+        return await _spoken_answer(background, db, ai, geo, settings, device.sub, words, where,
+                                    {"X-Intent": "ask", **heard_header}, trace=trace, answer=answered)
     if intent == "found" and item:
         scope, _ = await scope_for(db, device.sub)
         await db.mark_found(scope, " ".join(item.lower().split()), datetime.now(timezone.utc))
@@ -467,15 +564,67 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
         speech = await ai.speak(answer)
         trace.lap("speak")
         trace.set(answer=answer, outcome="found")
-        return Response(content=speech, media_type=ai.speech_media_type, headers={"X-Intent": "found"})
+        return Response(content=speech, media_type=ai.speech_media_type,
+                        headers={"X-Intent": "found", "X-Answer": quote(answer), **heard_header})
     if intent == "none":
         trace.set(outcome="nothing to do")
-        return {"intent": "none"}
+        return {"intent": "none", "heard": heard}
     if not photos:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "A memory needs the photo; send image with the audio")
+    view = await check_photos() if wake else None
+    if wake:
+        trace.lap("photos")
+        note_view(view)
     best = view.best_photo if view and 0 <= view.best_photo < len(photos) else 0
     data, kind = photos[best]
-    saved = await _save_memory(background, db, ai, geo, settings, device.sub, words, data, kind, where)
+    saved = await _save_memory(background, db, ai, geo, settings, device.sub, words, data, kind, where, trace=trace)
     trace.lap("save")
     trace.set(outcome="saved", memory_id=saved["id"], saved_photo=best)
-    return {**saved, "intent": "remember", "photo": best}
+    return {**saved, "intent": "remember", "photo": best, "heard": heard}
+
+
+async def _run_pending(db: MemoryDB, ai: AIServices, geo: Geolocator, settings: Settings | None, device_id: str,
+                       pending: dict) -> None:
+    """A wake command's deferred work: index and describe a saved memory, or log an answered question."""
+    where = Whereabouts(**pending.get("where", {}))
+    if pending["type"] == "memory":
+        memory_id, words = pending["memory_id"], pending["words"]
+        try:
+            await ingest_speech(db, ai, memory_id, words)
+        except RateLimited as busy:
+            log.warning("Indexing a memory's words skipped: %s", busy)
+        stored = await db.get_image(memory_id)
+        if stored:
+            await _enrich_memory(db, ai, geo, device_id, memory_id, words, stored[0], stored[1], where, settings)
+    elif pending["type"] == "query":
+        await _record_query(db, ai, geo, device_id, pending["question"], pending["answer"], where)
+
+
+@router.post("/followup/{event_id}")
+async def followup(
+    event_id: int,
+    device: Principal = Depends(require_device),
+    db: MemoryDB = Depends(get_db),
+    ai: AIServices = Depends(get_ai),
+    geo: Geolocator = Depends(get_geo),
+    settings: Settings = Depends(get_settings),
+):
+    """The slow work a wake command left for later (its "followup" id). The device calls this right after
+    the wearer heard the reply and doesn't wait on it. Runs once; a repeat is a no-op."""
+    event = await db.voice_event(device.sub, event_id) if hasattr(db, "voice_event") else None
+    if event is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such command")
+    pending = event.get("pending")
+    if not pending:
+        return {"done": False}
+    await db.finish_voice_event(event_id, {"followup": "running"})  # claim it, so a retry doesn't run it twice
+    started = time.perf_counter()
+    try:
+        await _run_pending(db, ai, geo, settings, device.sub, pending)
+        result = {"followup": "done"}
+    except Exception as exc:
+        log.exception("Follow-up %s failed", event_id)
+        result = {"followup": f"failed: {type(exc).__name__}"}
+    result["followup_ms"] = round((time.perf_counter() - started) * 1000)
+    await db.finish_voice_event(event_id, result)
+    return {"done": True, **result}

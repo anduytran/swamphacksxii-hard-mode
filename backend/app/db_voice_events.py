@@ -1,7 +1,9 @@
 """Voice commands as they happen, for the dashboard's Live view: what was heard, what was decided
 and by which model, the photo picked, what was said back, and how long each step took.
 
-One row per request to /memory/voice, /log and /query. Kept KEEP_DAYS (it's for watching tests and the
+One row per request to /memory/voice, /log and /query. A wake command's slow, non-urgent work (indexing the
+memory, describing its photo, logging the question) waits in the row's "pending" until the wearable's
+follow-up request runs it (routers/memory.py), so the wearer isn't kept waiting. Kept KEEP_DAYS (it's for watching tests and the
 demo, not history; the memories themselves are in memory_logs). No audio or photos are stored here.
 """
 
@@ -28,14 +30,31 @@ class VoiceEventsMixin:
             "CREATE INDEX IF NOT EXISTS voice_events_device_idx ON voice_events (device_id, id DESC)"
         )
 
-    async def add_voice_event(self, device_id: str, event: dict) -> None:
+    async def add_voice_event(self, device_id: str, event: dict) -> int:
         async with self.pool.acquire() as conn, conn.transaction():
-            await conn.execute(
-                "INSERT INTO voice_events (device_id, event) VALUES ($1, $2::jsonb)", device_id, json.dumps(event)
+            event_id = await conn.fetchval(
+                "INSERT INTO voice_events (device_id, event) VALUES ($1, $2::jsonb) RETURNING id",
+                device_id,
+                json.dumps(event),
             )
             await conn.execute(
                 f"DELETE FROM voice_events WHERE created_at < now() - interval '{KEEP_DAYS} days'"
             )
+        return event_id
+
+    async def voice_event(self, device_id: str, event_id: int) -> dict | None:
+        row = await self.pool.fetchrow(
+            "SELECT id, device_id, created_at, event FROM voice_events WHERE device_id = $1 AND id = $2",
+            device_id,
+            event_id,
+        )
+        return _row(row) if row else None
+
+    async def finish_voice_event(self, event_id: int, fields: dict) -> None:
+        """The follow-up's results merged in, and its pending work removed (so it runs once)."""
+        await self.pool.execute(
+            "UPDATE voice_events SET event = (event - 'pending') || $2::jsonb WHERE id = $1", event_id, json.dumps(fields)
+        )
 
     async def voice_events(self, device_ids: list[str], after: int = 0, limit: int = 50) -> list[dict]:
         """Newest first: {"id", "device_id", "created_at", **event}, only ids above `after`."""

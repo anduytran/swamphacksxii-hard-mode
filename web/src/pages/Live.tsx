@@ -16,7 +16,7 @@ export default function LivePage() {
   const [error, setError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
-  const newest = useRef(0);
+  const cleared = useRef(0); // Clear hides everything up to this id
 
   useEffect(() => {
     if (paused) return;
@@ -24,12 +24,10 @@ export default function LivePage() {
     let timer: number | undefined;
     const poll = async () => {
       try {
-        const res = await api<{ events: VoiceEvent[] }>(`/api/v1/dashboard/live?after=${newest.current}`);
+        // The whole recent list each time: a command's follow-up updates its card after the reply.
+        const res = await api<{ events: VoiceEvent[] }>("/api/v1/dashboard/live");
         if (stop) return;
-        if (res.events.length) {
-          newest.current = Math.max(newest.current, ...res.events.map((e) => e.id));
-          setEvents((old) => [...res.events, ...old].slice(0, KEEP));
-        }
+        setEvents(res.events.filter((e) => e.id > cleared.current).slice(0, KEEP));
         setError(null);
       } catch (e) {
         if (!stop) setError(e instanceof Error ? e.message : String(e));
@@ -68,7 +66,10 @@ export default function LivePage() {
           <button type="button" className="pill" onClick={() => setPaused((p) => !p)} aria-pressed={paused}>
             {paused ? "Resume" : "Pause"}
           </button>
-          <button type="button" className="pill quiet" onClick={() => setEvents([])} disabled={!events.length}>
+          <button type="button" className="pill quiet" onClick={() => {
+            cleared.current = Math.max(cleared.current, ...events.map((e) => e.id));
+            setEvents([]);
+          }} disabled={!events.length}>
             Clear
           </button>
         </div>
@@ -99,6 +100,8 @@ const OUTCOME: Record<string, { label: string; tone: string }> = {
   error: { label: "Error", tone: "attention" },
 };
 
+const ENDED: Record<string, string> = { drop: "loudness dropped", silence: "silence", max: "time limit" };
+
 const STEP_LABEL: Record<string, string> = {
   transcribe: "speech-to-text",
   decide: "decide",
@@ -121,7 +124,8 @@ function EventCard({ e }: { e: VoiceEvent }) {
         <span className="chip">{e.kind}</span>
         {e.intent && e.intent !== "ignored" && <span className="chip">{e.intent}</span>}
         <time className="live-time mono" dateTime={e.created_at}>
-          {clockTime(e.created_at)} · {(e.total_ms / 1000).toFixed(1)} s
+          {clockTime(e.created_at)} · server {(e.total_ms / 1000).toFixed(1)} s
+          {e.device?.recorded_s !== undefined && ` · wake to reply ≈ ${(e.device.recorded_s + e.total_ms / 1000).toFixed(1)} s`}
         </time>
       </div>
 
@@ -130,6 +134,29 @@ function EventCard({ e }: { e: VoiceEvent }) {
         <dl className="live-facts">
           <dt>Heard</dt>
           <dd>{e.heard ? `“${e.heard}”` : <span className="muted">nothing</span>}</dd>
+          {e.words !== undefined && e.words !== e.heard && (
+            <>
+              <dt>Command</dt>
+              <dd>{e.words ? `“${e.words}”` : <span className="muted">nothing after “Last Scene”</span>}</dd>
+            </>
+          )}
+          {e.continued && (
+            <>
+              <dt>Continues</dt>
+              <dd>“{e.continued}”</dd>
+            </>
+          )}
+          {e.device?.recorded_s !== undefined && (
+            <>
+              <dt>Wearable</dt>
+              <dd>
+                listened {e.device.recorded_s.toFixed(1)} s
+                {e.device.ended && ` (${ENDED[e.device.ended] ?? e.device.ended})`}
+                {e.device.photo_at_s?.length ? ` · photos at ${e.device.photo_at_s.map((t) => t.toFixed(1)).join(", ")} s` : ""}
+                {e.device.wake_score ? <span className="muted"> · wake score {e.device.wake_score.toFixed(2)}</span> : null}
+              </dd>
+            </>
+          )}
           {e.decided_by && (
             <>
               <dt>Decided by</dt>
@@ -165,6 +192,15 @@ function EventCard({ e }: { e: VoiceEvent }) {
               <dt>Said back</dt>
               <dd>
                 “{e.answer}”{e.answered_by && <span className="muted"> · {e.answered_by}</span>}
+              </dd>
+            </>
+          )}
+          {e.followup && (
+            <>
+              <dt>After reply</dt>
+              <dd className={e.followup.startsWith("failed") ? "live-err" : undefined}>
+                {e.followup === "done" ? "indexed and logged" : e.followup}
+                {e.followup_ms !== undefined && <span className="muted"> · {(e.followup_ms / 1000).toFixed(1)} s, not waited on</span>}
               </dd>
             </>
           )}
