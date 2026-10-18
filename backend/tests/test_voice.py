@@ -483,3 +483,17 @@ def test_every_deferred_command_gets_an_id_for_the_device_timeline(client):  # n
     resp = client.post(f"/api/v1/memory/followup/{body['followup']}", headers=DEVICE, json={"timeline": timeline})
     assert resp.json() == {"done": False}  # no slow work for "never mind"
     assert live(client)[0]["timeline"] == {"speech_end": 2.1, "sent": 2.4, "reply": 3.9, "played": 4.2}
+
+
+def test_a_sure_wake_counts_when_speech_to_text_misses_the_phrase(client):  # noqa: F811
+    async def ask(words):
+        return Command(intent="ask", item="keys")
+
+    client.app_state.ai.decipher = ask
+    files = [("audio", ("v.wav", b"where are my keys", "audio/wav"))]
+    sure = client.post("/api/v1/memory/voice", headers=DEVICE, files=files,
+                       data={"wake": "true", "client": '{"wake_score": 0.97}'})
+    assert sure.headers["x-intent"] == "ask" and live(client)[0]["wake_trusted"] is True
+    unsure = client.post("/api/v1/memory/voice", headers=DEVICE, files=files,
+                         data={"wake": "true", "client": '{"wake_score": 0.7}'})
+    assert unsure.json()["intent"] == "ignored"

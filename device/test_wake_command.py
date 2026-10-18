@@ -180,10 +180,10 @@ def feed(ep, levels):
 
 def test_a_sharp_drop_in_loudness_ends_the_clip_quickly():
     ep = dev.Endpointer(max_s=5, drop_db=15)
-    n = feed(ep, [100] * 3 + [8000] * 10 + [600] * 20)  # speech, then a fall of ~22 dB (still above the floor)
-    assert ep.reason == "drop" and n == 3 + 10 + 5  # 0.4 s of the drop
+    n = feed(ep, [100] * 3 + [8000] * 15 + [600] * 20)  # 1.2 s of speech, then a fall of ~22 dB (above the floor)
+    assert ep.reason == "drop" and n == 3 + 15 + 6  # 0.5 s of the drop
     plain = dev.Endpointer(max_s=5)
-    feed(plain, [100] * 3 + [8000] * 10 + [600] * 20)
+    feed(plain, [100] * 3 + [8000] * 15 + [600] * 20)
     assert plain.reason != "drop"
 
 
@@ -220,3 +220,12 @@ def test_the_command_is_deferred_with_the_device_timings_then_followed_up(quiet)
     t = api.timeline
     assert list(t) == ["speech_end", "photos_ready", "sent", "reply", "played"]
     assert t["speech_end"] <= t["photos_ready"] <= t["sent"] <= t["reply"] <= t["played"]
+
+
+def test_a_late_beep_doesnt_set_the_peak_and_cut_the_speech_short():
+    beeping = [True]
+    ep = dev.Endpointer(max_s=5, drop_db=15, ignore_s=0.2, ignoring=lambda: beeping[0])
+    assert feed(ep, [100] * 3 + [30000] * 4) is None and not ep.spoke  # the beep, 0.25 s late
+    beeping[0] = False
+    assert feed(ep, [3000] * 15) is None and ep.spoke  # ordinary speech, far quieter than the beep: still going
+    assert ep.reason == ""

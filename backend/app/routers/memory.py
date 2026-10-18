@@ -452,6 +452,7 @@ async def voice(
         deps=(ai, geo, settings))
 
 
+TRUSTED_WAKE_SCORE = 0.9  # a wake this sure counts even when speech-to-text doesn't hear "Last Scene"
 CONTINUE_WITHIN_S = 600  # "continue" follows on from an answer this recent
 
 
@@ -478,6 +479,12 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
     await _note_pairing(db, device.sub, pairing_code)
     if wake and audio is not None:
         words = after_wake_phrase(heard or "")
+        score = (trace.event.get("device") or {}).get("wake_score")
+        if words is None and isinstance(score, (int, float)) and score >= TRUSTED_WAKE_SCORE and heard:
+            # The wake model was sure, but speech-to-text missed the phrase (said over the beep, or cut off at
+            # the clip's start): the words heard are the command.
+            words = heard
+            trace.set(wake_trusted=True)
         if words is None:
             log.info("Wake model fired, but speech-to-text didn't hear the wake phrase: ignored")
             trace.set(outcome="ignored", intent="ignored")

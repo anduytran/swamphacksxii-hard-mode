@@ -550,11 +550,12 @@ class Endpointer:
     clip ends after `silence_s` of quiet once speech started, or at `max_s`. `timeout_s` without
     any speech means nothing was said. With `drop_db`, a large fall in loudness also ends it: `drop_s`
     of frames `drop_db` under the speech's recent peak (after at least `min_speech_s` of speech).
-    The first `ignore_s` can't start speech (the "I'm listening" beep plays then). `reason` says why
-    it ended: "drop", "silence", "max" or "nothing"."""
+    The first `ignore_s`, and any frame while `ignoring()` is true (the "I'm listening" beep is playing),
+    can't start speech or set the peak. `reason` says why it ended: "drop", "silence", "max" or "nothing"."""
 
     def __init__(self, max_s: float = 10, silence_s: float = 0.9, timeout_s: float = 4, floor: float = 300.0,
-                 drop_db: float | None = None, drop_s: float = 0.4, min_speech_s: float = 0.6, ignore_s: float = 0.0):
+                 drop_db: float | None = None, drop_s: float = 0.5, min_speech_s: float = 1.0, ignore_s: float = 0.0,
+                 ignoring=None):
         self.frame_s = FRAME_SAMPLES / RATE
         self.max_frames = int(max_s / self.frame_s)
         self.silence_frames = int(silence_s / self.frame_s)
@@ -562,6 +563,7 @@ class Endpointer:
         self.drop_db, self.drop_frames = drop_db, max(1, round(drop_s / self.frame_s))
         self.min_speech_frames = round(min_speech_s / self.frame_s)
         self.ignore_frames = round(ignore_s / self.frame_s)
+        self.ignoring = ignoring or (lambda: False)
         self.floor = floor  # a starting guess; follows the room while nobody speaks
         self.frames = 0
         self.quiet = 0
@@ -575,6 +577,11 @@ class Endpointer:
         """'listening', 'speaking', 'done' or 'nothing'."""
         level = rms(frame)
         self.frames += 1
+        if self.ignoring():  # our own beep: neither speech nor the room's quiet
+            if self.frames >= self.timeout_frames + self.ignore_frames and not self.spoke:
+                self.reason = "nothing"
+                return "nothing"
+            return "speaking" if self.spoke else "listening"
         loud = level > max(self.floor * 2.5, 500)
         if not self.spoke:
             if loud and self.frames > self.ignore_frames:
@@ -1399,10 +1406,20 @@ class Device:
 
         shooter = threading.Thread(target=shoot, daemon=True)
         shooter.start()
-        # The beep plays while the mic already listens, so words said over it aren't lost.
-        threading.Thread(target=play_wav, args=(self.cfg.audio_out, tone(880)), daemon=True).start()
-        ep = Endpointer(max_s=self.cfg.wake_max_seconds, timeout_s=3, ignore_s=0.4,
-                        drop_db=self.cfg.wake_drop_db or None)
+        # The beep plays while the mic already listens, so words said over it aren't lost; until it has
+        # finished (aplay can take a moment to start) it neither counts as speech nor sets the loudness peak.
+        beeped = threading.Event()
+
+        def beep() -> None:
+            try:
+                play_wav(self.cfg.audio_out, tone(880))
+            finally:
+                time.sleep(0.1)  # its echo
+                beeped.set()
+
+        threading.Thread(target=beep, daemon=True).start()
+        ep = Endpointer(max_s=self.cfg.wake_max_seconds, timeout_s=3, ignore_s=0.2,
+                        drop_db=self.cfg.wake_drop_db or None, ignoring=lambda: not beeped.is_set())
         pcm = self.voice.listen(ep, self.cfg.wake_max_seconds + 3, keep_all=True)
         recorded = time.monotonic() - t0
         timeline = {"speech_end": round(recorded, 2)}
