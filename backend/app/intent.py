@@ -60,6 +60,20 @@ def continue_command(words: str) -> str | None:
     return None if m is None else words[m.end():].strip()
 
 
+# Questions that lean on the last answer ("point me in the right direction", "which way?", "is it still there?").
+_NEEDS_CONTEXT = re.compile(
+    r"\b(point me|right direction|which (way|direction|side)|where exactly|guide me|lead me|take me( there| to it)?|"
+    r"walk me|how do i get (there|to (it|them))|(is|are) (it|they) still|what'?s (next to|near|around) (it|them)|"
+    r"(left|right) or (left|right)|closer|turn (left|right))\b",
+    re.IGNORECASE,
+)
+
+
+def needs_context(words: str) -> bool:
+    """A follow-up that only makes sense after the last answer, said without "continue"."""
+    return bool(_NEEDS_CONTEXT.search(words or ""))
+
+
 def has_wake_phrase(transcript: str) -> bool:
     """Whether the words start with the wake phrase, allowing a word or two before it ("Okay, Last Scene").
     The wearer's own wake model can fire on other speech; speech-to-text then confirms it was said."""

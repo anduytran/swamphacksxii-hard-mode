@@ -10,6 +10,10 @@ both send it). The agent answers in JSON (surface, nearby, room, readable text, 
 memory of its own, transcript "LastScene: <summary>", with the item and its place indexed like a spoken memory
 ("pin: on the table next to the laptop"), so "where's my pin?" finds it, often without the answer model.
 
+Follow-ups that need the last answer ("point me in the right direction", routers/memory.py) continue in the raia
+conversation that read the item's frame, so the agent answers with the photo in view (follow_up). Without one,
+or when raia is slow, the stored context goes to the answer model with the last exchange (context_note).
+
 The external API, Agent-Secret-Key header (https://api.raia2.com/api/external/docs):
     GET  /external/users/search?fkId=...                  the household's conversation user (404 = none yet)
     POST /external/users                                  create it (firstName, lastName, fkId)
@@ -38,6 +42,7 @@ from .rag import ITEM, SCENE, TEXT, item_chunk
 log = logging.getLogger("lastscene.raia")
 
 PREFIX = "LastScene: "  # the saved memory's transcript
+RETRY_MINUTES = 2  # after a failed read (raia down, a bad key), the item may be tried again this soon
 MAX_CONTEXT_CHARS = 300
 MAX_NEARBY = 4
 EXTENSIONS = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
@@ -162,7 +167,10 @@ class Raia:
         fk = f"lastscene-{scope}"
         if fk in self._users:
             return self._users[fk]
-        found = await self._call("find user", "GET", "/users/search", ok=(200, 404), params={"fkId": fk})
+        found = await self._call("find user", "GET", "/users/search", ok=(200, 400, 404), params={"fkId": fk})
+        # The swagger says 404 for an unknown user; the live API answers 400 USER_NOT_FOUND (Oct 18).
+        if found.status_code == 400 and "USER_NOT_FOUND" not in found.text:
+            raise RaiaError("find user", found)
         if found.status_code == 200:
             user_id = found.json()["user"]["id"]
         else:
@@ -176,8 +184,8 @@ class Raia:
     async def describe(
         self, scope: str, label: str, bbox: list[float] | None, scene_label: str | None,
         image: bytes, image_type: str, captured_at: datetime,
-    ) -> str:
-        """The agent's raw reply about where `label` is in the frame."""
+    ) -> tuple[str, str]:
+        """(the agent's raw reply about where `label` is in the frame, the conversation's id)."""
         user_id = await self.user_for(scope)
         conv = await self._call("create conversation", "POST", "/conversations", json={
             "conversationUserId": user_id,
@@ -198,7 +206,40 @@ class Raia:
             "message": prompt(label, bbox, scene_label),
             "files": [{"fileName": file_name, "storagePath": upload["storagePath"]}],
         })).json()
-        return (reply.get("fullAIResponse") or {}).get("outputText") or reply.get("message") or ""
+        return _reply_text(reply), conv_id
+
+    async def follow_up(self, conversation_id: str, item: str, question: str,
+                        previous: tuple[str, str] | None) -> str:
+        """A wearer's follow-up about `item`, in the conversation that read its photo: a short spoken answer."""
+        earlier = f'Just before, they asked "{previous[0]}" and heard "{previous[1]}". ' if previous else ""
+        message = (
+            f"Follow-up from the person wearing the camera, who has memory loss and is looking for their {item}. "
+            f'{earlier}Now they say: "{question}". Answer from the photo and what you said about it, as one friendly '
+            f"spoken sentence under 100 characters, in plain text, not JSON. Directions are from the camera's view: "
+            f"its left is their left."
+        )
+        reply = (await self._call("follow-up", "POST", f"/conversations/{conversation_id}/messages",
+                                  json={"message": message})).json()
+        text = _reply_text(reply)
+        ctx = parse_context(text) if text.lstrip().startswith("{") else None  # an agent that kept to JSON
+        return (ctx["summary"] if ctx else clean(text)) or ""
+
+
+def _reply_text(reply: dict) -> str:
+    return (reply.get("fullAIResponse") or {}).get("outputText") or reply.get("message") or ""
+
+
+def context_note(ctx: dict, seen_at: datetime | None = None) -> str:
+    """The stored JSON context as a line for the answer model, so a follow-up has what the camera saw."""
+    when = f" ({seen_at:%H:%M} UTC)" if seen_at else ""
+    note = f"What the camera saw{when}: {ctx.get('summary', '')}"
+    if ctx.get("nearby"):
+        note += f" Next to: {', '.join(ctx['nearby'])}."
+    if ctx.get("room"):
+        note += f" Room: {ctx['room']}."
+    if ctx.get("visible_text"):
+        note += f" Readable nearby: {ctx['visible_text']}."
+    return note
 
 
 async def save_context(db: MemoryDB, ai: AIServices, device_id: str, label: str, ctx: dict,
@@ -230,10 +271,12 @@ async def read_item(
              label, confidence, via, bbox, scope, device_id, captured_at.isoformat())
     started = time.perf_counter()
     try:
-        reply = await raia.describe(scope, label, bbox, scene_label, image, image_type, captured_at)
+        reply, conversation_id = await raia.describe(scope, label, bbox, scene_label, image, image_type, captured_at)
     except Exception as exc:
-        log.warning("RAIA prompt failed: %s (%s), after %.1f s: %s", label, via, time.perf_counter() - started, exc)
+        log.warning("RAIA prompt failed: %s (%s), after %.1f s: %s; trying again in %d min",
+                    label, via, time.perf_counter() - started, exc, RETRY_MINUTES)
         await db.finish_raia_context(scope, label, None, str(exc)[:500])
+        await db.retry_raia_context(scope, label, settings.raia_cooldown_minutes, RETRY_MINUTES)
         return None
     seconds = time.perf_counter() - started
     ctx = parse_context(reply)
@@ -242,7 +285,7 @@ async def read_item(
         await db.finish_raia_context(scope, label, None, "not visible")
         return None
     memory_id = await save_context(db, ai, device_id, label, ctx, image, image_type)
-    await db.finish_raia_context(scope, label, json.dumps(ctx), None, memory_id)
+    await db.finish_raia_context(scope, label, json.dumps(ctx), None, memory_id, conversation_id)
     log.info("RAIA reply: %s (%s), %.1f s, saved memory %s: %s", label, via, seconds, memory_id, json.dumps(ctx))
     return memory_id
 

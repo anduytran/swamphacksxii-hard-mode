@@ -26,13 +26,13 @@ from ..config import Settings, get_settings
 from ..db import MemoryDB
 from ..deps import device_limit, get_ai, get_db, get_geo, get_raia
 from ..geo import Geolocator, locate_and_record, record_public, resolve_location
-from ..intent import after_wake_phrase, classify, continue_command, fallback_command, strip_wake_phrase
+from ..intent import after_wake_phrase, classify, continue_command, fallback_command, needs_context, strip_wake_phrase
 from ..observations import scope_for
 from ..languages import is_english, normalize, phrase
 from ..limits import RateLimited
 from ..maps_names import name_memory_place
 from ..pipeline import ingest_image, ingest_speech, retrieve
-from ..raia import Raia, context_from_photos
+from ..raia import Raia, context_from_photos, context_note, norm
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
 log = logging.getLogger(__name__)
@@ -466,8 +466,8 @@ TRUSTED_WAKE_SCORE = 0.9  # a wake this sure counts even when speech-to-text doe
 CONTINUE_WITHIN_S = 600  # "continue" follows on from an answer this recent
 
 
-async def _previous_exchange(db: MemoryDB, device_id: str) -> tuple[str, str] | None:
-    """The last (question, answer) this device heard, for "continue"."""
+async def _previous_turn(db: MemoryDB, device_id: str) -> dict | None:
+    """The last answer this device heard: {"question", "answer", "item"}, for follow-ups."""
     if not hasattr(db, "voice_events"):
         return None
     now = datetime.now(timezone.utc)
@@ -476,8 +476,49 @@ async def _previous_exchange(db: MemoryDB, device_id: str) -> tuple[str, str] | 
         if (now - when).total_seconds() > CONTINUE_WITHIN_S:
             return None
         if e.get("answer") and (e.get("question") or e.get("heard")):
-            return e.get("question") or e["heard"], e["answer"]
+            return {"question": e.get("question") or e["heard"], "answer": e["answer"], "item": e.get("item") or ""}
     return None
+
+
+async def _previous_exchange(db: MemoryDB, device_id: str) -> tuple[str, str] | None:
+    """The last (question, answer) this device heard, for "continue"."""
+    turn = await _previous_turn(db, device_id)
+    return (turn["question"], turn["answer"]) if turn else None
+
+
+async def _follow_up(background, db, ai, geo, settings, device_id: str, question: str, turn: dict, where,
+                     headers: dict, trace: Trace, raia: Raia | None) -> Response:
+    """A follow-up that needs the last answer. When the camera's frame of that item was read by raia, the
+    question continues in that raia conversation (it has the photo); otherwise, or when raia is slow, the answer
+    model gets the last exchange plus the stored context, as if it were the same conversation."""
+    previous = (turn["question"], turn["answer"])
+    item = norm(turn.get("item") or "")
+    stored = None
+    if item and hasattr(db, "raia_context"):
+        try:
+            scope, _ = await scope_for(db, device_id)
+            stored = await db.raia_context(scope, item)
+        except Exception:
+            log.exception("Looking up the stored context for %s failed", item)
+    ctx = json.loads(stored["context"]) if stored and stored.get("context") else None
+    trace.set(item=item or None, follow_up_context=bool(ctx))
+    if ctx and stored.get("conversation_id") and raia is not None and raia.configured:
+        started = time.perf_counter()
+        try:
+            text = await asyncio.wait_for(raia.follow_up(stored["conversation_id"], item, question, previous),
+                                          settings.answer_timeout_seconds)
+            log.info("RAIA follow-up in %s about %s, %.1f s: %s", stored["conversation_id"], item,
+                     time.perf_counter() - started, text)
+            if text:
+                return await _spoken_answer(background, db, ai, geo, settings, device_id, question, where, headers,
+                                            trace=trace, answer=(text, "raia", {"raia": (time.perf_counter() - started) * 1000}))
+        except Exception as exc:  # slow or down: the answer model, with the context below
+            log.warning("RAIA follow-up about %s unavailable (%s); answering with the stored context",
+                        item, type(exc).__name__)
+    if ctx:
+        previous = (previous[0], f"{previous[1]}\n{context_note(ctx, stored.get('finished_at'))}")
+    return await _spoken_answer(background, db, ai, geo, settings, device_id, question, where, headers,
+                                trace=trace, previous=previous)
 
 
 async def _voice(background, audio, image, transcript, wake, where, pairing_code, device, db, ai, geo, settings,
@@ -511,17 +552,23 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
             return {"intent": "none", "heard": heard}
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "No speech detected")
 
-    # "continue": a follow-up to the last answer, with it as context.
+    # "continue", or a question that leans on the last answer ("point me in the right direction"): a follow-up,
+    # with the last exchange (and what the camera saw of its item) as context.
     follow_up = continue_command(words)
-    if follow_up is not None:
-        previous = await _previous_exchange(db, device.sub)
-        trace.set(intent="ask", continued=previous[0] if previous else None, decided_by="rules")
+    turn = await _previous_turn(db, device.sub) if follow_up is not None or needs_context(words) else None
+    if follow_up is not None or turn is not None:
+        question = words if follow_up is None else follow_up
+        trace.set(intent="ask", continued=turn["question"] if turn else None, decided_by="rules")
         trace.lap("decide")
-        if previous is None and not follow_up:
+        if turn is None and not question:
             trace.set(outcome="nothing to do")
             return {"intent": "none", "heard": heard}
-        return await _spoken_answer(background, db, ai, geo, settings, device.sub, follow_up, where,
-                                    {"X-Intent": "ask", "X-Heard": quote(heard)}, trace=trace, previous=previous)
+        headers = {"X-Intent": "ask", "X-Heard": quote(heard)}
+        if turn is None:  # "continue, where's my wallet" with nothing before it: a plain question
+            return await _spoken_answer(background, db, ai, geo, settings, device.sub, question, where, headers,
+                                        trace=trace)
+        return await _follow_up(background, db, ai, geo, settings, device.sub, question or "Tell me more.", turn,
+                                where, headers, trace, raia)
 
     # Step 1, words only: what is being asked (the photos stay out of it). The item comes from matching the
     # household's own saved item names whenever they're said, so it's always the name they taught; the

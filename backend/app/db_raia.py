@@ -28,6 +28,8 @@ class RaiaMixin:
             )
             """
         )
+        # The raia conversation that read the frame: follow-up questions about the item continue in it.
+        await conn.execute("ALTER TABLE raia_contexts ADD COLUMN IF NOT EXISTS conversation_id text")
 
     async def logged_items(self, scope: str, device_ids: list[str]) -> set[str]:
         """The user's items: the household's Teach items and their aliases, and items named in spoken memories."""
@@ -61,21 +63,33 @@ class RaiaMixin:
         return claimed is not None
 
     async def finish_raia_context(self, scope: str, item: str, context: str | None, error: str | None,
-                                  memory_id: str | None = None) -> None:
-        """context: the JSON the agent returned (as text); memory_id: the "LastScene: " memory it was saved as."""
+                                  memory_id: str | None = None, conversation_id: str | None = None) -> None:
+        """context: the JSON the agent returned (as text); memory_id: the "LastScene: " memory it was saved as;
+        conversation_id: the raia conversation that read it."""
         await self.pool.execute(
             "UPDATE raia_contexts SET finished_at = now(), context = $3, error = $4, "
-            "memory_id = COALESCE($5::uuid, memory_id) WHERE scope = $1 AND item = $2",
+            "memory_id = COALESCE($5::uuid, memory_id), conversation_id = $6 WHERE scope = $1 AND item = $2",
             scope,
             item,
             context,
             error,
             memory_id,
+            conversation_id,
+        )
+
+    async def retry_raia_context(self, scope: str, item: str, cooldown_minutes: float, retry_minutes: float) -> None:
+        """After a failed read: let the item be claimed again in retry_minutes, not the whole cooldown."""
+        await self.pool.execute(
+            "UPDATE raia_contexts SET claimed_at = now() - make_interval(secs => $3) WHERE scope = $1 AND item = $2",
+            scope,
+            item,
+            max(0.0, cooldown_minutes - retry_minutes) * 60,
         )
 
     async def raia_context(self, scope: str, item: str) -> dict | None:
         row = await self.pool.fetchrow(
-            "SELECT memory_id, claimed_at, finished_at, context, error FROM raia_contexts WHERE scope = $1 AND item = $2",
+            "SELECT memory_id, claimed_at, finished_at, context, error, conversation_id FROM raia_contexts "
+            "WHERE scope = $1 AND item = $2",
             scope,
             item,
         )
