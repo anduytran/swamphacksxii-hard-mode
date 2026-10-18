@@ -10,8 +10,9 @@ For each memory sreer makes a single request; questions never involve faker:
                                   (headers X-Item, X-Confidence, X-Attempts say what was found)
     GET /health                   {"camera": ..., "vision": ..., "passive": ...}
     GET /stream                   live MJPEG (STREAM_FPS, <= 640 px) with the detector's latest boxes drawn on it,
-                                  for watching what passive detection sees (camera_view.py shows it on a laptop);
-                                  at most MAX_STREAMS at once
+                                  for watching what passive detection sees (camera_view.py shows it on a laptop).
+                                  One shared feed (StreamHub): any number of viewers read the camera once per
+                                  frame, and torn frames are dropped (torn())
 
 Every request needs the header X-Camera-Token: <CAMERA_TOKEN> (the same value in both Pis' env).
 Between requests faker can keep running the background item detection (VISION_EVERY), as before;
@@ -37,7 +38,9 @@ log = logging.getLogger("lastscene.camera")
 MAX_WORDS = 300
 STREAM_FPS = float(os.environ.get("STREAM_FPS", 4))
 STREAM_MAX_SIDE = 640
-MAX_STREAMS = 2  # each one encodes JPEGs on the Pi Zero's CPU, next to the detector
+MAX_STREAMS = 6  # viewers share one feed, so this only bounds open connections
+TORN_ROWS = 16  # a frame whose bottom this many rows repeat one row is torn (an MJPEG frame cut short)
+MAX_TORN_SKIPS = 5  # past this many in a row it's probably a plain scene, not tearing: shown anyway
 BOX_FRESH_S = 3.0  # the detector's boxes are drawn while they're at most this old
 STREAM_WAIT_S = 2.0  # how long a stream frame waits for the detector to finish a pass
 
@@ -65,14 +68,17 @@ class CameraService:
                 headers.update({"X-Item": hit.label, "X-Confidence": f"{hit.conf:.2f}"})
             return dev.jpeg_bytes(frame), headers
 
-    def stream_jpeg(self) -> bytes:
-        """One live frame, at most STREAM_MAX_SIDE px, with the detector's latest boxes if they're fresh."""
+    def stream_jpeg(self, check_torn: bool = False) -> bytes | None:
+        """One live frame, at most STREAM_MAX_SIDE px, with the detector's latest boxes if they're fresh. With
+        check_torn, None for a torn frame (the caller keeps showing the last good one)."""
         import cv2
 
         idle = getattr(getattr(self.vision, "detector", None), "idle", None)
         if idle is not None:  # a frame read while the detector runs comes out torn on the Pi Zero (UsbCamera)
             idle.wait(STREAM_WAIT_S)
         frame = self.camera.frame()
+        if check_torn and torn(frame):
+            return None
         h, w = frame.shape[:2]
         scale = min(1.0, STREAM_MAX_SIDE / max(h, w))
         if scale < 1.0:
@@ -122,8 +128,75 @@ def shrink_jpeg(jpeg: bytes, max_side: int, quality: int = 85) -> bytes:
     return dev.jpeg_bytes(small, quality)
 
 
+def torn(frame) -> bool:
+    """An MJPEG frame cut short on the USB bus decodes with its missing part filled by one row repeated to the
+    bottom (libjpeg: "Corrupt JPEG data: premature end of data segment"). Real scenes have sensor noise, so
+    TORN_ROWS identical rows across the whole width don't happen in a whole frame."""
+    import numpy as np
+
+    rows = frame[-(TORN_ROWS + 1):].astype(np.int16)
+    return bool(np.abs(np.diff(rows, axis=0)).mean(axis=(1, 2)).max() < 0.5)
+
+
+class StreamHub:
+    """One camera feed for every viewer: a thread reads, checks and encodes a frame STREAM_FPS times a second
+    while anyone is watching, and each viewer gets the newest. Two viewers no longer mean twice the camera reads
+    (which tore more frames on the Pi Zero's USB)."""
+
+    def __init__(self, service: CameraService):
+        self.service = service
+        self.cond = threading.Condition()
+        self.jpeg: bytes | None = None
+        self.seq = 0
+        self.viewers = 0
+        self.dropped = 0
+        self.thread: threading.Thread | None = None
+
+    def join(self):
+        with self.cond:
+            self.viewers += 1
+            if self.thread is None or not self.thread.is_alive():
+                self.thread = threading.Thread(target=self._run, name="camera-stream", daemon=True)
+                self.thread.start()
+
+    def leave(self):
+        with self.cond:
+            self.viewers -= 1
+
+    def next(self, after: int, timeout: float = 5.0) -> tuple[int, bytes | None]:
+        """The newest frame after `after` (waits for it), as (its number, JPEG)."""
+        with self.cond:
+            self.cond.wait_for(lambda: self.seq > after, timeout)
+            return self.seq, self.jpeg
+
+    def _run(self):
+        skipped = 0
+        while True:
+            with self.cond:
+                if self.viewers <= 0:
+                    self.thread = None
+                    return
+            started = time.monotonic()
+            try:
+                jpeg = self.service.stream_jpeg(check_torn=skipped < MAX_TORN_SKIPS)
+            except Exception:
+                log.exception("Stream frame failed")
+                time.sleep(1)
+                continue
+            if jpeg is None:  # torn: keep the last good frame on screen
+                skipped += 1
+                self.dropped += 1
+                continue
+            skipped = 0
+            with self.cond:
+                self.jpeg, self.seq = jpeg, self.seq + 1
+                self.cond.notify_all()
+            time.sleep(max(0.0, 1 / STREAM_FPS - (time.monotonic() - started)))
+
+
 def make_handler(service: CameraService, token: str):
     streams = threading.BoundedSemaphore(MAX_STREAMS)
+    hub = StreamHub(service)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "lastscene-camera"
@@ -167,31 +240,28 @@ def make_handler(service: CameraService, token: str):
         def _stream(self):
             if not streams.acquire(blocking=False):
                 return self._json(429, {"detail": f"at most {MAX_STREAMS} streams at once"})
-            log.info("Stream started")
-            sent = 0
+            log.info("Stream started (%d watching)", hub.viewers + 1)
+            sent, seen = 0, 0
+            hub.join()
             try:
                 self.send_response(200)
                 self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 while True:
-                    started = time.monotonic()
-                    try:
-                        jpeg = service.stream_jpeg()
-                    except Exception:
-                        log.exception("Stream frame failed")
-                        time.sleep(1)
+                    seen, jpeg = hub.next(seen)
+                    if jpeg is None:
                         continue
                     self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(jpeg))
                     self.wfile.write(jpeg + b"\r\n")
                     self.wfile.flush()
                     sent += 1
-                    time.sleep(max(0.0, 1 / STREAM_FPS - (time.monotonic() - started)))
             except (BrokenPipeError, ConnectionResetError):
                 pass  # the viewer went away
             finally:
+                hub.leave()
                 streams.release()
-                log.info("Stream ended after %d frames", sent)
+                log.info("Stream ended after %d frames (%d torn frames dropped so far)", sent, hub.dropped)
 
         def log_message(self, fmt, *args):  # requests are logged above, without the words
             pass

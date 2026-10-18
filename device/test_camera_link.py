@@ -221,3 +221,61 @@ def test_each_sighting_carries_a_cached_wifi_scan():
     fixed = dev.CachedLocation(Config.local({}), scan=lambda: {"lat": "29.6", "lng": "-82.3", "accuracy_m": "100"})
     assert fixed() == {"lat": 29.6, "lng": -82.3, "accuracy_m": 100.0}
     assert dev.CachedLocation(Config.local({}), scan=lambda: {})() is None
+
+
+def test_a_torn_frame_is_recognised():
+    """A frame cut short on the USB bus decodes with one row repeated to the bottom; real frames have noise."""
+    np = pytest.importorskip("numpy")
+    rng = np.random.default_rng(1)
+    real = rng.integers(60, 200, size=(720, 1280, 3), dtype=np.uint8)
+    torn = real.copy()
+    torn[600:] = torn[599]  # the missing part: the last good row, repeated
+    assert camera_server.torn(torn) and not camera_server.torn(real)
+    wall = np.clip(np.full((720, 1280, 3), 200) + rng.normal(0, 2, size=(720, 1280, 3)), 0, 255).astype(np.uint8)
+    assert not camera_server.torn(wall)  # a plain wall still has sensor noise
+
+
+def test_viewers_share_one_camera_feed_and_torn_frames_are_skipped():
+    """Two viewers read the camera once per frame between them; a torn frame is never sent."""
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("cv2")
+    import time
+
+    rng = np.random.default_rng(2)
+
+    class CountingCamera(FakeCamera):
+        reads = 0
+
+        def frame(self):
+            CountingCamera.reads += 1
+            image = rng.integers(60, 200, size=(240, 320, 3), dtype=np.uint8)
+            if CountingCamera.reads % 3 == 0:  # every third frame comes out torn
+                image[200:] = image[199]
+            return image
+
+    service = camera_server.CameraService(Config.local({}), camera=CountingCamera(), vision=None)
+    server = camera_server.serve(service, TOKEN, "127.0.0.1", 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/stream"
+    got = {0: 0, 1: 0}
+
+    def watch(i):
+        with httpx.stream("GET", url, headers={"X-Camera-Token": TOKEN}, timeout=10) as resp:
+            seen = b""
+            for chunk in resp.iter_bytes():
+                seen += chunk
+                got[i] = seen.count(b"--frame")
+                if got[i] >= 6:
+                    return
+
+    try:
+        started = time.monotonic()
+        watchers = [threading.Thread(target=watch, args=(i,)) for i in (0, 1)]
+        [w.start() for w in watchers]
+        [w.join(15) for w in watchers]
+        elapsed = time.monotonic() - started
+        assert got[0] >= 6 and got[1] >= 6
+        # One feed: about STREAM_FPS reads a second for both viewers together (plus the torn ones re-read).
+        assert CountingCamera.reads <= (camera_server.STREAM_FPS * elapsed) * 1.6 + 4
+    finally:
+        server.shutdown()

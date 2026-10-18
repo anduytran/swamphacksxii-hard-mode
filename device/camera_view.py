@@ -19,7 +19,7 @@ body{margin:0;background:#111;color:#ddd;font:14px system-ui;display:flex;flex-d
 img{max-width:100%;height:auto;margin-top:12px;border-radius:6px;background:#222;min-height:240px}
 p{margin:8px 16px;color:#999}</style></head><body>
 <img src="/stream" alt="camera stream">
-<p>Boxes: what the detector saw in its last pass (green at 0.5 or more: raia reads it). Refresh if it stops.</p>
+<p>Boxes: what the detector saw in its last pass. Refresh if it stops.</p>
 </body></html>"""
 
 
