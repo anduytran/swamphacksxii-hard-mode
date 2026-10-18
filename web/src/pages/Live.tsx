@@ -22,7 +22,7 @@ export default function LivePage() {
   const [paused, setPaused] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
   const cleared = useRef(0); // Clear hides everything up to this id
-  const clearedAt = useRef(""); // and every sighting up to this time
+  const clearedSightings = useRef(new Set<string>()); // and these sightings
 
   useEffect(() => {
     if (paused) return;
@@ -34,7 +34,7 @@ export default function LivePage() {
         const res = await api<{ events: VoiceEvent[]; sightings?: LiveSighting[] }>("/api/v1/dashboard/live");
         if (stop) return;
         setEvents(res.events.filter((e) => e.id > cleared.current).slice(0, KEEP));
-        setSightings((res.sightings ?? []).filter((x) => x.captured_at > clearedAt.current));
+        setSightings((res.sightings ?? []).filter((x) => !clearedSightings.current.has(x.id)));
         setError(null);
       } catch (e) {
         if (!stop) setError(e instanceof Error ? e.message : String(e));
@@ -80,10 +80,10 @@ export default function LivePage() {
           </button>
           <button type="button" className="pill quiet" onClick={() => {
             cleared.current = Math.max(cleared.current, ...events.map((e) => e.id));
-            clearedAt.current = new Date().toISOString();
+            sightings.forEach((x) => clearedSightings.current.add(x.id));
             setEvents([]);
             setSightings([]);
-          }} disabled={!events.length && !sightings.length}>
+          }} disabled={!entries.length}>
             Clear
           </button>
         </div>

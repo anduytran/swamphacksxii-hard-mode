@@ -104,10 +104,11 @@ def test_the_wearers_position_comes_from_this_request_else_their_last_known_one(
     assert note(FakeDB(None, recent=(*REITZ, 30.0), places=places)) is None  # the item was never located
 
 
-def sighting(minutes_ago, spot, where, nearby=(), place_id=None):
+def sighting(minutes_ago, spot, where, nearby=(), place_id=None, confidence=0.9):
     from datetime import timedelta
     return SimpleNamespace(captured_at=datetime.now(timezone.utc) - timedelta(minutes=minutes_ago),
                            context={"where": where, "nearby": list(nearby)}, scene_label=None, place_id=place_id,
+                           confidence=confidence,
                            lat=spot[0] if spot else None, lng=spot[1] if spot else None)
 
 
@@ -127,17 +128,17 @@ def _pin_db():
                        places=[place("p-reitz", "Reitz Union", REITZ), place("p-home", "Home", HOME)],
                        sightings=[sighting(5, HOME, "on the kitchen counter", ["blue mug"], "p-home"),
                                   sighting(90, REITZ, "on the desk", ["laptop"], "p-reitz"),
-                                  sighting(60 * 30, None, "in the coat pocket")])
+                                  sighting(60 * 30, None, "in the coat pocket", confidence=0.4)])
 
 
 def test_the_item_context_lists_its_last_lastscenes_and_where_it_is_from_the_wearer():
     from app.lastscene import item_context
     ctx = asyncio.run(item_context(_pin_db(), FakeGeo(), SETTINGS, "cam@clients", "Pin"))
     lines = ctx.prompt.splitlines()
-    assert lines[0] == "The pin's last LastScene locations, newest first (the first is where it is now):"
+    assert lines[0] == "The pin's last LastScene locations (seen by the camera), newest first:"
     assert lines[1] == "1. 5 min ago: on the kitchen counter; next to blue mug; at Home; 1.4 kilometers south-west of the wearer"
     assert lines[2] == "2. 1.5 h ago: on the desk; next to laptop; at Reitz Union; where the wearer is"
-    assert lines[3] == "3. 30 h ago: in the coat pocket"
+    assert lines[3] == "3. 30 h ago: in the coat pocket; maybe, only 40% sure"
     assert lines[-1].startswith("Where it is from the wearer now: The pin's LastScene is at Home, about 1.4 kilometers")
     assert ctx.sentence == "Its LastScene is at Home, about 1.4 kilometers south-west of you."
     assert asyncio.run(item_context(SightingsDB(), FakeGeo(), SETTINGS, "cam@clients", "pin")) is None
@@ -412,3 +413,27 @@ def test_naming_a_place_saves_its_position(client):  # noqa: F811
                        data={"wake": "true", "wifi": json_scan(REITZ_SCAN)})
     assert resp.status_code == 200 and resp.headers["x-intent"] == "place"
     assert positions == [("w1", REITZ[0], REITZ[1], 15.0)]
+
+
+def test_the_context_lookup_never_outlives_the_answer():
+    from app.routers.memory import _answer_text
+
+    class LangDB:
+        async def household_language(self, device_id):
+            return "en"
+
+    class FailingAI:
+        async def embed(self, text, query=False):
+            raise RuntimeError("embeddings down")
+
+    async def run(question, ai):
+        task = asyncio.create_task(asyncio.sleep(30))
+        try:
+            await _answer_text(LangDB(), ai, SETTINGS, "cam@clients", question, task)
+        except RuntimeError:
+            pass
+        await asyncio.sleep(0)
+        return task.cancelled()
+
+    assert asyncio.run(run("", None))  # nothing heard: answered at once
+    assert asyncio.run(run("where is my pin", FailingAI()))  # the search failed

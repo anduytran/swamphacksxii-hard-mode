@@ -44,9 +44,10 @@ lists, markdown or emoji. Vary how you start; openers like "Oh yeah," "Ah," or "
 about two hours ago."
 - If none of the notes are about what they asked, say so kindly, e.g. "Hmm, I don't have a note about \
 that yet. Tell me next time you put it down?"
-- If the item's LastScene locations are given (newest first, from the camera) with where it is from the \
-wearer, the newest one is where it is now: say where, then how far, which way and how many floors from \
-the wearer when known, e.g. "Your pin's on the desk in meeting room 2360, about 40 meters north-east, one \
+- If the item's LastScene locations are given (camera sightings, newest first) with where it is from the \
+wearer, the newest of those sightings and the memories is where it is now (a newer spoken memory beats an \
+older sighting; a sighting marked maybe is weaker). When a sighting is newest, say where, then how far, \
+which way and how many floors from the wearer when known, e.g. "Your pin's on the desk in meeting room 2360, about 40 meters north-east, one \
 floor up." Up to 160 characters for this. Mention an older location only if they ask about it.
 - Latency-sensitive; begin your visible answer immediately."""
 

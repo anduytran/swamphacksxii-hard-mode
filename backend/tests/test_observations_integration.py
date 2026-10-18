@@ -262,6 +262,10 @@ def test_raia_reads_a_logged_item_once_per_cooldown(c):
     chunks = run(db.chunks_for, [memory_id])[memory_id]
     assert ("item", "keys: on the hallway table") in [(ch.kind, ch.content) for ch in chunks]
     assert "hallway table" in run(db.pool.fetchval, "SELECT location FROM memory_items WHERE memory_id = $1::uuid", memory_id)
+    # The sighting raia read carries its context (the item drawer and Live show it).
+    read = run(db.pool.fetchval, "SELECT context FROM item_history WHERE observation_id = $1::uuid",
+               run(db.pool.fetchval, "SELECT observation_id FROM memory_logs WHERE id = $1::uuid", first.json()["memory_id"]))
+    assert read and (json.loads(read) if isinstance(read, str) else read)["where"] == "on the hallway table"
     # The raia memory has the sighting's location.
     where = run(db.pool.fetchrow, "SELECT lat, lng FROM memory_logs WHERE id = $1::uuid", memory_id)
     assert (round(where["lat"], 4), round(where["lng"], 4)) == (29.6465, -82.3475)

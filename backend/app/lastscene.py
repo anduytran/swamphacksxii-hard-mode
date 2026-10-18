@@ -225,9 +225,15 @@ async def item_context(db, geo, settings: Settings, device_id: str, item: str, w
     item = " ".join((item or "").lower().split())
     if not item:
         return None
+    import asyncio
+
     scope, device_ids = await scope_for(db, device_id)
-    rel = await relative_to_item(db, geo, settings, scope, device_ids, item, wifi, lat, lng, accuracy_m)
-    sightings = await db.sightings([scope], item) if hasattr(db, "sightings") else []
+
+    async def recent():
+        return await db.sightings([scope], item) if hasattr(db, "sightings") else []
+
+    rel, sightings = await asyncio.gather(
+        relative_to_item(db, geo, settings, scope, device_ids, item, wifi, lat, lng, accuracy_m), recent())
     if rel is None and not sightings:
         return None
     labels: dict[str, str] = {}
@@ -242,6 +248,8 @@ async def item_context(db, geo, settings: Settings, device_id: str, item: str, w
         ctx = s.context or {}
         what = ctx.get("where") or ctx.get("summary") or (f"on the {s.scene_label}" if s.scene_label else "seen by the camera")
         bits = [what]
+        if s.confidence is not None and s.confidence < settings.maybe_confidence:
+            bits.append(f"maybe, only {s.confidence:.0%} sure")
         if ctx.get("nearby"):
             bits.append("next to " + ", ".join(ctx["nearby"]))
         if s.place_id and labels.get(s.place_id):
@@ -254,7 +262,7 @@ async def item_context(db, geo, settings: Settings, device_id: str, item: str, w
         lines.append(f"{i}. {_ago(s.captured_at, now)}: {'; '.join(bits)}")
     parts = []
     if lines:
-        parts.append(f"The {item}'s last LastScene locations, newest first (the first is where it is now):\n"
+        parts.append(f"The {item}'s last LastScene locations (seen by the camera), newest first:\n"
                      + "\n".join(lines))
     if rel:
         accuracy = f" (positions within about {rel.accuracy_m:.0f} m)" if rel.accuracy_m else ""

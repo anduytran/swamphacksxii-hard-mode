@@ -35,7 +35,7 @@ from ..maps_names import name_memory_place
 from ..pipeline import ingest_image, ingest_speech, retrieve
 from ..lastscene import ItemContext, item_context
 from ..home_map import floor_plan, room_for
-from ..wifi_places import clean_name, display, from_wifi_json, learn, name_place, room_of_scan, usable
+from ..wifi_places import clean_name, display, fixed, from_wifi_json, learn, name_place, room_of_scan, usable
 from ..raia import Raia, context_from_photos
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
@@ -323,9 +323,15 @@ async def _answer_text(
         timings[stage] = (now - clock) * 1000
         clock = now
 
-    if not question:
-        if context is not None:
+    try:
+        return await _answer_with(db, ai, settings, device_id, question, context, trace, timings, lap)
+    finally:  # an early return or failure never leaves the context lookup running after the response
+        if context is not None and not context.done():
             context.cancel()
+
+
+async def _answer_with(db, ai, settings, device_id, question, context, trace, timings, lap):
+    if not question:
         return phrase(DIDNT_CATCH, await _language(db, device_id)), "fixed", timings
     language = None
     try:
@@ -350,7 +356,7 @@ async def _answer_text(
             except TimeoutError:  # the model is queued or slow: what the best memory says, right away
                 log.warning("Answer model slower than %.0f s; answering from the memory", settings.answer_timeout_seconds)
                 recalled = recall_answer(memories)
-                sentence = located.sentence if located else None
+                sentence = located.sentence if located and is_english(language) else None
                 answer = (f"{recalled.rstrip()} {sentence}" if recalled and sentence else recalled or sentence
                           or phrase(NO_ANSWER, language))
                 answered_by = "memory (model too slow)"
@@ -486,8 +492,8 @@ async def voice(
     ({"intent": "ignored"}): that filters the wake model's false alarms. Then a low-reasoning model reads
     the words alone to decide the command (remember, ask, found, none; the rules in intent.py decide if it
     can't). Only for remember and ask do the photos go to a model: to pick the one showing the item, and to
-    say so when what's asked about is in view now. "Last Scene, continue ..." is a follow-up question that
-    keeps the last answer as context."""
+    say so when what's asked about is in view now. A question about an item also gets the item's last
+    LastScene locations and where it is from the wearer (lastscene.item_context)."""
     trace = Trace("wake" if wake else "voice", defer=defer)
     if client:
         try:
@@ -546,7 +552,7 @@ async def _name_place(db, ai: AIServices, geo: Geolocator, settings: Settings, d
         if loc is not None and hasattr(db, "set_wifi_place_position"):
             await db.set_wifi_place_position(saved["id"], loc.lat, loc.lng, loc.accuracy_m)
         answer = f"Got it, this is {_spoken_room(room.name)}." if room else f"Got it, this is {display(saved['name'])}."
-        trace.set(outcome="named place", wifi_aps=len(scan),
+        trace.set(outcome="named place", wifi_aps=len(fixed(scan)),
                   position=f"{loc.lat:.5f}, {loc.lng:.5f} ±{loc.accuracy_m or 0:.0f} m ({loc.source})" if loc else None)
     else:
         answer = "I can't hear enough Wi-Fi here to remember this place."

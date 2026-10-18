@@ -478,7 +478,7 @@ async def _live_sightings(db: MemoryDB, caregiver: Principal, settings: Settings
         plan = floor_plan(settings.floor_plan)
         named = {scope: [p for p in await db.wifi_places(scope) if p.get("room_id")] if hasattr(db, "wifi_places") else []
                  for scope in {s.scope for s, _ in found}}
-        current = {(s.scope, s.item): await db.last_seen_keys([s.scope], s.item) for s, _ in found}
+        current = {pair: await db.last_seen_keys([pair[0]], pair[1]) for pair in {(s.scope, s.item) for s, _ in found}}
         out = []
         for s, wifi in found:
             match = best_place(named[s.scope], wifi or {}) if wifi else None
