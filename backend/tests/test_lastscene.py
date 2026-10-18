@@ -95,7 +95,7 @@ def note(db, **where):
 def test_the_wearers_position_comes_from_this_request_else_their_last_known_one():
     places = [place("p-reitz", "Reitz Union", REITZ), place("p-home", "Home", HOME)]
     item = (*HOME, 20.0, "p-home", NOW)
-    assert note(FakeDB(item, places=places), wifi='[{"bssid": "aa:bb:cc:dd:ee:ff", "signal": -50}, {"bssid": "11:22:33:44:55:66", "signal": -60}]').startswith("Its LastScene is at Home")
+    assert note(FakeDB(item, places=places), wifi='[{"bssid": "a8:bb:cc:dd:ee:ff", "signal": -50}, {"bssid": "11:22:33:44:55:66", "signal": -60}]').startswith("Its LastScene is at Home")
     assert note(FakeDB(item, recent=(*REITZ, 30.0), places=places)) == \
         "Its LastScene is at Home, about 1.4 kilometers south-west of you."
     assert note(FakeDB((*REITZ, 20.0, "p-reitz", NOW), recent=(*REITZ, 30.0), places=places)) == \
@@ -189,9 +189,9 @@ def test_a_slow_answer_model_still_says_where_its_lastscene_is(client):  # noqa:
 from app.intent import place_command  # noqa: E402
 from app.wifi_places import best_place, from_wifi_json, merge, similarity  # noqa: E402
 
-REITZ_SCAN = {"aa:00:00:00:00:01": -60, "aa:00:00:00:00:02": -64, "aa:00:00:00:00:03": -70, "aa:00:00:00:00:04": -78}
-REITZ_LATER = {"aa:00:00:00:00:01": -63, "aa:00:00:00:00:02": -61, "aa:00:00:00:00:03": -75, "aa:00:00:00:00:09": -80}
-HOME_SCAN = {"bb:00:00:00:00:01": -50, "bb:00:00:00:00:02": -66, "bb:00:00:00:00:03": -72}
+REITZ_SCAN = {"a8:00:00:00:00:01": -60, "a8:00:00:00:00:02": -64, "a8:00:00:00:00:03": -70, "a8:00:00:00:00:04": -78}
+REITZ_LATER = {"a8:00:00:00:00:01": -63, "a8:00:00:00:00:02": -61, "a8:00:00:00:00:03": -75, "a8:00:00:00:00:09": -80}
+HOME_SCAN = {"b9:00:00:00:00:01": -50, "b9:00:00:00:00:02": -66, "b9:00:00:00:00:03": -72}
 PLACES = [{"id": "w1", "name": "reitz union", "aps": REITZ_SCAN}, {"id": "w2", "name": "Home", "aps": HOME_SCAN}]
 
 
@@ -201,10 +201,10 @@ def test_similarity_tells_the_same_place_from_another():
     assert similarity(REITZ_SCAN, HOME_SCAN) == 0.0
     assert best_place(PLACES, REITZ_LATER)[0]["id"] == "w1"
     assert best_place(PLACES, {"cc:00:00:00:00:01": -60, "cc:00:00:00:00:02": -60, "cc:00:00:00:00:03": -60}) is None
-    assert best_place(PLACES, {"aa:00:00:00:00:01": -60}) is None  # one access point isn't a fingerprint
+    assert best_place(PLACES, {"a8:00:00:00:00:01": -60}) is None  # one access point isn't a fingerprint
     merged = merge(REITZ_SCAN, REITZ_LATER)
-    assert merged["aa:00:00:00:00:09"] == -80 and merged["aa:00:00:00:00:01"] == round(0.7 * -60 + 0.3 * -63)
-    assert from_wifi_json('[{"bssid": "AA:00:00:00:00:01", "signal": -60}]') == {"aa:00:00:00:00:01": -60}
+    assert merged["a8:00:00:00:00:09"] == -80 and merged["a8:00:00:00:00:01"] == round(0.7 * -60 + 0.3 * -63)
+    assert from_wifi_json('[{"bssid": "A8:00:00:00:00:01", "signal": -60}]') == {"a8:00:00:00:00:01": -60}
 
 
 def test_naming_a_place_by_voice():
@@ -266,7 +266,7 @@ def test_this_is_a_place_saves_the_scan_and_says_so(client):  # noqa: F811
     assert unquote(resp.headers["x-answer"]) == "Got it, this is Reitz Union."
     assert saved["name"] == "Reitz Union" and saved["aps"] == REITZ_SCAN and saved["room_id"] is None  # not a room
     thin = client.post("/api/v1/memory/voice", headers=DEVICE, files=files,
-                       data={"wake": "true", "wifi": json_scan({"aa:00:00:00:00:01": -60})})
+                       data={"wake": "true", "wifi": json_scan({"a8:00:00:00:00:01": -60})})
     assert unquote(thin.headers["x-answer"]) == "I can't hear enough Wi-Fi here to remember this place."
 
 
@@ -328,3 +328,14 @@ def test_the_dashboard_shows_distance_direction_and_floors(client):  # noqa: F81
 
 async def _async(value):
     return value
+
+
+def test_the_wearers_phone_hotspot_is_left_out_of_fingerprints():
+    """The Pis ride on the wearer's phone: its hotspot (a locally administered address) is in every scan at full
+    strength, so it would make two rooms look alike."""
+    hotspot = {"36:97:b4:00:00:01": -50}
+    room_a = {**hotspot, "e8:00:00:00:00:01": -66, "e8:00:00:00:00:02": -70, "e8:00:00:00:00:03": -75}
+    room_b = {**hotspot, "70:00:00:00:00:01": -68, "70:00:00:00:00:02": -71, "70:00:00:00:00:03": -77}
+    assert similarity(room_a, room_b) == 0.0
+    assert from_wifi_json('[{"bssid": "36:97:B4:00:00:01", "signal": -50}]') == {}
+    assert "36:97:b4:00:00:01" not in merge(room_a, room_b)

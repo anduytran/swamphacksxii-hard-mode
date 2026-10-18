@@ -14,7 +14,7 @@ by room where the access points differ, and where Google or BeaconDB have no dat
 import json
 import re
 
-from .geo import AccessPoint, parse_wifi
+from .geo import AccessPoint, fixed_ap, parse_wifi
 
 HERE = 0.3  # scans at least this similar were taken in the same place
 MATCH = 0.3  # a scan belongs to a named place at least this similar (the best one wins)
@@ -25,7 +25,13 @@ UNHEARD_DBM = -85  # a known access point missing from a new scan fades toward t
 
 
 def fingerprint(aps: list[AccessPoint]) -> dict[str, int]:
-    return {a.bssid.lower(): int(a.signal_dbm if a.signal_dbm is not None else -80) for a in aps if a.bssid}
+    return {a.bssid.lower(): int(a.signal_dbm if a.signal_dbm is not None else -80)
+            for a in aps if a.bssid and fixed_ap(a.bssid.lower())}
+
+
+def fixed(scan: dict[str, int] | None) -> dict[str, int]:
+    """A stored scan or fingerprint without hotspots (geo.fixed_ap): ones saved before they were left out."""
+    return {k: v for k, v in (scan or {}).items() if fixed_ap(k)}
 
 
 def from_wifi_json(raw: str | list | None) -> dict[str, int]:
@@ -36,7 +42,7 @@ def from_wifi_json(raw: str | list | None) -> dict[str, int]:
 
 
 def usable(scan: dict | None) -> bool:
-    return bool(scan) and len(scan) >= MIN_APS
+    return len(fixed(scan)) >= MIN_APS
 
 
 def _weight(dbm: int) -> float:
@@ -44,6 +50,7 @@ def _weight(dbm: int) -> float:
 
 
 def similarity(a: dict[str, int], b: dict[str, int]) -> float:
+    a, b = fixed(a), fixed(b)
     if not a or not b:
         return 0.0
     shared = sum(min(_weight(a[k]), _weight(b[k])) for k in a.keys() & b.keys())
@@ -54,7 +61,7 @@ def similarity(a: dict[str, int], b: dict[str, int]) -> float:
 def merge(old: dict[str, int], new: dict[str, int]) -> dict[str, int]:
     """A place's fingerprint after another scan there: shared access points average (new counts 30 %), new ones
     join, ones not heard this time fade, and only the strongest KEEP_APS stay."""
-    out = {}
+    old, new, out = fixed(old), fixed(new), {}
     for k in old.keys() | new.keys():
         if k in old and k in new:
             out[k] = round(0.7 * old[k] + 0.3 * new[k])

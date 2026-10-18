@@ -5,9 +5,9 @@ from app.geo import Location, distance_m, home_place_id, nearest_place, parse_wi
 
 
 def test_parse_wifi_keeps_valid_aps_strongest_first():
-    raw = '[{"bssid": "AA:BB:CC:00:11:22", "signal": -70}, {"bssid": "bad"}, {"bssid": "aa:bb:cc:00:11:33", "signal": -40}]'
+    raw = '[{"bssid": "A8:BB:CC:00:11:22", "signal": -70}, {"bssid": "bad"}, {"bssid": "a8:bb:cc:00:11:33", "signal": -40}]'
     aps = parse_wifi(raw)
-    assert [a.bssid for a in aps] == ["aa:bb:cc:00:11:33", "aa:bb:cc:00:11:22"]
+    assert [a.bssid for a in aps] == ["a8:bb:cc:00:11:33", "a8:bb:cc:00:11:22"]
     assert parse_wifi("not json") == [] and parse_wifi(None) == []
 
 

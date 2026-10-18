@@ -43,6 +43,17 @@ class AccessPoint:
     signal_dbm: int | None = None
 
 
+def fixed_ap(bssid: str) -> bool:
+    """A building's access point, not a phone's hotspot. Hotspots (the Pis ride on the wearer's phone, Oct 18) and
+    other moving networks use locally administered addresses (the 0x02 bit of the first byte), and an access point
+    that moves with the wearer is in every scan at full strength: it says nothing about where they are, and it
+    makes every two scans look alike. UF's eduroam access points are all globally administered."""
+    try:
+        return not int(bssid[:2], 16) & 0x02
+    except ValueError:
+        return False
+
+
 def parse_wifi(raw: str | None) -> list[AccessPoint]:
     """The device's scan, as JSON: [{"bssid": "aa:bb:..", "signal": -61}, ...]."""
     if not raw:
@@ -54,7 +65,7 @@ def parse_wifi(raw: str | None) -> list[AccessPoint]:
     aps = []
     for e in entries if isinstance(entries, list) else []:
         bssid = str(e.get("bssid", "")).lower() if isinstance(e, dict) else ""
-        if len(bssid) == 17 and bssid.count(":") == 5:
+        if len(bssid) == 17 and bssid.count(":") == 5 and fixed_ap(bssid):
             signal = e.get("signal")
             aps.append(AccessPoint(bssid, int(signal) if isinstance(signal, (int, float)) else None))
     aps.sort(key=lambda a: a.signal_dbm if a.signal_dbm is not None else -200, reverse=True)

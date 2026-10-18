@@ -11,7 +11,7 @@ import app.geo as geo
 from app.config import Settings
 from app.geo import AccessPoint, Geolocator
 
-APS = [AccessPoint("aa:bb:cc:dd:ee:01", -50), AccessPoint("aa:bb:cc:dd:ee:02", -60), AccessPoint("aa:bb:cc:dd:ee:03", -70)]
+APS = [AccessPoint("a8:bb:cc:dd:ee:01", -50), AccessPoint("a8:bb:cc:dd:ee:02", -60), AccessPoint("a8:bb:cc:dd:ee:03", -70)]
 
 
 class BudgetDB:

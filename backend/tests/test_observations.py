@@ -102,7 +102,7 @@ def locate(observation, db, geo=None, settings=SETTINGS):
 
 def test_a_sightings_own_wifi_scan_places_it():
     geo = FakeGeo()
-    obs = Observation.model_validate(payload(location={"wifi": [{"bssid": "aa:bb:cc:dd:ee:ff", "signal": -60},
+    obs = Observation.model_validate(payload(location={"wifi": [{"bssid": "a8:bb:cc:dd:ee:ff", "signal": -60},
                                                                 {"bssid": "11:22:33:44:55:66", "signal": -70}]}))
     loc = locate(obs, PositionsDB(recent=(1.0, 2.0, 5.0)), geo)
     assert (loc.lat, loc.lng, loc.source) == (29.6465, -82.3475, "wifi") and len(geo.scans[0]) == 2

@@ -24,7 +24,7 @@ HOME, STORE = (29.6516, -82.3248), (29.6550, -82.3400)
 class FixedGeo:
     """Pretend Wi-Fi positioning: the scan's first BSSID picks a known spot."""
 
-    spots = {"aa:aa:aa:aa:aa:01": HOME, "aa:aa:aa:aa:aa:02": STORE}
+    spots = {"a8:aa:aa:aa:aa:01": HOME, "a8:aa:aa:aa:aa:02": STORE}
 
     async def locate(self, aps):
         spot = self.spots.get(aps[0].bssid) if aps else None
@@ -77,7 +77,7 @@ def setup():
 
 
 def wifi(bssid):
-    return {"wifi": f'[{{"bssid": "{bssid}", "signal": -50}}, {{"bssid": "bb:bb:bb:bb:bb:bb", "signal": -80}}]'}
+    return {"wifi": f'[{{"bssid": "{bssid}", "signal": -50}}, {{"bssid": "b9:bb:bb:bb:bb:bb", "signal": -80}}]'}
 
 
 def log(client, text, bssid, code="PAIR-1"):
@@ -89,15 +89,15 @@ def log(client, text, bssid, code="PAIR-1"):
 def test_setup_for_someone_else_then_places_and_public_map(setup):
     c = setup
     # The wearable uploads before anyone has claimed it: located, but in no household yet.
-    log(c, "putting my keys down", "aa:aa:aa:aa:aa:01")
+    log(c, "putting my keys down", "a8:aa:aa:aa:aa:01")
     hh = c.post("/api/v1/households", json={"name": f"Mom ({RUN})", "display_name": "Dylan"}).json()["id"]
     assert c.post(f"/api/v1/households/{hh}/devices", json={"client_id": f"it-{RUN}-dev0", "pairing_code": "nope"}).status_code == 400
     claimed = c.post(f"/api/v1/households/{hh}/devices", json={"client_id": f"it-{RUN}-dev0", "pairing_code": "pair-1"}).json()
     assert claimed["memories_placed"] == 1
 
     for _ in range(2):
-        log(c, "putting my keys down", "aa:aa:aa:aa:aa:01")
-    log(c, "leaving my umbrella here", "aa:aa:aa:aa:aa:02")
+        log(c, "putting my keys down", "a8:aa:aa:aa:aa:01")
+    log(c, "leaving my umbrella here", "a8:aa:aa:aa:aa:02")
     me = c.get("/api/v1/households/me").json()["households"][0]
     labels = {p["label"]: p for p in me["places"]}
     assert set(labels) == {"Home", "Place 2"} and labels["Home"]["visits"] == 3
@@ -123,7 +123,7 @@ def test_setup_for_someone_else_then_places_and_public_map(setup):
     assert c.get("/api/v1/households/me").json()["households"][0]["language"] == "en"  # the default
     assert c.patch(f"/api/v1/households/{hh}", json={"language": "es"}).status_code == 200
     assert c.get("/api/v1/households/me").json()["households"][0]["language"] == "es"
-    log(c, "leaving my umbrella here", "aa:aa:aa:aa:aa:02")
+    log(c, "leaving my umbrella here", "a8:aa:aa:aa:aa:02")
 
     ours = c.get("/api/v1/dashboard/places").json()
     assert {p["label"] for p in ours["households"][0]["places"]} == {"Home", "Publix"}
