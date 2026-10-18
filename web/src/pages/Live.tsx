@@ -146,8 +146,12 @@ function SightingCard({ s }: { s: LiveSighting }) {
           <dd>
             {Math.round(sure * 100)}%{s.maybe && <span className="muted"> · maybe</span>}
           </dd>
-          <dt>Where</dt>
-          <dd>{where ? capitalize(where) : <span className="muted">not described</span>}</dd>
+          {where && (
+            <>
+              <dt>Where</dt>
+              <dd>{capitalize(where)}</dd>
+            </>
+          )}
           {s.nearby.length > 0 && (
             <>
               <dt>Next to</dt>
