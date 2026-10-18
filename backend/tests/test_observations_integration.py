@@ -62,6 +62,7 @@ def c():
         yield client
         db, run = app.state.db, client.portal.call
         run(db.pool.execute, "DELETE FROM raia_contexts WHERE scope LIKE $1", f"it-{RUN}-%")
+        run(db.pool.execute, "DELETE FROM wifi_places WHERE scope LIKE $1", f"it-{RUN}-%")
         run(db.pool.execute, "DELETE FROM item_history WHERE scope LIKE $1 OR scope IN (SELECT id::text FROM households WHERE created_by LIKE $1)", f"it-{RUN}-%")
         run(db.pool.execute, "DELETE FROM item_last_seen WHERE scope LIKE $1 OR scope IN (SELECT id::text FROM households WHERE created_by LIKE $1)", f"it-{RUN}-%")
         run(db.pool.execute, "DELETE FROM query_logs WHERE device_id LIKE $1", f"it-{RUN}-%")
@@ -310,7 +311,7 @@ def test_every_passive_sighting_gets_a_location(c):
         if found:
             break
         _time.sleep(0.5)
-    assert found and (round(found[0], 4), round(found[1], 4)) == (29.6465, -82.3475)
+    assert found and (round(found["lat"], 4), round(found["lng"], 4)) == (29.6465, -82.3475)
     assert run(db.lastscene_position, DEVICE, [DEVICE], "umbrella") is None
 
 
@@ -341,3 +342,27 @@ def test_an_items_last_five_sightings_can_be_trashed(c):
     assert [s["scene"] for s in after] == ["bed", "sink", "shelf", "chair", "kitchen counter"] and after[0]["last_seen"]
     assert c.delete(f"/api/v1/dashboard/items/banana/sightings/{listed[0]['id']}").status_code == 404
     assert c.delete(f"/api/v1/dashboard/items/orange/sightings/{after[0]['id']}").status_code == 404  # wrong item
+
+
+def test_wifi_fingerprints_are_kept_and_places_can_be_named(c):
+    """A sighting keeps its Wi-Fi scan (memory and sighting); the LastScene lookup returns it; named places save."""
+    db, run = c.app.state.db, c.portal.call
+    scan = [{"bssid": f"aa:00:00:00:00:0{i}", "signal": -60 - 3 * i} for i in range(1, 5)]
+    sent = post(c, {**obs(minutes_ago=1, label="orange"), "location": {"wifi": scan}})
+    assert sent.status_code == 201
+    import time as _time
+    for _ in range(10):
+        found = run(db.lastscene_position, DEVICE, [DEVICE], "orange")
+        if found and found["wifi"]:
+            break
+        _time.sleep(0.5)
+    assert found["wifi"] == {a["bssid"]: a["signal"] for a in scan}
+    stored = run(db.pool.fetchval, "SELECT wifi FROM memory_logs WHERE id = $1::uuid", sent.json()["memory_id"])
+    assert stored and len(json.loads(stored) if isinstance(stored, str) else stored) == 4
+
+    saved = run(db.save_wifi_place, DEVICE, "Reitz Union", found["wifi"])
+    again = run(db.save_wifi_place, DEVICE, "reitz union", found["wifi"])  # same place, other capitalisation
+    assert again["id"] == saved["id"] and again["samples"] == 2
+    [place] = run(db.wifi_places, DEVICE)
+    assert place["name"] == "Reitz Union" and place["aps"] == found["wifi"]
+    assert run(db.delete_wifi_place, [DEVICE], saved["id"]) and run(db.wifi_places, DEVICE) == []

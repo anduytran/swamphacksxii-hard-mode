@@ -60,7 +60,10 @@ class FakeDB:
 
     async def lastscene_position(self, scope, device_ids, item):
         assert (scope, device_ids, item) == ("house-1", ["cam@clients"], "pin")
-        return self.item_at
+        if self.item_at is None:
+            return None
+        lat, lng, acc, place_id, at = self.item_at
+        return {"lat": lat, "lng": lng, "accuracy_m": acc, "place_id": place_id, "at": at, "wifi": {}}
 
     async def recent_position(self, device_ids, minutes):
         return self.recent
@@ -108,3 +111,97 @@ def test_an_ask_adds_where_its_lastscene_is(client):  # noqa: F811
     assert resp.status_code == 200
     answer = unquote(resp.headers["x-answer"])
     assert "Its LastScene is at Home, about 1." in answer and answer.endswith("kilometers from you.")
+
+
+# ---------------------------------------------------------------- Wi-Fi fingerprints (wifi_places.py)
+
+from app.intent import place_command  # noqa: E402
+from app.lastscene import compare_scans  # noqa: E402
+from app.wifi_places import best_place, from_wifi_json, merge, similarity  # noqa: E402
+
+REITZ_SCAN = {"aa:00:00:00:00:01": -60, "aa:00:00:00:00:02": -64, "aa:00:00:00:00:03": -70, "aa:00:00:00:00:04": -78}
+REITZ_LATER = {"aa:00:00:00:00:01": -63, "aa:00:00:00:00:02": -61, "aa:00:00:00:00:03": -75, "aa:00:00:00:00:09": -80}
+HOME_SCAN = {"bb:00:00:00:00:01": -50, "bb:00:00:00:00:02": -66, "bb:00:00:00:00:03": -72}
+PLACES = [{"id": "w1", "name": "reitz union", "aps": REITZ_SCAN}, {"id": "w2", "name": "Home", "aps": HOME_SCAN}]
+
+
+def test_similarity_tells_the_same_place_from_another():
+    assert similarity(REITZ_SCAN, REITZ_SCAN) == 1.0
+    assert similarity(REITZ_SCAN, REITZ_LATER) > 0.5
+    assert similarity(REITZ_SCAN, HOME_SCAN) == 0.0
+    assert best_place(PLACES, REITZ_LATER)[0]["id"] == "w1"
+    assert best_place(PLACES, {"cc:00:00:00:00:01": -60, "cc:00:00:00:00:02": -60, "cc:00:00:00:00:03": -60}) is None
+    assert best_place(PLACES, {"aa:00:00:00:00:01": -60}) is None  # one access point isn't a fingerprint
+    merged = merge(REITZ_SCAN, REITZ_LATER)
+    assert merged["aa:00:00:00:00:09"] == -80 and merged["aa:00:00:00:00:01"] == round(0.7 * -60 + 0.3 * -63)
+    assert from_wifi_json('[{"bssid": "AA:00:00:00:00:01", "signal": -60}]') == {"aa:00:00:00:00:01": -60}
+
+
+def test_the_scan_sentence():
+    assert compare_scans(REITZ_SCAN, REITZ_LATER, PLACES) == "Its LastScene is here at Reitz Union."
+    assert compare_scans(HOME_SCAN, REITZ_LATER, PLACES) == "Its LastScene is at Home, not here."
+    assert compare_scans(REITZ_SCAN, REITZ_LATER, []) == "Its LastScene is right around here."
+    assert compare_scans(HOME_SCAN, REITZ_LATER, []) == "Its LastScene is somewhere else, not where you are now."
+
+
+def test_naming_a_place_by_voice():
+    assert place_command("this is the Reitz Union") == "Reitz Union"
+    assert place_command("We're in the kitchen.") == "kitchen"
+    assert place_command("I'm at home") == "home"
+    assert place_command("remember this place as Marston Library") == "Marston Library"
+    for not_a_place in ("this is my pin", "I'm at a loss", "where is my pin", "I'm putting my keys on the desk",
+                        "this is it", "I'm in a hurry"):
+        assert place_command(not_a_place) is None, not_a_place
+
+
+class ScanDB(FakeDB):
+    """FakeDB with Wi-Fi: the item's scan, the wearer's latest scan, and named places."""
+    def __init__(self, item_scan, recent_scan, places=()):
+        super().__init__((*REITZ, 20.0, None, NOW), recent=None)
+        self.item_scan, self.recent, self.named = item_scan, recent_scan, list(places)
+
+    async def lastscene_position(self, scope, device_ids, item):
+        return {"lat": None, "lng": None, "accuracy_m": None, "place_id": None, "at": NOW, "wifi": self.item_scan}
+
+    async def recent_scan(self, device_ids, minutes):
+        return self.recent
+
+    async def wifi_places(self, scope):
+        return self.named
+
+
+def test_fingerprints_answer_without_any_position():
+    wifi = json_scan(REITZ_LATER)
+    assert asyncio.run(lastscene_note(ScanDB(REITZ_SCAN, None, PLACES), FakeGeo(), SETTINGS, "cam@clients", "pin",
+                                      wifi=wifi)) == "Its LastScene is here at Reitz Union."
+    # No scan with this request: the wearer's latest one.
+    assert asyncio.run(lastscene_note(ScanDB(HOME_SCAN, REITZ_LATER, PLACES), FakeGeo(), SETTINGS, "cam@clients",
+                                      "pin")) == "Its LastScene is at Home, not here."
+
+
+def json_scan(scan):
+    import json
+    return json.dumps([{"bssid": k, "signal": v} for k, v in scan.items()])
+
+
+def test_this_is_a_place_saves_the_scan_and_says_so(client):  # noqa: F811
+    db = client.app_state.db
+    saved = {}
+
+    async def wifi_places(scope):
+        return []
+
+    async def save_wifi_place(scope, name, aps, place_id=None):
+        saved.update(scope=scope, name=name, aps=aps)
+        return {"id": "w1", "name": name, "samples": 1}
+
+    db.wifi_places, db.save_wifi_place = wifi_places, save_wifi_place
+    files = [("audio", ("v.wav", b"Last Scene, this is the Reitz Union", "audio/wav"))]
+    resp = client.post("/api/v1/memory/voice", headers=DEVICE, files=files,
+                       data={"wake": "true", "wifi": json_scan(REITZ_SCAN)})
+    assert resp.status_code == 200 and resp.headers["x-intent"] == "place"
+    assert unquote(resp.headers["x-answer"]) == "Got it, this is Reitz Union."
+    assert saved["name"] == "Reitz Union" and saved["aps"] == REITZ_SCAN
+    thin = client.post("/api/v1/memory/voice", headers=DEVICE, files=files,
+                       data={"wake": "true", "wifi": json_scan({"aa:00:00:00:00:01": -60})})
+    assert unquote(thin.headers["x-answer"]) == "I can't hear enough Wi-Fi here to remember this place."

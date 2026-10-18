@@ -69,6 +69,26 @@ _NEEDS_CONTEXT = re.compile(
 )
 
 
+# Naming where the wearer is: "this is the Reitz Union", "we're in the kitchen", "I'm at home".
+_PLACE = re.compile(
+    r"^\W*(?:this is|this place is|here is|remember this place as|call this place|name this place|"
+    r"we(?:'re| are) (?:at|in)|i(?:'m| am) (?:at|in))\s+(?:the\s+|a\s+|an\s+)?(?P<name>[\w' -]{2,40}?)[\W_]*$",
+    re.IGNORECASE,
+)
+_NOT_PLACES = {"hurry", "loss", "rush", "trouble", "meeting", "call", "pain", "mood", "line", "way"}
+
+
+def place_command(words: str) -> str | None:
+    """The place being named ("Reitz Union"), or None. "this is my pin" names an item, not a place."""
+    m = _PLACE.match(words or "")
+    if not m:
+        return None
+    name = " ".join(m.group("name").split())
+    if name.lower().startswith(("my ", "your ", "it", "that", "what", "where", "how")) or name.lower() in _NOT_PLACES:
+        return None
+    return name
+
+
 def needs_context(words: str) -> bool:
     """A follow-up that only makes sense after the last answer, said without "continue"."""
     return bool(_NEEDS_CONTEXT.search(words or ""))

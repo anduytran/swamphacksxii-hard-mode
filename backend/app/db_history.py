@@ -126,7 +126,8 @@ class HistoryMixin:
     async def locate_sighting_like_memory(self, sighting_id: str) -> None:
         """A raia sighting takes the position its memory was given."""
         await self.pool.execute(
-            "UPDATE item_history h SET lat = m.lat, lng = m.lng, accuracy_m = m.accuracy_m, place_id = m.place_id "
+            "UPDATE item_history h SET lat = m.lat, lng = m.lng, accuracy_m = m.accuracy_m, place_id = m.place_id, "
+            "wifi = m.wifi "
             "FROM memory_logs m WHERE h.id = $1::uuid AND m.id = h.memory_id",
             sighting_id,
         )
@@ -145,26 +146,34 @@ class HistoryMixin:
         )
         return [_sighting(r) for r in rows]
 
-    async def lastscene_position(self, scope: str, device_ids: list[str], item: str):
-        """The item's LastScene position, (lat, lng, accuracy_m, place_id, when): the newest of its located
-        sightings, the memory its last-seen frame came from, and located memories that name it. None if unknown."""
+    async def lastscene_position(self, scope: str, device_ids: list[str], item: str) -> dict | None:
+        """The item's LastScene: {lat, lng, accuracy_m, place_id, at, wifi} of the newest of its sightings, the
+        memory its last-seen frame came from, and memories that name it, among those with a position or a Wi-Fi
+        scan. None if none has either."""
         row = await self.pool.fetchrow(
             """
-            SELECT lat, lng, accuracy_m, place_id, at FROM (
-                SELECT lat, lng, accuracy_m, place_id::text, captured_at AS at FROM item_history
-                WHERE scope = $1 AND item = $2 AND lat IS NOT NULL
+            SELECT lat, lng, accuracy_m, place_id, at, wifi FROM (
+                SELECT lat, lng, accuracy_m, place_id::text, captured_at AS at, wifi FROM item_history
+                WHERE scope = $1 AND item = $2 AND (lat IS NOT NULL OR wifi IS NOT NULL)
                 UNION ALL
-                SELECT m.lat, m.lng, m.accuracy_m, m.place_id::text, ls.captured_at FROM item_last_seen ls
-                JOIN memory_logs m ON m.id = ls.memory_id WHERE ls.scope = $1 AND ls.item = $2 AND m.lat IS NOT NULL
+                SELECT m.lat, m.lng, m.accuracy_m, m.place_id::text, ls.captured_at, m.wifi FROM item_last_seen ls
+                JOIN memory_logs m ON m.id = ls.memory_id
+                WHERE ls.scope = $1 AND ls.item = $2 AND (m.lat IS NOT NULL OR m.wifi IS NOT NULL)
                 UNION ALL
-                SELECT m.lat, m.lng, m.accuracy_m, m.place_id::text, m.created_at FROM memory_items i
+                SELECT m.lat, m.lng, m.accuracy_m, m.place_id::text, m.created_at, m.wifi FROM memory_items i
                 JOIN memory_logs m ON m.id = i.memory_id
-                WHERE m.device_id = ANY($3::text[]) AND lower(i.name) = $2 AND m.lat IS NOT NULL
+                WHERE m.device_id = ANY($3::text[]) AND lower(i.name) = $2 AND (m.lat IS NOT NULL OR m.wifi IS NOT NULL)
             ) located ORDER BY at DESC LIMIT 1
             """,
             scope, item, device_ids,
         )
-        return (row["lat"], row["lng"], row["accuracy_m"], row["place_id"], row["at"]) if row else None
+        if row is None:
+            return None
+        wifi = row["wifi"]
+        if isinstance(wifi, str):
+            wifi = json.loads(wifi)
+        return {"lat": row["lat"], "lng": row["lng"], "accuracy_m": row["accuracy_m"], "place_id": row["place_id"],
+                "at": row["at"], "wifi": {k: int(v) for k, v in (wifi or {}).items()}}
 
     async def last_seen_keys(self, scopes: list[str], item: str) -> set[str]:
         """What the item's last-seen comes from: its observation id, else its capture time (isoformat)."""

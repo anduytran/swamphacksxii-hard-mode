@@ -27,6 +27,7 @@ from ..deps import device_limit, get_ai, get_db, get_geo, get_raia
 from ..geo import Geolocator, locate_and_record
 from ..observations import Observation, observation_location, scope_for, store_observation, too_far_ahead
 from ..raia import Raia, candidates, extract_contexts
+from ..wifi_places import from_wifi_json, usable
 from .memory import ALLOWED_IMAGE_TYPES, MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, _read
 
 router = APIRouter(prefix="/api/v1", tags=["observations"])
@@ -142,7 +143,17 @@ async def _after_observation(db, ai, geo, raia: Raia | None, settings: Settings,
                              obs: Observation, image: bytes, image_type: str) -> None:
     """Locate the sighting (its own Wi-Fi scan, else the wearable's last position) and its place; then, for the
     user's items, raia's read of the frame, saved with the same location. Best effort, never raises."""
-    loc = None
+    loc, scan = None, {}
+    try:
+        scan = from_wifi_json([a.model_dump() for a in obs.location.wifi]) if obs.location else {}
+        if not usable(scan) and hasattr(db, "recent_scan"):  # faker often hears one access point; sreer many
+            _, device_ids = await scope_for(db, device_id)
+            scan = await db.recent_scan(device_ids, settings.location_reuse_minutes) or {}
+        if usable(scan) and hasattr(db, "set_scan"):
+            await db.set_scan("memory_logs", memory_id, scan)
+            await db.set_sighting_scan(str(obs.observation_id), scan)
+    except Exception:
+        log.exception("Keeping the Wi-Fi scan of observation %s failed", memory_id)
     try:
         loc = await observation_location(geo, db, device_id, obs, settings)
         if loc is not None:
@@ -154,6 +165,8 @@ async def _after_observation(db, ai, geo, raia: Raia | None, settings: Settings,
         log.exception("Locating observation %s failed", memory_id)
 
     async def locate(raia_memory_id: str) -> None:
+        if usable(scan):
+            await db.set_scan("memory_logs", raia_memory_id, scan)
         if loc is not None:
             await locate_and_record(db, device_id, "memory_logs", raia_memory_id, loc)
 

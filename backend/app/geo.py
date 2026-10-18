@@ -3,8 +3,8 @@
 The wearable (a Pi Zero 2 W, no GPS) sends the Wi-Fi access points it can hear. The
 server turns them into coordinates with a geolocation service (Google when a key is set,
 then BeaconDB, which is free and needs no key), so no key lives on the device and results
-can be cached. The access-point list is not stored; only the
-resulting position is.
+can be cached. The scan itself is kept only with its save, for recognising the household's
+named places (wifi_places.py), and goes with it in the retention purge.
 
 Positions are then grouped into the household's places (home, a café, a park). Places
 start private; only public places in households that opted in add to the public map.

@@ -26,13 +26,15 @@ from ..config import Settings, get_settings
 from ..db import MemoryDB
 from ..deps import device_limit, get_ai, get_db, get_geo, get_raia
 from ..geo import Geolocator, locate_and_record, record_public, resolve_location
-from ..intent import after_wake_phrase, classify, continue_command, fallback_command, needs_context, strip_wake_phrase
+from ..intent import (after_wake_phrase, classify, continue_command, fallback_command, match_item, needs_context,
+                      place_command, strip_wake_phrase)
 from ..observations import scope_for
 from ..languages import is_english, normalize, phrase
 from ..limits import RateLimited
 from ..maps_names import name_memory_place
 from ..pipeline import ingest_image, ingest_speech, retrieve
 from ..lastscene import lastscene_note
+from ..wifi_places import clean_name, display, from_wifi_json, learn, name_place, usable
 from ..raia import Raia, context_from_photos, context_note, norm
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
@@ -132,6 +134,7 @@ def whereabouts(
 
 
 async def _locate(geo: Geolocator, db: MemoryDB, device_id: str, table: str, row_id: str, where: Whereabouts):
+    await _keep_scan(db, device_id, table, row_id, where.wifi)
     try:
         loc = await resolve_location(geo, where.wifi, where.lat, where.lng, where.accuracy_m)
         place, public = await locate_and_record(db, device_id, table, row_id, loc)
@@ -139,6 +142,19 @@ async def _locate(geo: Geolocator, db: MemoryDB, device_id: str, table: str, row
     except Exception:
         log.exception("Locating %s %s failed", table, row_id)
         return None, False
+
+
+async def _keep_scan(db, device_id: str, table: str, row_id: str, wifi: str | None) -> None:
+    """The save's Wi-Fi scan, kept with it so places are recognized from fingerprints (wifi_places.py)."""
+    scan = from_wifi_json(wifi)
+    if not usable(scan) or not hasattr(db, "set_scan"):
+        return
+    try:
+        await db.set_scan(table, row_id, scan)
+        scope, _ = await scope_for(db, device_id)
+        await learn(db, scope, scan)
+    except Exception:
+        log.exception("Keeping the Wi-Fi scan of %s %s failed", table, row_id)
 
 
 async def _enrich_memory(
@@ -490,6 +506,27 @@ def _lastscene_task(db, geo, settings: Settings, device_id: str, item: str, wher
                                               where.accuracy_m))
 
 
+async def _name_place(db, ai: AIServices, device_id: str, place: str, where: Whereabouts, heard: str,
+                      trace: Trace) -> Response:
+    """Remember the Wi-Fi heard here as the place called `place`, and say so."""
+    scan, name = from_wifi_json(where.wifi), clean_name(place)
+    trace.set(intent="place", item=None, decided_by="rules", place=name)
+    trace.lap("decide")
+    if usable(scan) and hasattr(db, "save_wifi_place"):
+        scope, _ = await scope_for(db, device_id)
+        saved = await name_place(db, scope, name, scan)
+        answer = f"Got it, this is {display(saved['name'])}."
+        trace.set(outcome="named place", wifi_aps=len(scan))
+    else:
+        answer = "I can't hear enough Wi-Fi here to remember this place."
+        trace.set(outcome="no wifi", wifi_aps=len(scan))
+    speech = await ai.speak(answer)
+    trace.lap("speak")
+    trace.set(answer=answer)
+    return Response(content=speech, media_type=ai.speech_media_type,
+                    headers={"X-Intent": "place", "X-Answer": quote(answer), "X-Heard": quote(heard)})
+
+
 async def _previous_turn(db: MemoryDB, device_id: str) -> dict | None:
     """The last answer this device heard: {"question", "answer", "item"}, for follow-ups."""
     if not hasattr(db, "voice_events"):
@@ -596,6 +633,11 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
                                         trace=trace)
         return await _follow_up(background, db, ai, geo, settings, device.sub, question or "Tell me more.", turn,
                                 where, headers, trace, raia)
+
+    # "this is the Reitz Union": the Wi-Fi heard here becomes that place's fingerprint (wifi_places.py).
+    if wake and (place := place_command(words)) and not match_item(place, await saved_item_names(
+            db, device.sub, settings.query_lookback_hours)):
+        return await _name_place(db, ai, device.sub, place, where, heard, trace)
 
     # Step 1, words only: what is being asked (the photos stay out of it). The item comes from matching the
     # household's own saved item names whenever they're said, so it's always the name they taught; the
