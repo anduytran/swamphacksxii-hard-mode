@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
-# Audio check for the wearable: Bluetooth speaker link, a C major scale on the output,
-# and (with --mic) a short recording played back.
+# Audio check for the wearable: a C major scale on the Voice Bonnet's speaker, and (with --mic) a short recording played back.
 #
 #   audio_check.sh            # speaker only
 #   audio_check.sh --mic      # also record 3 s and play it back
 #
 # Devices come from /etc/lastscene/device.env (AUDIO_OUT_DEVICE / AUDIO_IN_DEVICE) when present,
-# else bologna / plughw:1,0. The speaker MAC is read from that device's entry in /etc/asound.conf.
+# else plughw:1,0 (the Voice Bonnet) for both.
 # Install as a command (no root; ~/.local/bin is on PATH at login on Raspberry Pi OS):
 #   mkdir -p ~/.local/bin && install -m 755 audio_check.sh ~/.local/bin/audiotest
 #   install -m 644 play_scale.py ~/.local/bin/play_scale.py
 set -u
 
-OUT=bologna
+OUT=plughw:1,0
 IN=plughw:1,0
 if [ -r /etc/lastscene/device.env ]; then
-    v=$(sed -n 's/^AUDIO_OUT_DEVICE=//p' /etc/lastscene/device.env | tail -1); [ -n "$v" ] && OUT=$v
+    v=$(sed -n 's/^AUDIO_OUT_DEVICE=//p' /etc/lastscene/device.env | tail -1); [ -n "$v" ] && [ "$v" != default ] && OUT=$v
     v=$(sed -n 's/^AUDIO_IN_DEVICE=//p' /etc/lastscene/device.env | tail -1); [ -n "$v" ] && [ "$v" != default ] && IN=$v
 fi
 HERE=$(dirname "$(readlink -f "$0")")
@@ -25,24 +24,6 @@ bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; FAILED=1; }
 info() { printf '        %s\n' "$*"; }
 
 echo "Output: $OUT    Input: $IN"
-
-# Bluetooth link, if the output is a BlueALSA device in /etc/asound.conf.
-MAC=$(awk -v d="pcm.$OUT" '$1==d{f=1} f&&/device/{gsub(/"/,"",$2); print $2; exit}' /etc/asound.conf 2>/dev/null)
-if [ -n "$MAC" ]; then
-    echo "Bluetooth ($MAC)"
-    if ! systemctl is-active -q bluetooth; then bad "bluetooth service not running"; fi
-    if ! bluetoothctl show | grep -q "Powered: yes"; then
-        info "radio off, turning it on"; sudo rfkill unblock bluetooth 2>/dev/null; bluetoothctl power on >/dev/null
-    fi
-    if bluetoothctl info "$MAC" 2>/dev/null | grep -q "Connected: yes"; then
-        ok "speaker connected"
-    else
-        info "not connected, connecting (is the speaker on?)"
-        bluetoothctl --timeout 15 connect "$MAC" >/dev/null 2>&1; sleep 2
-        if bluetoothctl info "$MAC" 2>/dev/null | grep -q "Connected: yes"; then ok "speaker connected"
-        else bad "could not connect: turn the speaker on, or re-pair it (device/README.md, Bluetooth speaker)"; fi
-    fi
-fi
 
 echo "Speaker"
 if python3 "$HERE/play_scale.py" -D "$OUT" 2>/dev/null; then ok "played a C major scale on $OUT (did you hear it?)"

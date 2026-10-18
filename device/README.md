@@ -134,28 +134,9 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
    ```
    Logs: `journalctl -u lastscene-device -f`.
 
-## Bluetooth speaker (optional)
+## Voice Bonnet audio
 
-Spoken answers can go to a Bluetooth speaker instead of the I2S amp. Tested with a Sony SRS-XB12 on Raspberry Pi OS (Debian 13), headless, using BlueALSA (plain ALSA, no PipeWire):
-
-1. Install BlueALSA and turn the radio on (it ships soft-blocked):
-   ```bash
-   sudo apt install -y rfkill bluez-alsa-utils
-   sudo rfkill unblock bluetooth && bluetoothctl power on
-   ```
-2. Put the speaker in pairing mode and pair it. Pair while the scan is still running, or BlueZ forgets the device:
-   ```bash
-   bluetoothctl
-   scan on        # wait for the speaker (Sony speakers show their model, e.g. SRS-XB12)
-   pair  <MAC>
-   trust <MAC>    # lets it reconnect by itself
-   connect <MAC>
-   scan off
-   ```
-3. Name it for ALSA: copy `asound.conf.example` to `/etc/asound.conf` (system-wide, so the `lastscene` user sees it) with your speaker's MAC, then set `AUDIO_OUT_DEVICE=bologna` in `/etc/lastscene/device.env`.
-4. Check it: `python3 play_scale.py -D bologna` plays a C major scale (`--loop` repeats it until Ctrl-C).
-
-If the speaker is off or out of range, playback fails; `bluetoothctl connect <MAC>` brings it back. This BlueALSA build prints `D:` debug lines on stderr; they're harmless.
+The bonnet's speaker plays spoken answers: set `AUDIO_OUT_DEVICE=plughw:1,0` and check it with `python3 play_scale.py -D plughw:1,0` (a C major scale; `--loop` repeats it until Ctrl-C), or `audio_check.sh --mic` for the speaker and mic together.
 
 **Voice Bonnet mic:** its mics are analog, and on a fresh boot nothing routes them to the recorder (recordings are silent). Turn the route on, then `sudo alsactl store` to keep it across reboots, and set `AUDIO_IN_DEVICE=plughw:1,0`:
 ```bash

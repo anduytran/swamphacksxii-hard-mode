@@ -1,7 +1,7 @@
 """Speaker check: plays a C major scale (C4 to C5) through aplay.
 
   python3 play_scale.py                 # once, on AUDIO_OUT_DEVICE (or "default")
-  python3 play_scale.py -D bologna      # a named ALSA device, e.g. the Bluetooth speaker
+  python3 play_scale.py -D plughw:1,0   # a named ALSA device, e.g. the Voice Bonnet
   python3 play_scale.py --loop          # repeat until Ctrl-C
 
 Uses the same raw 24 kHz mono stream the device sends Gemini Live replies through, so if this
