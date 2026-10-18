@@ -2,11 +2,17 @@
 
 import base64
 import signal
+import socket
+import threading
 from datetime import date
 
 import pytest
+import requests
+import urllib3.util.connection
+from urllib3.connection import HTTPSConnection
 
-from lastscene_pipeline import EXIT_NETWORK, EXIT_NOTHING, EXIT_OK
+from lastscene_pipeline import EXIT_CONFIG, EXIT_NETWORK, EXIT_NOTHING, EXIT_OK
+from lastscene_pipeline import vultr as vultr_module
 from lastscene_pipeline.common import PipelineError
 from lastscene_pipeline.vultr import TAG, Guardrails, Runner, Vultr, trainer_script
 
@@ -243,3 +249,86 @@ def test_the_time_limit_follows_the_photo_count_into_the_server_script():
     import base64
 
     assert "shutdown -P +180" in base64.b64decode(fake.created[0]["user_data"]).decode()
+
+
+def test_vultr_calls_go_over_ipv4_even_when_the_machine_has_ipv6(monkeypatch):
+    # On Oct 17 the Pi on a Verizon hotspot reached Vultr over IPv6 and got 401 "Unauthorized IP address:
+    # 2600:1006:...", although the hotspot's IPv4 address was allowed. api.vultr.test has both, like api.vultr.com.
+    lookups, real = [], socket.getaddrinfo
+
+    def dns(host, port, family=0, type=0, proto=0, flags=0):
+        if host != "api.vultr.test":
+            return real(host, port, family, type, proto, flags)
+        lookups.append(family)
+        v4 = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))
+        v6 = (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0))
+        return [v4] if family == socket.AF_INET else [v6, v4]  # IPv6 first, as resolvers usually answer
+
+    monkeypatch.setattr(socket, "getaddrinfo", dns)
+    monkeypatch.setattr(urllib3.util.connection, "HAS_IPV6", True)
+    peers = []
+    with socket.create_server(("127.0.0.1", 0)) as server:  # hangs up before TLS: no request is ever sent
+        server.settimeout(5)
+        port = server.getsockname()[1]
+        monkeypatch.setattr(vultr_module, "VULTR", f"https://api.vultr.test:{port}/v2")
+
+        def hang_up():
+            conn, (ip, _) = server.accept()
+            peers.append(ip)
+            conn.close()
+
+        listener = threading.Thread(target=hang_up, daemon=True)
+        listener.start()
+        vultr = Vultr("KEY", timeout=5)
+        vultr.http.trust_env = False  # no proxy from the environment
+        with pytest.raises(PipelineError) as e:
+            vultr.credit_left()
+        listener.join(5)
+    assert e.value.code == EXIT_NETWORK
+    assert lookups == [socket.AF_INET] and peers == ["127.0.0.1"]
+    assert urllib3.util.connection.allowed_gai_family() == socket.AF_UNSPEC  # the rest of the process keeps IPv6
+
+
+def test_only_the_vultr_session_is_ipv4_only():
+    def connection_class(session):
+        pool = session.get_adapter("https://api.vultr.com").poolmanager.connection_from_host("api.vultr.com", 443, scheme="https")
+        return pool.ConnectionCls
+
+    assert connection_class(Vultr("KEY").http) is not HTTPSConnection
+    assert issubclass(connection_class(Vultr("KEY").http), HTTPSConnection)
+    assert connection_class(Vultr("KEY", ipv4_only=False).http) is HTTPSConnection  # VULTR_IPV4_ONLY=0
+    assert connection_class(requests.Session()) is HTTPSConnection  # e.g. the LastScene API calls
+
+
+class Refusing:
+    """Vultr answering every call with one error, as with API access control on and the address not allowed."""
+
+    def __init__(self, status, body):
+        self.status, self.body = status, body
+
+    def request(self, method, url, **kwargs):
+        return R(self.status, self.body)
+
+
+@pytest.mark.parametrize("address", ["2001:db8:4f1a::1c", "203.0.113.7"])
+def test_a_refused_address_is_named_with_where_to_allow_it(address):
+    vultr = Vultr("KEY", session=Refusing(401, {"error": f"Unauthorized IP address: {address}", "status": 401}))
+    with pytest.raises(PipelineError) as e:
+        vultr.credit_left()
+    assert e.value.code == EXIT_CONFIG
+    assert f"401, the API key isn't allowed from {address} (the address Vultr saw)" in str(e.value)
+    assert "Account -> API -> Access Control" in str(e.value)
+
+
+def test_a_refused_address_without_one_in_the_reply_still_says_where_to_allow_it():
+    vultr = Vultr("KEY", session=Refusing(401, {"error": "Unauthorized IP address", "status": 401}))
+    with pytest.raises(PipelineError) as e:
+        vultr.trainers()
+    assert "add this machine's address under Account -> API -> Access Control" in str(e.value)
+
+
+def test_a_wrong_key_is_not_reported_as_a_refused_address():
+    vultr = Vultr("KEY", session=Refusing(401, {"error": "Invalid API token.", "status": 401}))
+    with pytest.raises(PipelineError) as e:
+        vultr.credit_left()
+    assert e.value.code == EXIT_CONFIG and "401" in str(e.value) and "Access Control" not in str(e.value)
