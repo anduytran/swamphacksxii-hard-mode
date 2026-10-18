@@ -1660,7 +1660,7 @@ def main() -> None:
     else:
         if (other := already_running()) is not None:
             sys.exit(f"LastScene is already running (pid {other}) and holds the mic and GPIO pins. Stop it first:\n"
-                     "  sudo systemctl stop lastscene-device; sudo pkill -f lastscene_device.py")
+                     "  sudo systemctl stop lastscene-device; sudo pkill -f '^/opt/lastscene/venv/bin/python /opt/lastscene/lastscene_device.py'")
         Device(cfg).run()
 
 
