@@ -343,6 +343,12 @@ class ApiClient:
         self.last = {"heard": body.get("heard", ""), "steps": steps, "followup": body.get("followup")}
         return body.get("intent", "remember"), body
 
+    def filler_texts(self) -> list[str]:
+        """The filler phrases the server uses now (to tell whether the saved ones are out of date)."""
+        resp = self.http.get(f"{self.cfg.api_url}/api/v1/memory/fillers", headers={"Authorization": f"Bearer {self.token()}"})
+        resp.raise_for_status()
+        return list(resp.json().get("texts") or [])
+
     def filler(self, index: int) -> tuple[str, bytes] | None:
         """Filler phrase `index` ("Let me check.") in the wearable's voice: (text, WAV), or None past the last."""
         resp = self.http.get(f"{self.cfg.api_url}/api/v1/memory/fillers/{index}",
@@ -1289,25 +1295,40 @@ def optional_missing(msg: str, *args) -> None:
 
 class Fillers:
     """Short spoken phrases ("Let me check.", "Hmm, let me see.") played while the wearer waits for an answer,
-    in the same voice as the answers. Fetched from the server once and kept in `folder`, so they play at once
-    (delete the folder to fetch them again)."""
+    in the same voice as the answers. Fetched from the server and kept in `folder`, so they play at once; fetched
+    again whenever the server's list of phrases changes (texts.json holds the list they were made from)."""
 
-    def __init__(self, folder: Path, fetch=None):
-        self.folder, self.fetch = folder, fetch
+    def __init__(self, folder: Path, fetch=None, texts=None):
+        self.folder, self.fetch, self.texts = folder, fetch, texts
         self.clips: list[bytes] = sorted_clips(folder)
 
     def load(self) -> None:
-        if self.clips or self.fetch is None:
+        if self.fetch is None:
+            return
+        try:
+            wanted = self.texts() if self.texts else None
+        except Exception:  # offline, or an older server: keep what's saved
+            wanted = None
+        try:
+            have = json.loads((self.folder / "texts.json").read_text())
+        except (OSError, ValueError):
+            have = None
+        if self.clips and (wanted is None or wanted == have):
             return
         try:
             self.folder.mkdir(parents=True, exist_ok=True)
+            for old in self.folder.glob("*.wav"):
+                old.unlink()
+            made = []
             for index in range(20):
                 got = self.fetch(index)
                 if got is None:
                     break
                 text, wav = got
                 (self.folder / f"{index:02d}.wav").write_bytes(wav)
+                made.append(text)
                 log.info("Filler %d ready: %s", index, text)
+            (self.folder / "texts.json").write_text(json.dumps(made))
             self.clips = sorted_clips(self.folder)
         except Exception as exc:  # no fillers is fine: the beeps still say what's happening
             log.warning("Filler phrases unavailable: %s", exc)
@@ -1338,7 +1359,7 @@ class Device:
             optional_missing("speaker_eq.py not next to lastscene_device.py; sound plays without AUDIO_GAIN_DB/SPEAKER_EQ")
         self.api = ApiClient(cfg)
         self.spool = Spool(cfg.spool_dir)
-        self.fillers = Fillers(cfg.spool_dir.parent / "fillers", self.api.filler)
+        self.fillers = Fillers(cfg.spool_dir.parent / "fillers", self.api.filler, self.api.filler_texts)
         threading.Thread(target=self.fillers.load, daemon=True).start()
         self.camera = make_camera(cfg)
         self.led = LED(cfg.led_pin)

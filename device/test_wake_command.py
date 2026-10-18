@@ -340,3 +340,18 @@ def test_the_listening_and_stopped_sounds_ship_with_the_device():
             assert w.getnchannels() == 1 and w.getsampwidth() == 2 and w.getnframes() / w.getframerate() < 0.6
     assert dev.LISTENING != dev.tone(880) and dev.STOPPED != dev.chime(784, 523)
     assert dev.sound("missing.wav", b"RIFFbeep") == b"RIFFbeep"
+
+
+def test_fillers_are_fetched_again_when_the_server_changes_them(tmp_path):
+    phrases = ["Let me check.", "Hmm, let me see.", "Okay, let me think."]
+    fetch = lambda i: (phrases[i], phrases[i].encode()) if i < len(phrases) else None
+    folder = tmp_path / "fillers"
+    dev.Fillers(folder, fetch, lambda: list(phrases)).load()
+    assert len(dev.Fillers(folder).clips) == 3
+    phrases.remove("Okay, let me think.")
+    f = dev.Fillers(folder, fetch, lambda: list(phrases))
+    f.load()
+    assert f.clips == [b"Let me check.", b"Hmm, let me see."]
+    offline = dev.Fillers(folder, fetch, lambda: (_ for _ in ()).throw(OSError("offline")))
+    offline.load()
+    assert len(offline.clips) == 2  # can't check: keeps what it has

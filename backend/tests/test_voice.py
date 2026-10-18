@@ -589,3 +589,10 @@ def test_a_false_wake_leaves_nothing_on_the_server(client, caplog):  # noqa: F81
     assert resp.json() == {"intent": "ignored"}  # not even the words come back
     assert live(client) == [] and client.app_state.db.rows == []
     assert "brother" not in caplog.text
+
+
+def test_the_device_can_see_which_fillers_are_in_use(client):  # noqa: F811
+    from app.ai import FILLERS
+
+    assert client.get("/api/v1/memory/fillers", headers=DEVICE).json() == {"texts": list(FILLERS)}
+    assert "Okay, let me think." not in FILLERS

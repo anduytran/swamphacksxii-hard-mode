@@ -197,7 +197,7 @@ NO_ANSWER = "Sorry, I couldn't come up with an answer just now."
 BUSY = "I'm getting a lot of questions right now. Please ask me again in a minute."
 GLAD_YOU_FOUND = "Glad you found your {item}. I'll remember."
 # Said while the wearer waits for an answer (the device caches them; GET /memory/fillers).
-FILLERS = ("Let me check.", "Hmm, let me see.", "One sec, let me look.", "Okay, let me think.")
+FILLERS = ("Let me check.", "Hmm, let me see.", "One sec, let me look.")
 IN_VIEW = "Oh, I can see your {item} right now, {where}!"
 FIXED_PHRASES = frozenset().union(*(languages.all_translations(p) for p in (DIDNT_CATCH, REFUSED, NO_ANSWER, BUSY)), FILLERS)
 

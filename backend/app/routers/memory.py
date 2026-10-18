@@ -710,6 +710,12 @@ async def _run_pending(db: MemoryDB, ai: AIServices, geo: Geolocator, settings: 
     return done
 
 
+@router.get("/fillers")
+async def filler_texts(device: Principal = Depends(require_device)):
+    """The filler phrases now in use, so the device can tell when its saved copies are out of date."""
+    return {"texts": list(FILLERS)}
+
+
 @router.get("/fillers/{index}")
 async def filler(
     index: int,
