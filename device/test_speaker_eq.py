@@ -1,4 +1,4 @@
-"""Speaker level and EQ: A4 comes out 10 dB and B4 13 dB under the rest, AUDIO_GAIN_DB moves everything,
+"""Speaker level and EQ: A4 comes out 7 dB and B4 10 dB under the rest, AUDIO_GAIN_DB moves everything,
 and streamed chunks sound the same as one block."""
 
 import array
@@ -32,13 +32,13 @@ def note_levels(eq: speaker_eq.SpeakerEq) -> dict[float, float]:
     return out
 
 
-def test_default_eq_takes_a_10_db_and_b_13_db_under_the_rest():
+def test_default_eq_takes_a_7_db_and_b_10_db_under_the_rest():
     eq = speaker_eq.from_env(play_scale.RATE, {})
     levels = note_levels(eq)
-    assert abs(levels[440] + 10) < 0.5 and abs(levels[494] + 13) < 0.5
+    assert abs(levels[440] + 7) < 0.5 and abs(levels[494] + 10) < 0.5
     for f in (262, 294, 330, 349, 392):
         assert levels[f] > -1.1, (f, levels[f])
-    assert levels[523] > -4
+    assert levels[523] > -3
 
 
 def test_gain_moves_everything_and_empty_eq_is_flat():

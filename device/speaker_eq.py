@@ -3,11 +3,11 @@
 AUDIO_GAIN_DB    one gain for all sound, in dB (default 0). Calibrate once with a phone sound meter:
                  `play_scale.py --tone` plays a steady 1 kHz tone at about the level of speech; set
                  AUDIO_GAIN_DB = target - reading (e.g. 80 dB wanted, 86 read -> -6). The demo runs at
-                 -5: about 75 dB at most, from the 80 dB the EQ below was tuned at.
+                 -5: about 75 dB at most.
 SPEAKER_EQ       cuts or boosts where the speaker is uneven, as freq:dB:Q bands separated by commas.
                  The default evens out the Voice Bonnet speaker, which plays A4 and B4 (440 and 494 Hz)
-                 much louder than the rest: A4 -10 dB, B4 -13 dB (the two bands overlap, hence -8.9 and
-                 -12.3), the rest of the scale within 1 dB, C5 -3.5 dB. Empty = flat.
+                 much louder than the rest: A4 -7 dB, B4 -10 dB (the two bands overlap, hence -6.2 and
+                 -9.5), the rest of the scale within 1 dB, C5 -2.5 dB. Empty = flat.
 
 No dependencies: plain Python biquads (RBJ peaking EQ); 5 s of speech takes 0.03 s on a laptop, an estimated ~0.5 s on a Pi Zero 2 W.
 """
@@ -18,7 +18,7 @@ import math
 import os
 import wave
 
-DEFAULT_EQ = "440:-8.9:16,494:-12.3:16"
+DEFAULT_EQ = "440:-6.2:16,494:-9.5:16"
 
 
 def parse_bands(spec: str) -> list[tuple[float, float, float]]:
