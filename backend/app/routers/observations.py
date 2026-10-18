@@ -27,7 +27,7 @@ from ..deps import device_limit, get_ai, get_db, get_geo, get_raia
 from ..geo import Geolocator, locate_and_record
 from ..observations import Observation, observation_location, scope_for, store_observation, too_far_ahead
 from ..raia import Raia, candidates, extract_contexts
-from ..wifi_places import from_wifi_json, usable
+from ..wifi_places import from_wifi_json, room_of_scan, usable
 from .memory import ALLOWED_IMAGE_TYPES, MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, _read
 
 router = APIRouter(prefix="/api/v1", tags=["observations"])
@@ -152,6 +152,9 @@ async def _after_observation(db, ai, geo, raia: Raia | None, settings: Settings,
         if usable(scan) and hasattr(db, "set_scan"):
             await db.set_scan("memory_logs", memory_id, scan)
             await db.set_sighting_scan(str(obs.observation_id), scan)
+            scope, _ = await scope_for(db, device_id)
+            if room := await room_of_scan(db, scope, scan):
+                await db.set_wifi_room(memory_id, room)
     except Exception:
         log.exception("Keeping the Wi-Fi scan of observation %s failed", memory_id)
     try:
@@ -167,6 +170,9 @@ async def _after_observation(db, ai, geo, raia: Raia | None, settings: Settings,
     async def locate(raia_memory_id: str) -> None:
         if usable(scan):
             await db.set_scan("memory_logs", raia_memory_id, scan)
+            scope, _ = await scope_for(db, device_id)
+            if room := await room_of_scan(db, scope, scan):
+                await db.set_wifi_room(raia_memory_id, room)
         if loc is not None:
             await locate_and_record(db, device_id, "memory_logs", raia_memory_id, loc)
 

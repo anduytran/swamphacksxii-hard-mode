@@ -53,6 +53,7 @@ class ItemSighting:
     has_image: bool
     scene: str | None = None
     room_id: str | None = None  # the floor plan room the photo showed (describe_scene), if any
+    wifi_room: str | None = None  # the floor plan room its Wi-Fi scan matched (wifi_places.py), if any
 
 
 @dataclass
@@ -364,7 +365,7 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
         rows = await self.pool.fetch(
             """
             SELECT i.name, i.location, m.id AS memory_id, m.created_at, m.transcript, m.scene, m.room_id,
-                   m.image IS NOT NULL AS has_image
+                   m.wifi_room, m.image IS NOT NULL AS has_image
             FROM memory_items i
             JOIN memory_logs m ON m.id = i.memory_id
             WHERE m.created_at > now() - make_interval(hours => $1)
@@ -384,6 +385,7 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
                 has_image=r["has_image"],
                 scene=r["scene"],
                 room_id=r["room_id"],
+                wifi_room=r["wifi_room"],
             )
             for r in rows
         ]

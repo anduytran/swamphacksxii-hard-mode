@@ -67,6 +67,10 @@ export default function MapPage() {
               Not asked about
             </span>
             <span>📷 Room from the photo, not the words</span>
+            <span>
+              <i className="swatch wifi-swatch" />
+              📶 Room recognised from Wi-Fi: say “Last Scene, this is the Grand Ballroom” in a room to add it
+            </span>
           </div>
           <details>
             <summary>Show as table</summary>
@@ -245,9 +249,9 @@ function houseLayers(data: HouseMap, zoom: number) {
       getPolygon: (r) => r.polygon,
       getFillColor: (r) =>
         r.lost ? [...MAP_COLORS.asked, 60 + Math.round((r.lost / maxLost) * 150)] : [...(r.kind === "hall" ? MAP_COLORS.hallFill : MAP_COLORS.roomFill), 235],
-      getLineColor: MAP_COLORS.roomLine,
+      getLineColor: (r) => (r.wifi_scans ? MAP_COLORS.surveyed : MAP_COLORS.roomLine),
       lineWidthUnits: "pixels",
-      getLineWidth: 1.5,
+      getLineWidth: (r) => (r.wifi_scans ? 3 : 1.5),
       pickable: true,
       updateTriggers: { getFillColor: maxLost },
     }),
@@ -295,10 +299,14 @@ function houseLayers(data: HouseMap, zoom: number) {
   ];
 }
 
-// A room's items, a camera on those placed by what the photo showed rather than the words.
+// How an item's room was known: 📶 its Wi-Fi matched a surveyed room, 📷 the photo showed it, else the words.
+const SOURCE_MARK: Record<string, string> = { wifi: "📶 ", photo: "📷 " };
+const SOURCE_NOTE: Record<string, string> = { wifi: " 📶 (room from Wi-Fi)", photo: " 📷 (room from the photo)" };
+
+// A room's items, each marked with how its room was known.
 function roomItems(room: Room, items: MapItem[]): string {
-  const byPhoto = new Set(items.filter((i) => i.room_source === "photo").map((i) => i.name));
-  return room.items.map((name) => (byPhoto.has(name) ? `📷 ${name}` : name)).join(", ");
+  const source = new Map(items.map((i) => [i.name, i.room_source ?? "words"]));
+  return room.items.map((name) => `${SOURCE_MARK[source.get(name) ?? ""] ?? ""}${name}`).join(", ");
 }
 
 function houseTooltip(items: MapItem[], { object, layer }: { object?: unknown; layer?: { id: string } | null }) {
@@ -306,13 +314,14 @@ function houseTooltip(items: MapItem[], { object, layer }: { object?: unknown; l
   if (layer.id === "items") {
     const i = object as MapItem;
     return {
-      text: `${capitalize(i.name)} — ${i.room_name}${i.room_source === "photo" ? " 📷 (room from the photo)" : ""}\n“${i.location || "no place said"}”, ${timeAgo(i.last_seen)}\nPut down ${i.mentions}×, asked about ${i.times_asked}×`,
+      text: `${capitalize(i.name)} — ${i.room_name}${SOURCE_NOTE[i.room_source ?? ""] ?? ""}\n“${i.location || "no place said"}”, ${timeAgo(i.last_seen)}\nPut down ${i.mentions}×, asked about ${i.times_asked}×`,
       style: GEO_TOOLTIP_STYLE,
     };
   }
   if (layer.id === "rooms") {
     const r = object as Room;
-    return { text: `${r.name}\n${r.putdowns} put down here · ${r.lost} questions\nNow here: ${roomItems(r, items) || "nothing now"}`, style: GEO_TOOLTIP_STYLE };
+    const wifi = r.wifi_scans ? `\n📶 Recognised from Wi-Fi (${r.wifi_scans} scan${r.wifi_scans === 1 ? "" : "s"})` : "";
+    return { text: `${r.name}\n${r.putdowns} put down here · ${r.lost} questions\nNow here: ${roomItems(r, items) || "nothing now"}${wifi}`, style: GEO_TOOLTIP_STYLE };
   }
   return null;
 }

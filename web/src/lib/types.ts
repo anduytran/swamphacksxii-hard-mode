@@ -95,13 +95,14 @@ export interface Room {
   putdowns: number;
   lost: number;
   items: string[];
+  wifi_scans?: number; // > 0: surveyed ("Last Scene, this is the Grand Ballroom"), so saves here are placed by Wi-Fi
 }
 
 export interface MapItem {
   name: string;
   room: string;
   room_name: string;
-  room_source?: "photo" | "words"; // photo: the room the camera showed; words: matched from what was said
+  room_source?: "wifi" | "photo" | "words"; // wifi: the room its Wi-Fi matched; photo: the room the camera showed; words: from what was said
   location: string | null;
   last_seen: string;
   mentions: number;

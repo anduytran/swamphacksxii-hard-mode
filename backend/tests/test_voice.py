@@ -124,7 +124,9 @@ def test_speech_to_text_gets_the_wake_phrase_and_teach_items_as_hints(client):  
     client.app_state.db.household_of_device = household_of_device
     client.app_state.db.training_items = training_items
     client.post("/api/v1/memory/query", headers=DEVICE, files={"audio": ("q.wav", b"x", "audio/wav")})
-    assert heard == [["Last Scene", "swamphacks pins", "pins"]]
+    # The wake phrase, the floor plan and its rooms (FLOOR_PLAN=home here), then the Teach items.
+    assert heard[0][0] == "Last Scene" and heard[0][-2:] == ["swamphacks pins", "pins"]
+    assert "Home" in heard[0] and "Kitchen" in heard[0]
     heard.clear()  # the device sent its own words: no transcription, so no hint lookup either
     client.post("/api/v1/memory/query", headers=DEVICE, data={"transcript": "where are my keys?"})
     assert heard == []

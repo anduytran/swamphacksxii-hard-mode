@@ -84,11 +84,20 @@ def display(name: str) -> str:
     return name if any(c.isupper() for c in name) else " ".join(w[:1].upper() + w[1:] for w in name.split())
 
 
-async def name_place(db, scope: str, name: str, scan: dict[str, int]) -> dict:
-    """Save `scan` as the fingerprint of the place called `name` (merged into it if it exists)."""
+async def name_place(db, scope: str, name: str, scan: dict[str, int], room_id: str | None = None) -> dict:
+    """Save `scan` as the fingerprint of the place called `name` (merged into it if it exists). `room_id`: the
+    floor-plan room the name is, so saves there land in that room on the map."""
     existing = next((p for p in await db.wifi_places(scope) if p["name"].lower() == name.lower()), None)
     aps = merge(existing["aps"], scan) if existing else dict(sorted(scan.items(), key=lambda kv: -kv[1])[:KEEP_APS])
-    return await db.save_wifi_place(scope, name, aps, existing["id"] if existing else None)
+    return await db.save_wifi_place(scope, name, aps, existing["id"] if existing else None, room_id)
+
+
+async def room_of_scan(db, scope: str, scan: dict[str, int]) -> str | None:
+    """The floor-plan room a scan was taken in: the room of the named place it matches, if that place is one."""
+    if not usable(scan) or not hasattr(db, "wifi_places"):
+        return None
+    found = best_place([p for p in await db.wifi_places(scope) if p.get("room_id")], scan)
+    return found[0]["room_id"] if found else None
 
 
 async def learn(db, scope: str, scan: dict[str, int]) -> None:

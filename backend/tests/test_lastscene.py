@@ -191,9 +191,9 @@ def test_this_is_a_place_saves_the_scan_and_says_so(client):  # noqa: F811
     async def wifi_places(scope):
         return []
 
-    async def save_wifi_place(scope, name, aps, place_id=None):
-        saved.update(scope=scope, name=name, aps=aps)
-        return {"id": "w1", "name": name, "samples": 1}
+    async def save_wifi_place(scope, name, aps, place_id=None, room_id=None):
+        saved.update(scope=scope, name=name, aps=aps, room_id=room_id)
+        return {"id": "w1", "name": name, "samples": 1, "room_id": room_id}
 
     db.wifi_places, db.save_wifi_place = wifi_places, save_wifi_place
     files = [("audio", ("v.wav", b"Last Scene, this is the Reitz Union", "audio/wav"))]
@@ -201,7 +201,39 @@ def test_this_is_a_place_saves_the_scan_and_says_so(client):  # noqa: F811
                        data={"wake": "true", "wifi": json_scan(REITZ_SCAN)})
     assert resp.status_code == 200 and resp.headers["x-intent"] == "place"
     assert unquote(resp.headers["x-answer"]) == "Got it, this is Reitz Union."
-    assert saved["name"] == "Reitz Union" and saved["aps"] == REITZ_SCAN
+    assert saved["name"] == "Reitz Union" and saved["aps"] == REITZ_SCAN and saved["room_id"] is None  # not a room
     thin = client.post("/api/v1/memory/voice", headers=DEVICE, files=files,
                        data={"wake": "true", "wifi": json_scan({"aa:00:00:00:00:01": -60})})
     assert unquote(thin.headers["x-answer"]) == "I can't hear enough Wi-Fi here to remember this place."
+
+
+def test_naming_a_floor_plan_room_ties_the_place_to_it(client):  # noqa: F811
+    """FLOOR_PLAN=home here: "we're in the kitchen" is the Kitchen room, so saves there land in it on the map."""
+    db = client.app_state.db
+    saved = {}
+
+    async def wifi_places(scope):
+        return []
+
+    async def save_wifi_place(scope, name, aps, place_id=None, room_id=None):
+        saved.update(name=name, room_id=room_id)
+        return {"id": "w1", "name": name, "samples": 1, "room_id": room_id}
+
+    db.wifi_places, db.save_wifi_place = wifi_places, save_wifi_place
+    files = [("audio", ("v.wav", b"Last Scene, we're in the kitchen", "audio/wav"))]
+    resp = client.post("/api/v1/memory/voice", headers=DEVICE, files=files,
+                       data={"wake": "true", "wifi": json_scan(HOME_SCAN)})
+    assert unquote(resp.headers["x-answer"]) == "Got it, this is the Kitchen."
+    assert saved == {"name": "kitchen", "room_id": "kitchen"}
+
+
+def test_the_map_puts_an_item_in_the_room_its_wifi_says():
+    from app.db import ItemSighting
+    from app.home_map import floor_plan
+    from app.routers.dashboard import room_and_source
+    plan = floor_plan("reitz_union")
+    s = ItemSighting("pin", "on the desk", "m1", NOW, "", True, scene=None, room_id="food_court", wifi_room="rion")
+    room, source = room_and_source(s, plan)
+    assert (room.id, source) == ("rion", "wifi")  # Wi-Fi beats the photo's guess
+    s.wifi_room = None
+    assert room_and_source(s, plan)[1] == "photo"

@@ -366,3 +366,15 @@ def test_wifi_fingerprints_are_kept_and_places_can_be_named(c):
     [place] = run(db.wifi_places, DEVICE)
     assert place["name"] == "Reitz Union" and place["aps"] == found["wifi"]
     assert run(db.delete_wifi_place, [DEVICE], saved["id"]) and run(db.wifi_places, DEVICE) == []
+
+    # A named place that is a floor-plan room: surveyed, and later sightings there land in it.
+    run(db.save_wifi_place, DEVICE, "Rion Ballroom", found["wifi"], None, "rion")
+    assert run(db.surveyed_rooms, [DEVICE]) == {"rion": 1}
+    again = post(c, {**obs(minutes_ago=0, label="banana"), "location": {"wifi": scan}})
+    for _ in range(10):
+        room = run(db.pool.fetchval, "SELECT wifi_room FROM memory_logs WHERE id = $1::uuid", again.json()["memory_id"])
+        if room:
+            break
+        _time.sleep(0.5)
+    assert room == "rion"
+    assert any(s.wifi_room == "rion" for s in run(db.item_sightings, 1, [DEVICE]) if s.name == "banana")

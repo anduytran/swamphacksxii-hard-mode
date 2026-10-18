@@ -946,6 +946,7 @@ input::placeholder { color: var(--faint); }
 .dot-public { background: var(--map-public); }
 .dot-calm { background: var(--map-calm); }
 .dot-memory { background: var(--map-memory); border: 1px solid var(--line-hi); }
+.wifi-swatch { width: 14px; height: 10px; border: 3px solid rgb(94, 214, 184); border-radius: 2px; display: inline-block; vertical-align: middle; margin-right: 4px; }
 .trail-swatch { width: 18px; height: 3px; border-radius: 2px; background: var(--map-trail); display: inline-block; }
 .segmented {
   display: inline-flex;

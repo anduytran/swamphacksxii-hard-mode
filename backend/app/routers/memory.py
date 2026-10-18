@@ -34,7 +34,8 @@ from ..limits import RateLimited
 from ..maps_names import name_memory_place
 from ..pipeline import ingest_image, ingest_speech, retrieve
 from ..lastscene import lastscene_note
-from ..wifi_places import clean_name, display, from_wifi_json, learn, name_place, usable
+from ..home_map import floor_plan, room_for
+from ..wifi_places import clean_name, display, from_wifi_json, learn, name_place, room_of_scan, usable
 from ..raia import Raia, context_from_photos, context_note, norm
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
@@ -63,12 +64,18 @@ TRANSCRIPT_FORM = Form(None, description="what was said, transcribed on the devi
 WAKE_HINT = "Last Scene"
 
 
-async def stt_hints(db: MemoryDB, device_id: str) -> list[str]:
-    """Words the wearer is likely to say that speech-to-text tends to get wrong: the wake phrase and the
-    household's Teach items and their aliases ("swamphacks pins", not "Swampfax pins")."""
+async def stt_hints(db: MemoryDB, device_id: str, plan_id: str | None = None) -> list[str]:
+    """Words the wearer is likely to say that speech-to-text tends to get wrong: the wake phrase, the
+    household's Teach items and their aliases ("swamphacks pins", not "Swampfax pins"), the floor plan and its
+    rooms ("Reitz Union", not "the Wrights"), and the places the household named."""
     hints = [WAKE_HINT]
+    if plan_id:
+        plan = floor_plan(plan_id)
+        hints += [plan.name, *(r.name for r in plan.rooms if r.kind == "room")]
     try:
         household = await db.household_of_device(device_id)
+        if hasattr(db, "place_names"):
+            hints += await db.place_names(household[0] if household else device_id)
         if household:
             for item in await db.training_items(household[0]):
                 hints += [item.name, *item.aliases]
@@ -153,6 +160,8 @@ async def _keep_scan(db, device_id: str, table: str, row_id: str, wifi: str | No
         await db.set_scan(table, row_id, scan)
         scope, _ = await scope_for(db, device_id)
         await learn(db, scope, scan)
+        if table == "memory_logs" and (room := await room_of_scan(db, scope, scan)):
+            await db.set_wifi_room(row_id, room)  # the map puts it in the room its Wi-Fi says
     except Exception:
         log.exception("Keeping the Wi-Fi scan of %s %s failed", table, row_id)
 
@@ -412,7 +421,7 @@ async def log_memory(
 
     async def run():
         image_bytes = await _read(image, MAX_IMAGE_BYTES, "image")
-        heard = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub)))
+        heard = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub, settings.floor_plan)))
         trace.lap("transcribe")
         trace.set(heard=heard, intent="remember", photos=1)
         await _note_pairing(db, device.sub, pairing_code)
@@ -442,7 +451,7 @@ async def query_memory(
     trace = Trace("button: ask")
 
     async def run():
-        question = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub)))
+        question = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub, settings.floor_plan)))
         trace.lap("transcribe")
         trace.set(heard=question, intent="ask")
         await _note_pairing(db, device.sub, pairing_code)
@@ -506,16 +515,20 @@ def _lastscene_task(db, geo, settings: Settings, device_id: str, item: str, wher
                                               where.accuracy_m))
 
 
-async def _name_place(db, ai: AIServices, device_id: str, place: str, where: Whereabouts, heard: str,
-                      trace: Trace) -> Response:
-    """Remember the Wi-Fi heard here as the place called `place`, and say so."""
+async def _name_place(db, ai: AIServices, settings: Settings, device_id: str, place: str, where: Whereabouts,
+                      heard: str, trace: Trace) -> Response:
+    """Remember the Wi-Fi heard here as the place called `place`, and say so. A name that is one of the floor
+    plan's rooms ("the Grand Ballroom", "room 2350") ties the place to that room, for the map."""
     scan, name = from_wifi_json(where.wifi), clean_name(place)
-    trace.set(intent="place", item=None, decided_by="rules", place=name)
+    plan = floor_plan(settings.floor_plan)
+    room = room_for(name, plan=plan)
+    room = room if room.id != plan.unknown.id and room.kind == "room" else None
+    trace.set(intent="place", item=None, decided_by="rules", place=name, room=room.name if room else None)
     trace.lap("decide")
     if usable(scan) and hasattr(db, "save_wifi_place"):
         scope, _ = await scope_for(db, device_id)
-        saved = await name_place(db, scope, name, scan)
-        answer = f"Got it, this is {display(saved['name'])}."
+        saved = await name_place(db, scope, name, scan, room.id if room else None)
+        answer = f"Got it, this is the {room.name}." if room else f"Got it, this is {display(saved['name'])}."
         trace.set(outcome="named place", wifi_aps=len(scan))
     else:
         answer = "I can't hear enough Wi-Fi here to remember this place."
@@ -588,7 +601,7 @@ async def _follow_up(background, db, ai, geo, settings, device_id: str, question
 async def _voice(background, audio, image, transcript, wake, where, pairing_code, device, db, ai, geo, settings,
                  trace: Trace, raia: Raia | None = None):
     photos = [(await _read(i, MAX_IMAGE_BYTES, "image"), i.content_type) for i in (image or [])[:MAX_WAKE_PHOTOS]]
-    heard = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub)))
+    heard = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub, settings.floor_plan)))
     trace.lap("transcribe")
     trace.set(heard=heard, photos=len(photos))
     await _note_pairing(db, device.sub, pairing_code)
@@ -637,7 +650,7 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
     # "this is the Reitz Union": the Wi-Fi heard here becomes that place's fingerprint (wifi_places.py).
     if wake and (place := place_command(words)) and not match_item(place, await saved_item_names(
             db, device.sub, settings.query_lookback_hours)):
-        return await _name_place(db, ai, device.sub, place, where, heard, trace)
+        return await _name_place(db, ai, settings, device.sub, place, where, heard, trace)
 
     # Step 1, words only: what is being asked (the photos stay out of it). The item comes from matching the
     # household's own saved item names whenever they're said, so it's always the name they taught; the

@@ -317,8 +317,12 @@ def _curve(a: list[float], b: list[float], steps: int = 12) -> list[list[float]]
 
 
 def room_and_source(s: ItemSighting, plan: FloorPlan) -> tuple[Room, str]:
-    """The room the photo showed ("photo"), else the one the words name ("words"). A room
-    id from another floor plan (FLOOR_PLAN changed since) is ignored."""
+    """The room its Wi-Fi scan matched ("wifi", a room surveyed by saying "Last Scene, this is the Grand
+    Ballroom"), else the room the photo showed ("photo"), else the one the words name ("words"). A room id
+    from another floor plan (FLOOR_PLAN changed since) is ignored."""
+    wifi = next((r for r in plan.rooms if r.id == s.wifi_room), None) if getattr(s, "wifi_room", None) else None
+    if wifi:
+        return wifi, "wifi"
     photo = next((r for r in plan.rooms if r.id == s.room_id), None) if s.room_id else None
     return (photo, "photo") if photo else (room_for(s.location, s.scene, plan=plan), "words")
 
@@ -339,7 +343,9 @@ async def home_map(
         history.setdefault(s.name, []).append(s)
 
     plan = floor_plan(settings.floor_plan)
-    rooms = {r.id: {"id": r.id, "name": r.name, "kind": r.kind, "level": r.level, "polygon": r.polygon, "putdowns": 0, "lost": 0, "items": []} for r in (*plan.rooms, plan.unknown)}
+    surveyed = await db.surveyed_rooms(devices) if hasattr(db, "surveyed_rooms") else {}
+    rooms = {r.id: {"id": r.id, "name": r.name, "kind": r.kind, "level": r.level, "polygon": r.polygon, "putdowns": 0, "lost": 0,
+                    "items": [], "wifi_scans": surveyed.get(r.id, 0)} for r in (*plan.rooms, plan.unknown)}
     places = {name: [room_and_source(s, plan)[0] for s in seen] for name, seen in history.items()}
     for name, rooms_visited in places.items():
         here = rooms_visited[-1]
@@ -388,7 +394,7 @@ async def home_map(
         if len(path) > 1:
             trips.append({"name": name, "path": path, "timestamps": stamps, "rooms": [p.name for p in visited]})
 
-    used = [r for r in rooms.values() if r["id"] != plan.unknown.id or r["putdowns"]]
+    used = [r for r in rooms.values() if r["id"] != plan.unknown.id or r["putdowns"]]  # every room, surveyed or not
     return {
         "window_hours": window,
         "plan": {"id": plan.id, "name": plan.name},

@@ -9,6 +9,7 @@ export type RGBA = [number, number, number, number?];
 // --map-* tokens in styles.css (the legends under each map use them).
 export const MAP_COLORS = {
   roomLine: [70, 68, 120],
+  surveyed: [94, 214, 184], // rooms recognised from Wi-Fi: teal outline
   roomFill: [30, 29, 61], // dark --surface #1E1D3D
   hallFill: [24, 23, 51], // corridors: between --map-ground and roomFill
   asked: [232, 104, 126], // --map-asked, rose: needs attention
