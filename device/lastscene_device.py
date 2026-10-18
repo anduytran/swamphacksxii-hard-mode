@@ -1084,6 +1084,13 @@ def held_quietly(wav: bytes, seconds: float) -> bool:
 
 # ---------------------------------------------------------------- device loop
 
+def optional_missing(msg: str, *args) -> None:
+    """An optional part (speech-to-text model, wake phrase, item detector) isn't installed: one warning
+    line, since the device works without it. The traceback only with LOG_LEVEL=DEBUG."""
+    log.warning(msg, *args)
+    log.debug("Details", exc_info=True)
+
+
 class NothingHeard(Exception):
     """Local speech-to-text heard nothing and STT_FALLBACK=false: send nothing."""
 
@@ -1105,9 +1112,9 @@ class Device:
             try:
                 self.stt = LocalSTT(cfg.stt_engine, cfg.stt_model)
                 log.info("Speech-to-text on the device: %s (%s)", cfg.stt_engine, self.stt.model_dir)
-            except Exception:  # package or model missing: the server transcribes instead
-                log.exception("On-device speech-to-text %r unavailable; %s", cfg.stt_engine,
-                              "sending audio to the server" if cfg.stt_fallback else "nothing can be sent")
+            except Exception as exc:  # package or model missing: the server transcribes instead
+                optional_missing("On-device speech-to-text %r unavailable (%s); %s", cfg.stt_engine, exc,
+                                 "sending audio to the server" if cfg.stt_fallback else "nothing can be sent")
 
         # Item detection: one detector for voice commands and the background loop, paused while busy.
         self.vision: Vision | None = None
@@ -1115,8 +1122,8 @@ class Device:
             try:
                 self.vision = Vision(cfg, self.camera, paused=self.busy.locked)
                 log.info("Item detection on the device: %s", self.vision.detector.name)
-            except Exception:  # vision code or model missing: photos are still taken, just not checked
-                log.exception("On-device item detection unavailable (VISION_DIR=%s)", cfg.vision_dir)
+            except Exception as exc:  # vision code or model missing: photos are still taken, just not checked
+                optional_missing("On-device item detection unavailable (%s; VISION_DIR=%s)", exc, cfg.vision_dir)
 
         self.remember.when_pressed = lambda: self._begin("remember")
         self.remember.when_released = lambda: self._end("remember")
@@ -1132,8 +1139,8 @@ class Device:
         if cfg.wake_word:
             try:
                 self.wake = WakeListener(cfg.wake_word, cfg.wake_threshold)
-            except Exception:  # openwakeword or its model missing: keep the buttons working
-                log.exception("Wake phrase %r unavailable; buttons only (see README step 3)", cfg.wake_word)
+            except Exception as exc:  # openwakeword or its model missing: keep the buttons working
+                optional_missing("Wake phrase %r unavailable (%s); buttons only (see README step 3)", cfg.wake_word, exc)
         if self.wake or cfg.live:
             self.stream_rec = StreamRecorder(cfg.max_record_seconds)
             self.mic = MicStream(cfg.audio_in, self._on_frame)
@@ -1379,7 +1386,7 @@ def main() -> None:
                         help="run background item detection for SECONDS, printing observations instead of posting "
                              "them, then report frames grabbed / passed / skipped; needs VISION_DIR; no network")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper(), format="%(asctime)s %(levelname)s %(message)s")
 
     if args.transcribe:  # needs no Auth0 settings
         engine = os.environ.get("STT_ENGINE", "moonshine").lower()
