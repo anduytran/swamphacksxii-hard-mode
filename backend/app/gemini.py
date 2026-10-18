@@ -122,8 +122,11 @@ class GeminiAI:
         return (response.text or "").strip()
 
     async def generate_json(
-        self, system: str, contents: list, schema: type[BaseModel], *, fast: bool = False
+        self, system: str, contents: list, schema: type[BaseModel], *, fast: bool = False,
+        timeout_s: float | None = None,
     ) -> BaseModel | None:
+        """`timeout_s`: give up after that long (a free-tier request can sit queued for 20+ s), so a
+        caller with a fallback uses it instead of making the wearer wait."""
         response = await self.client.aio.models.generate_content(
             model=self._model(),
             contents=contents,
@@ -132,6 +135,7 @@ class GeminiAI:
                 response_mime_type="application/json",
                 response_schema=schema,
                 thinking_config=self._thinking(fast),
+                http_options=types.HttpOptions(timeout=int(timeout_s * 1000)) if timeout_s else None,
             ),
         )
         return response.parsed

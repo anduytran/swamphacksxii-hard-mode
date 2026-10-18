@@ -280,6 +280,12 @@ involve faker, and nothing is streamed or polled in between.
 
 ## Using it
 
+- **How a wake works** (`WAKE_CONFIRM=true`, the default): the Pi listens all the time with its own model and
+  sends nothing until that fires. It then takes a photo at once, beeps, records until you stop, takes 3 more
+  photos a moment apart, and sends it all in one request. The server checks with speech-to-text that the clip
+  really starts with "Last Scene" (if not, nothing happens and nothing is kept), then a low-reasoning model reads
+  your words and the photos: a statement is saved with the photo that shows the item best, a question is answered
+  out loud, "I found my keys" marks them found.
 - **Say "Last Scene"**, wait for the beep, then speak: "I'm putting my keys on the counter" is saved with a photo (high beep), "Where are my keys?" is answered out loud. It records until you stop talking (up to `WAKE_MAX_SECONDS`). Audio stays on the Pi until the phrase is heard; only what's said after the beep is sent (as text, with `STT_ENGINE` set). If it triggers by mistake, raise `WAKE_THRESHOLD`; if it misses you, lower it. `WAKE_WORD` points at the "Last Scene" model (training: [wake/README.md](wake/README.md)); `WAKE_WORD=hey_jarvis` works right away for testing, with "Hey Jarvis" as the phrase.
 - **Live conversation** (`LIVE=true` here and `LIVE_ENABLED=true` on the server): say "Last Scene" (or hold ASK for `LIVE_HOLD_SECONDS` without speaking, then release), wait for the chime, and just talk: "Where are my keys?", "And my glasses?", "I'm putting my wallet in the drawer". Gemini looks things up in your memories (it's told never to guess) and saves new ones with a photo. It ends with a low beep after `LIVE_SILENCE_SECONDS` of quiet, at `LIVE_MAX_SECONDS`, or when you press any button. The mic is muted while Gemini speaks (the Pi has no echo cancellation), so wait for it to finish. Nothing is streamed before the wake phrase or the long press. If live mode can't start (server has it off, quota, no Wi-Fi), the normal one-shot flow runs instead. Check it with `--live-check`, which gets a token and opens a session without sending audio.
 - **Hold REMEMBER**, say where you're putting something ("I'm putting my keys on the counter"), release. It takes a photo when you press (with item detection on: after the words, retried until the item you named is in it), records while held, and uploads when you let go. The LED is solid while recording and blinks while sending.

@@ -36,6 +36,13 @@ def strip_wake_phrase(text: str) -> str:
     return t
 
 
+def has_wake_phrase(transcript: str) -> bool:
+    """Whether the words start with the wake phrase, allowing a word or two before it ("Okay, Last Scene").
+    The wearer's own wake model can fire on other speech; speech-to-text then confirms it was said."""
+    low = " ".join(re.sub(r"[^\w\s']", " ", transcript.lower()).split())
+    return any(re.match(r"^(\w+ ){0,2}" + re.escape(p) + r"\b", low) for p in WAKE_PHRASES)
+
+
 def classify(transcript: str) -> str:
     """'ask' or 'remember'."""
     text = strip_wake_phrase(transcript)

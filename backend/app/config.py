@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     # Hints for speech-to-text (both providers): "Last Scene" and the household's Teach items and aliases,
     # so names like "swamphacks pins" aren't heard as "Swampfax pins".
     stt_hints: bool = True
+    # The wake-phrase command model (Gemini, low reasoning) gets this long; then the rules decide, so the
+    # wearer never waits on a queued free-tier request (seen taking 24-85 s on Oct 17; usually ~3 s).
+    command_timeout_seconds: float = 6.0
     llm_model: str = "claude-opus-5-5"
     llm_effort: str = "low"
 

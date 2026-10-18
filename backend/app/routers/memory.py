@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from urllib.parse import quote
 
@@ -17,13 +18,14 @@ from fastapi import (
     status,
 )
 
-from ..ai import BUSY, DIDNT_CATCH, AIServices, template_answer
+from ..ai import BUSY, DIDNT_CATCH, GLAD_YOU_FOUND, AIServices, template_answer
 from ..auth import Principal, require_device
 from ..config import Settings, get_settings
 from ..db import MemoryDB
 from ..deps import device_limit, get_ai, get_db, get_geo
 from ..geo import Geolocator, locate_and_record, record_public, resolve_location
-from ..intent import classify, strip_wake_phrase
+from ..intent import classify, has_wake_phrase, strip_wake_phrase
+from ..observations import scope_for
 from ..languages import is_english, normalize, phrase
 from ..limits import RateLimited
 from ..maps_names import name_memory_place
@@ -277,12 +279,16 @@ async def query_memory(
     return await _spoken_answer(background, db, ai, geo, settings, device.sub, question, where)
 
 
+MAX_WAKE_PHOTOS = 4
+
+
 @router.post("/voice")
 async def voice(
     background: BackgroundTasks,
     audio: UploadFile | None = File(None),
-    image: UploadFile | None = File(None, description="the photo taken when the wake phrase was heard"),
+    image: list[UploadFile] | None = File(None, description="photos from the wake phrase on: one, or up to 4"),
     transcript: str | None = TRANSCRIPT_FORM,
+    wake: bool = Form(False, description="the device's wake model fired: speech-to-text must confirm the phrase"),
     where: Whereabouts = Depends(whereabouts),
     pairing_code: str | None = Header(None, alias="X-Pairing-Code"),
     device: Principal = Depends(device_limit()),
@@ -292,17 +298,44 @@ async def voice(
     settings: Settings = Depends(get_settings),
 ):
     """Wake phrase, no button: the words decide. A statement is saved like /log (JSON back, with
-    "intent": "remember"); a question is answered like /query (spoken audio back, X-Intent: ask)."""
-    image_bytes = await _read(image, MAX_IMAGE_BYTES, "image") if image is not None else None
+    "intent": "remember"); a question is answered like /query (spoken audio back, X-Intent: ask).
+
+    With wake=true (the device heard something like "Last Scene" on its own model) the clip must start
+    with the wake phrase, or nothing happens ({"intent": "ignored"}): that filters the wake model's false
+    alarms. Then a low-reasoning model reads the words and the photos to decide the command (remember,
+    ask, found, none) and which photo shows the item best; the rules in intent.py decide if it can't."""
+    photos = [(await _read(i, MAX_IMAGE_BYTES, "image"), i.content_type) for i in (image or [])[:MAX_WAKE_PHOTOS]]
     heard = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub)))
     await _note_pairing(db, device.sub, pairing_code)
+    if wake and audio is not None and not has_wake_phrase(heard or ""):
+        log.info("Wake model fired, but the clip doesn't start with the wake phrase: ignored")
+        return {"intent": "ignored"}
     if not heard:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "No speech detected")
     words = strip_wake_phrase(heard)
-    if classify(heard) == "ask":
+
+    command = None
+    if wake:
+        try:
+            typed = [(data, kind if kind in ALLOWED_IMAGE_TYPES else "image/jpeg") for data, kind in photos]
+            command = await ai.decipher(words, typed)
+        except Exception as exc:  # busy, quota, a bad answer: the rules decide
+            log.warning("Command model unavailable (%s); using the rules", type(exc).__name__)
+    intent = command.intent if command else classify(heard)
+
+    if intent == "ask":
         return await _spoken_answer(background, db, ai, geo, settings, device.sub, words, where, {"X-Intent": "ask"})
-    if image_bytes is None:
+    if intent == "found" and command and command.item:
+        scope, _ = await scope_for(db, device.sub)
+        await db.mark_found(scope, " ".join(command.item.lower().split()), datetime.now(timezone.utc))
+        language = await _language(db, device.sub)
+        speech = await ai.speak(phrase(GLAD_YOU_FOUND, language).format(item=command.item))
+        return Response(content=speech, media_type=ai.speech_media_type, headers={"X-Intent": "found"})
+    if intent == "none":
+        return {"intent": "none"}
+    if not photos:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "A memory needs the photo; send image with the audio")
-    saved = await _save_memory(background, db, ai, geo, settings, device.sub, words, image_bytes,
-                               image.content_type if image else None, where)
-    return {**saved, "intent": "remember"}
+    best = command.best_photo if command and 0 <= command.best_photo < len(photos) else 0
+    data, kind = photos[best]
+    saved = await _save_memory(background, db, ai, geo, settings, device.sub, words, data, kind, where)
+    return {**saved, "intent": "remember", "photo": best}

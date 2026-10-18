@@ -60,6 +60,7 @@ import threading
 import time
 import uuid
 import wave
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote
@@ -93,6 +94,14 @@ class Config:
     wake_word: str = ""  # path to the "Last Scene" .onnx (or a stock name like hey_jarvis); empty = buttons only
     wake_threshold: float = 0.6  # tune per model: with hey_jarvis, "hey Travis" scores ~0.45, the phrase ~1.0
     wake_max_seconds: int = 10
+    # Wake phrase as a command (WAKE_CONFIRM=true): the clip keeps the audio from just before the wake
+    # (WAKE_PREROLL_SECONDS, so it holds "Last Scene" itself), a photo is taken at once and WAKE_PHOTOS - 1
+    # more after speaking, WAKE_PHOTO_GAP_SECONDS apart; the server confirms the phrase with speech-to-text
+    # (false wakes are dropped there) and a low-reasoning model reads the words and photos.
+    wake_confirm: bool = True
+    wake_preroll_seconds: float = 2.0
+    wake_photos: int = 4
+    wake_photo_gap_seconds: float = 0.75
     stt_engine: str = "server"  # moonshine | vosk | server (send the audio; the server transcribes)
     stt_model: str = ""  # model folder; empty = the default under /opt/lastscene/stt
     stt_fallback: bool = True  # local model missing or heard nothing: send the audio instead
@@ -136,6 +145,10 @@ class Config:
             wake_word=env.get("WAKE_WORD", ""),
             wake_threshold=float(env.get("WAKE_THRESHOLD", 0.6)),
             wake_max_seconds=int(env.get("WAKE_MAX_SECONDS", 10)),
+            wake_confirm=env.get("WAKE_CONFIRM", "true").lower() not in ("0", "false", "no"),
+            wake_preroll_seconds=float(env.get("WAKE_PREROLL_SECONDS", 2.0)),
+            wake_photos=max(1, min(4, int(env.get("WAKE_PHOTOS", 4)))),
+            wake_photo_gap_seconds=float(env.get("WAKE_PHOTO_GAP_SECONDS", 0.75)),
             stt_engine=env.get("STT_ENGINE", "server").lower(),
             stt_model=env.get("STT_MODEL", ""),
             stt_fallback=env.get("STT_FALLBACK", "true").lower() not in ("0", "false", "no"),
@@ -293,16 +306,21 @@ class ApiClient:
         files["image"] = ("scene.jpg", jpeg, "image/jpeg")
         return self._post("/api/v1/memory/log", files, data).json()
 
-    def voice(self, wav: bytes | None, jpeg: bytes | None, where: dict | None = None,
-              transcript: str | None = None) -> tuple[str, bytes | dict]:
-        """Wake-phrase clip: ("ask", spoken answer audio) or ("remember", the saved memory)."""
+    def voice(self, wav: bytes | None, jpeg: bytes | list[bytes] | None, where: dict | None = None,
+              transcript: str | None = None, wake: bool = False) -> tuple[str, bytes | dict]:
+        """Wake-phrase clip, with one photo or several. Spoken audio back for "ask" and "found";
+        otherwise the JSON's intent: "remember" (saved), "none" (not a request), "ignored" (wake=True and
+        the clip didn't start with the wake phrase: a false wake)."""
         files, data = self._speech("voice.wav", wav, transcript, where)
-        if jpeg is not None:
-            files["image"] = ("scene.jpg", jpeg, "image/jpeg")
-        resp = self._post("/api/v1/memory/voice", files, data)
-        if resp.headers.get("x-intent") == "ask" or resp.headers.get("content-type", "").startswith("audio/"):
-            return "ask", resp.content
-        return "remember", resp.json()
+        jpegs = [jpeg] if isinstance(jpeg, (bytes, bytearray)) else list(jpeg or [])
+        parts = list(files.items()) + [("image", (f"scene{i}.jpg", j, "image/jpeg")) for i, j in enumerate(jpegs)]
+        if wake:
+            data["wake"] = "true"
+        resp = self._post("/api/v1/memory/voice", parts, data)
+        if resp.headers.get("content-type", "").startswith("audio/"):
+            return resp.headers.get("x-intent", "ask"), resp.content
+        body = resp.json()
+        return body.get("intent", "remember"), body
 
     def ask(self, wav: bytes | None, where: dict | None = None, transcript: str | None = None) -> tuple[bytes, str]:
         files, data = self._speech("question.wav", wav, transcript, where)
@@ -1136,6 +1154,7 @@ class Device:
         self.wake: WakeListener | None = None
         self.live: LiveSession | None = None  # set while a live conversation runs
         self.voice = VoiceCapture()
+        self._recent: deque[bytes] = deque(maxlen=max(1, round(cfg.wake_preroll_seconds / 0.08)))  # 80 ms frames
         if cfg.wake_word:
             try:
                 self.wake = WakeListener(cfg.wake_word, cfg.wake_threshold)
@@ -1189,16 +1208,22 @@ class Device:
             self.stream_rec.add(frame)
         elif self.voice.listening:  # after the wake phrase
             self.voice.add(frame)
-        elif self.wake and not self.busy.locked() and self.wake.heard(frame):
-            threading.Thread(target=self._wake, daemon=True).start()
+        else:
+            self._recent.append(frame)  # the last WAKE_PREROLL_SECONDS: holds the wake phrase when it fires
+            if self.wake and not self.busy.locked() and self.wake.heard(frame):
+                preroll = b"".join(self._recent)
+                self._recent.clear()
+                threading.Thread(target=self._wake, args=(preroll,), daemon=True).start()
 
-    def _wake(self) -> None:
+    def _wake(self, preroll: bytes = b"") -> None:
         if not self.busy.acquire(blocking=False):
             return
         try:
             self.led.on()
             if self.cfg.live and self._converse():
                 return
+            if self.cfg.wake_confirm:
+                return self._wake_command(preroll)
             # Without device speech-to-text the words come too late to choose: photograph now, as before.
             photo = self.camera.capture_jpeg() if self.stt is None else None
             play_wav(self.cfg.audio_out, tone(880))  # "I'm listening" (before recording, so it isn't heard)
@@ -1280,6 +1305,56 @@ class Device:
                 raise
             self.spool.add(None, photo, where, transcript=text)
             return "Saved on the wearable; it will upload when it's back online."
+
+    def _grab(self, photos: list, index: int) -> None:
+        try:
+            photos.append((index, self.camera.capture_jpeg()))
+        except Exception as exc:  # one missing photo doesn't sink the command
+            log.warning("Photo %d failed: %s", index + 1, exc)
+
+    def _wake_command(self, preroll: bytes) -> None:
+        """Photo now, listen to the end, WAKE_PHOTOS - 1 more photos spaced out, then one request: the
+        server confirms "Last Scene" was said and has a model read the words and the photos."""
+        photos: list[tuple[int, bytes]] = []
+        first = threading.Thread(target=self._grab, args=(photos, 0), daemon=True)
+        first.start()  # the moment the wake phrase was heard, without waiting for the beep
+        play_wav(self.cfg.audio_out, tone(880))
+        pcm = self.voice.listen(Endpointer(max_s=self.cfg.wake_max_seconds), self.cfg.wake_max_seconds + 3)
+        if pcm is None:
+            log.info("Wake phrase heard, but nothing said after it")
+            play_wav(self.cfg.audio_out, tone(440))
+            return
+        self.led.blink(on_time=0.1, off_time=0.1)
+        for index in range(1, self.cfg.wake_photos):
+            time.sleep(self.cfg.wake_photo_gap_seconds)
+            self._grab(photos, index)
+        first.join(timeout=15)
+        shots = [jpeg for _, jpeg in sorted(photos)]
+        wav = wav_bytes(preroll + pcm)  # with the wake phrase, for the server to confirm
+        where = whereabouts(self.cfg)
+        try:
+            intent, result = self.api.voice(wav, shots, where, wake=True)
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            if rejected(exc):
+                log.warning("Server rejected the command: %s", exc.response.text)
+                play_wav(self.cfg.audio_out, tone(440))
+            elif shots:
+                self.spool.add(wav, shots[0], where, kind="voice")
+                log.warning("Offline; command spooled for later")
+            else:
+                play_wav(self.cfg.audio_out, tone(440))
+            return
+        if intent in ("ask", "found"):
+            self.led.on()
+            play_wav(self.cfg.audio_out, result)
+        elif intent == "remember":
+            log.info("Saved: %s (photo %s of %d)", result.get("transcript"), result.get("photo", 0) + 1, len(shots))
+            play_wav(self.cfg.audio_out, tone(1320, 90))  # "saved"
+        elif intent == "ignored":
+            log.info("Not \"Last Scene\" after all (speech-to-text): ignored")
+        else:
+            log.info("Heard, but not a request")
+            play_wav(self.cfg.audio_out, tone(440))
 
     def _begin(self, mode: str) -> None:
         if (live := self.live) is not None:  # any button ends a live conversation

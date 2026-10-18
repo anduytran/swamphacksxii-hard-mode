@@ -81,6 +81,25 @@ doesn't show which:
 {rooms}"""
 
 
+COMMAND_SYSTEM_PROMPT = """\
+You read one spoken command to LastScene, a memory-aid wearable for someone with memory loss. It was \
+said right after the wake phrase. With it come up to four photos from the wearable's chest camera: \
+photo 0 when the wake phrase was heard, then photos 1-3 a moment apart after they finished speaking.
+- intent: "remember" when they are putting something down or noting where something is ("I'm putting my \
+keys on the counter", "my glasses are in my bag"); "ask" when they want to know where something is or \
+whether they did something ("where are my keys?", "did I take my pills?"); "found" when they say they \
+found something ("I found my wallet"); "none" when it isn't a request to the wearable.
+- item: the physical item, as a short lowercase singular noun phrase ("keys", "reading glasses"), or "".
+- best_photo: the number of the photo that shows that item most clearly where it was put; 0 if none \
+shows it or there are no photos."""
+
+
+class Command(BaseModel):
+    intent: Literal["remember", "ask", "found", "none"]
+    item: str = ""
+    best_photo: int = 0
+
+
 SUMMARY_SYSTEM_PROMPT = """\
 You write a short update for a family caregiver of someone with memory loss who wears \
 the LastScene memory aid. You get counts and lists from the last few days.
@@ -157,6 +176,7 @@ REFUSED = "Sorry, I can't help with that one."
 NO_ANSWER = "Sorry, I couldn't come up with an answer just now."
 # With their translations (languages.py), so every language's audio is cached as well.
 BUSY = "I'm getting a lot of questions right now. Please ask me again in a minute."
+GLAD_YOU_FOUND = "Glad you found your {item}. I'll remember."
 FIXED_PHRASES = frozenset().union(*(languages.all_translations(p) for p in (DIDNT_CATCH, REFUSED, NO_ANSWER, BUSY)))
 
 _PREPOSITIONS = ("on", "in", "inside", "under", "underneath", "by", "next", "beside", "behind", "near",
@@ -582,6 +602,19 @@ class AIServices:
     async def look(self, system: str, contents: list, schema: type[BaseModel]) -> BaseModel | None:
         """A photo question with a JSON answer (e.g. Teach's suggested boxes), within the limits."""
         return await self.gemini.generate_json(system, contents, schema, fast=True)
+
+    @limited("vision")
+    async def decipher(self, words: str, photos: list[tuple[bytes, str]]) -> Command | None:
+        """What a wake-phrase command asks for, read by a low-reasoning model from the words and the
+        photos. None when vision is off (the caller falls back to the rules in intent.py)."""
+        if self.s.vision_provider != "gemini":
+            return None
+        from google.genai import types
+
+        parts = [types.Part.from_bytes(data=data, mime_type=kind) for data, kind in photos[:4]]
+        said = words.replace('"', "'")
+        return await self.gemini.generate_json(COMMAND_SYSTEM_PROMPT, [*parts, f'Words: "{said}"'], Command, fast=True,
+                                               timeout_s=self.s.command_timeout_seconds)
 
     @limited("maps")
     async def name_place(self, lat: float, lng: float) -> dict | None:

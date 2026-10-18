@@ -125,3 +125,94 @@ def test_speech_to_text_gets_the_wake_phrase_and_teach_items_as_hints(client):  
     heard.clear()  # the device sent its own words: no transcription, so no hint lookup either
     client.post("/api/v1/memory/query", headers=DEVICE, data={"transcript": "where are my keys?"})
     assert heard == []
+
+
+# ---------------------------------------------------------------- wake=true: confirm, then decipher
+
+from app.ai import Command  # noqa: E402
+from app.intent import has_wake_phrase  # noqa: E402
+
+
+def wake_clip(client, said, photos=4, decipher=None):  # noqa: F811
+    if decipher is not None:
+        async def fake(words, pics):
+            client.deciphered = (words, len(pics))
+            if isinstance(decipher, Exception):
+                raise decipher
+            return decipher
+        client.app_state.ai.decipher = fake
+    files = [("audio", ("v.wav", said.encode(), "audio/wav"))]
+    files += [("image", (f"p{i}.jpg", b"\xff\xd8photo-%d" % i, "image/jpeg")) for i in range(photos)]
+    return client.post("/api/v1/memory/voice", headers=DEVICE, data={"wake": "true"}, files=files)
+
+
+def test_a_false_wake_is_dropped_before_anything_else(client):  # noqa: F811
+    resp = wake_clip(client, "so the last thing I said was", decipher=Command(intent="remember", item="keys"))
+    assert resp.status_code == 200 and resp.json() == {"intent": "ignored"}
+    assert client.app_state.db.rows == [] and not hasattr(client, "deciphered")  # no model call either
+
+
+def test_the_model_decides_and_picks_the_photo_that_shows_the_item(client):  # noqa: F811
+    resp = wake_clip(client, "Last Scene, I'm putting my keys on the counter",
+                     decipher=Command(intent="remember", item="keys", best_photo=2))
+    body = resp.json()
+    assert resp.status_code == 200 and body["intent"] == "remember" and body["photo"] == 2
+    assert client.deciphered == ("I'm putting my keys on the counter", 4)
+    (row,) = client.app_state.db.rows
+    assert client.app_state.db.images[row.id][0] == b"\xff\xd8photo-2"
+
+
+def test_a_question_is_answered_out_loud_without_saving(client):  # noqa: F811
+    resp = wake_clip(client, "Last Scene, where did I leave my keys", decipher=Command(intent="ask", item="keys"))
+    assert resp.headers["x-intent"] == "ask" and resp.headers["content-type"].startswith("audio/")
+    assert client.app_state.db.rows == []
+
+
+def test_not_a_request_does_nothing(client):  # noqa: F811
+    resp = wake_clip(client, "Last Scene, never mind", decipher=Command(intent="none"))
+    assert resp.json() == {"intent": "none"} and client.app_state.db.rows == []
+
+
+def test_found_marks_the_item_and_says_so(client):  # noqa: F811
+    marked = []
+
+    async def mark_found(scope, item, when):
+        marked.append(item)
+        return True
+
+    client.app_state.db.mark_found = mark_found
+    resp = wake_clip(client, "Last Scene, I found my Keys", decipher=Command(intent="found", item="Keys"))
+    assert resp.headers["x-intent"] == "found" and resp.headers["content-type"].startswith("audio/")
+    assert marked == ["keys"]
+
+
+def test_when_the_model_is_busy_the_rules_decide(client):  # noqa: F811
+    resp = wake_clip(client, "Last Scene, I'm putting my glasses on the table", decipher=RuntimeError("429"))
+    assert resp.json()["intent"] == "remember" and resp.json()["photo"] == 0
+    resp = wake_clip(client, "Last Scene, where are my glasses?", decipher=RuntimeError("429"))
+    assert resp.headers["x-intent"] == "ask"
+
+
+def test_an_out_of_range_photo_falls_back_to_the_first(client):  # noqa: F811
+    resp = wake_clip(client, "Last Scene, my wallet is in my bag", photos=2,
+                     decipher=Command(intent="remember", item="wallet", best_photo=7))
+    assert resp.json()["photo"] == 0
+
+
+def test_the_old_one_photo_form_still_works(client):  # noqa: F811
+    assert voice(client, "I am putting my keys on the counter").json()["intent"] == "remember"
+
+
+@pytest.mark.parametrize("said, wake", [
+    ("Last Scene, where are my keys?", True),
+    ("Last scene: I put my pins down", True),
+    ("Okay, Last Scene, did I lock the door", True),
+    ("Hey Last Scene where's my phone", True),
+    ("lastscene my keys", True),
+    ("last seen my keys on the hook", True),
+    ("I watched the last scene of the movie", False),
+    ("where are my keys", False),
+    ("", False),
+])
+def test_has_wake_phrase(said, wake):
+    assert has_wake_phrase(said) is wake

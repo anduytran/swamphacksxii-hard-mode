@@ -515,6 +515,7 @@ class RecordingApi:
 
 def wake_device(words, vision):
     d = device_with(FakeSTT(words))
+    d.cfg.wake_confirm = False  # the original flow: these tests cover it; test_wake_command.py the new one
     d.api, d.camera, d.vision, d.busy = RecordingApi(), FakeCamera(), vision, _thr.Lock()
     d.led = _NS(on=lambda: None, off=lambda: None, blink=lambda **k: None)
     d.voice = _NS(listen=lambda endpointer, timeout: b"\0\0" * 1600)
