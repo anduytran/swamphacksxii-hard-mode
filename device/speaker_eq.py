@@ -3,7 +3,7 @@
 AUDIO_GAIN_DB    one gain for all sound, in dB (default 0). Calibrate once with a phone sound meter:
                  `play_scale.py --tone` plays a steady 1 kHz tone at about the level of speech; set
                  AUDIO_GAIN_DB = target - reading (e.g. 80 dB wanted, 86 read -> -6). The demo runs at
-                 -5: about 75 dB at most.
+                 -10: about 70 dB at most.
 SPEAKER_EQ       cuts or boosts where the speaker is uneven, as freq:dB:Q bands separated by commas.
                  The default evens out the Voice Bonnet speaker, which plays A4 and B4 (440 and 494 Hz)
                  much louder than the rest: A4 -7 dB, B4 -10 dB (the two bands overlap, hence -6.2 and
