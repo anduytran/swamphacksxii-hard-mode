@@ -3,10 +3,14 @@
 Typical flow: a caregiver sets LastScene up for someone else.
   1. POST /households               create "Mom's household" (the caller becomes owner)
   2. POST /households/{id}/devices   claim the wearable with its Client ID + pairing code
-  3. POST /households/{id}/invites   one-time code for other family members
+  3. POST /households/{id}/invites   one-time code for other family members (any member can make one)
   4. POST /invites/accept            family member joins with the code
   5. PATCH /households/{id}/places/{place}   name auto-found places, mark public ones
   6. PATCH /households/{id}          opt in to the anonymous public map, set the wearer's language
+  7. PATCH /me                       change your own display name (in every household you're in)
+
+Everything a household holds (memories, items, Teach photos, places) is shared by all its members.
+Only the owner claims devices, changes the public-map opt-in and language, and manages MCP keys.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -147,7 +151,8 @@ async def claim_device(
 
 @router.post("/households/{household_id}/invites")
 async def create_invite(household_id: str, user: Principal = Depends(require_caregiver), db: MemoryDB = Depends(get_db)):
-    await _require_member(db, household_id, user, owner=True)
+    # Any member can share the household: family members bring in other family, not only whoever set it up.
+    await _require_member(db, household_id, user)
     return {"code": await db.create_invite(household_id, user.sub), "expires_in_hours": 72}
 
 
@@ -157,6 +162,26 @@ async def accept_invite(body: AcceptInvite, user: Principal = Depends(require_ca
     if household_id is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "That invite code is invalid, used or expired.")
     return {"household_id": household_id}
+
+
+class MyProfile(BaseModel):
+    display_name: str = Field(..., max_length=80)
+
+    @field_validator("display_name")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        v = " ".join(v.split())
+        if not v:
+            raise ValueError("Enter a name")
+        return v
+
+
+@router.patch("/me")
+async def update_me(body: MyProfile, user: Principal = Depends(require_caregiver), db: MemoryDB = Depends(get_db)):
+    """Your name as the other members of your households see it. Only ever your own."""
+    if not await db.set_display_name(user.sub, body.display_name):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Join or set up a household first")
+    return {"display_name": body.display_name}
 
 
 @router.patch("/households/{household_id}")

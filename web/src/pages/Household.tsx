@@ -1,5 +1,5 @@
 // Household: setting LastScene up, often for someone else.
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { repeat, Sk } from "../components/bits";
 import { FormCard } from "../components/FormCard";
 import { McpKeys } from "../components/McpKeys";
@@ -52,7 +52,20 @@ export default function HouseholdPage() {
       ) : !households.length ? (
         <Start api={api} onDone={changed} />
       ) : (
-        households.map((h) => <HouseholdView key={h.id} h={h} api={api} onChange={changed} />)
+        <>
+          {households.map((h) => <HouseholdView key={h.id} h={h} api={api} onChange={changed} />)}
+          {/* Already in a household (e.g. your own) and invited to someone else's: join that one too. */}
+          {households.length < MAX_HOUSEHOLDS && (
+            <div className="two-col join-another">
+              <JoinForm
+                api={api}
+                onDone={changed}
+                title="Join another household"
+                hint="Invited to someone else's household? Enter their code to see its items and memories too. You stay in this one."
+              />
+            </div>
+          )}
+        </>
       )}
     </section>
   );
@@ -78,21 +91,32 @@ function Start({ api, onDone }: { api: Api; onDone(): void }) {
             onDone();
           }}
         />
-        <FormCard
-          title="Join a household"
-          hint="Ask the person who set it up for an invite code."
-          fields={[
-            { name: "code", label: "Invite code", required: true, minLength: 4, maxLength: 32, placeholder: "ABCD-1234-EF56", autoComplete: "off" },
-            { name: "display_name", label: "Your name", defaultValue: myName, maxLength: 80 },
-          ]}
-          submitLabel="Join"
-          onSubmit={async (v) => {
-            await api("/api/v1/invites/accept", { method: "POST", body: { code: v.code, display_name: v.display_name || null } });
-            onDone();
-          }}
-        />
+        <JoinForm api={api} onDone={onDone} title="Join a household" hint="Ask the person who set it up for an invite code." />
       </div>
     </>
+  );
+}
+
+/** Same cap as the API (MAX_HOUSEHOLDS_PER_USER): past it, joining fails, so don't offer it. */
+const MAX_HOUSEHOLDS = 5;
+
+function JoinForm({ api, onDone, title, hint }: { api: Api; onDone(): void; title: string; hint: string }) {
+  const { user } = useAuth();
+  const myName = user?.name || user?.email || "";
+  return (
+    <FormCard
+      title={title}
+      hint={hint}
+      fields={[
+        { name: "code", label: "Invite code", required: true, minLength: 4, maxLength: 32, placeholder: "ABCD-1234-EF56", autoComplete: "off" },
+        { name: "display_name", label: "Your name", defaultValue: myName, maxLength: 80 },
+      ]}
+      submitLabel="Join"
+      onSubmit={async (v) => {
+        await api("/api/v1/invites/accept", { method: "POST", body: { code: v.code, display_name: v.display_name || null } });
+        onDone();
+      }}
+    />
   );
 }
 
@@ -140,7 +164,7 @@ function HouseholdView({ h, api, onChange }: { h: Household; api: Api; onChange(
     />
   );
 
-  const people = <People h={h} api={api} owner={owner} />;
+  const people = <People h={h} api={api} onChange={onChange} />;
   const sharing = <Sharing h={h} api={api} owner={owner} />;
   const language = <Language h={h} api={api} owner={owner} />;
 
@@ -165,9 +189,28 @@ function HouseholdView({ h, api, onChange }: { h: Household; api: Api; onChange(
   );
 }
 
-function People({ h, api, owner }: { h: Household; api: Api; owner: boolean }) {
+function People({ h, api, onChange }: { h: Household; api: Api; onChange(): void }) {
   const [busy, setBusy] = useState(false);
   const [invite, setInvite] = useState("");
+  const me = h.members.find((m) => m.is_you);
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(me?.display_name ?? "");
+  const [nameError, setNameError] = useState("");
+  const saveName = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return setNameError("Enter a name");
+    setBusy(true);
+    setNameError("");
+    try {
+      await api("/api/v1/me", { method: "PATCH", body: { display_name: name } });
+      setEditing(false);
+      onChange();
+    } catch (err) {
+      setNameError(err instanceof ApiError ? err.detail : (err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   const makeInvite = async () => {
     setBusy(true);
     try {
@@ -190,14 +233,47 @@ function People({ h, api, owner }: { h: Household; api: Api; owner: boolean }) {
               {m.is_you ? " (you)" : ""}
             </strong>
             <span className="muted">{m.role === "owner" ? "set this up" : "family"}</span>
+            {m.is_you && !editing && (
+              <button type="button" className="pill quiet" onClick={() => (setName(m.display_name), setEditing(true))}>
+                Change your name
+              </button>
+            )}
           </li>
         ))}
       </ul>
-      {owner && (
-        <button type="button" className="pill" disabled={busy} aria-busy={busy} onClick={makeInvite}>
-          Invite someone
-        </button>
+      {editing && (
+        <form className="rename-form" onSubmit={saveName} noValidate>
+          <label className="field">
+            <span className="field-label">Your name</span>
+            <input
+              value={name}
+              maxLength={80}
+              autoComplete="name"
+              aria-invalid={nameError ? true : undefined}
+              aria-describedby={nameError ? `rename-error-${h.id}` : undefined}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </label>
+          {nameError && (
+            <p id={`rename-error-${h.id}`} className="form-msg error">
+              {nameError}
+            </p>
+          )}
+          <p className="hint">Changes it in every household you're in.</p>
+          <span className="confirm-row">
+            <button type="submit" className="primary" disabled={busy} aria-busy={busy}>
+              Save name
+            </button>
+            <button type="button" className="pill quiet" onClick={() => (setEditing(false), setNameError(""))}>
+              Cancel
+            </button>
+          </span>
+        </form>
       )}
+      {/* Any member can invite: family brings in family, not only whoever set it up. */}
+      <button type="button" className="pill" disabled={busy} aria-busy={busy} onClick={makeInvite}>
+        Invite someone
+      </button>
       <p className="invite-code mono" role="status">
         {invite}
       </p>
