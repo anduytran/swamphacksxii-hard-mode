@@ -279,8 +279,9 @@ involve faker, and nothing is streamed or polled in between.
   (if not, nothing happens and nothing is kept) and only the words after it count. A low-reasoning model reads only
   your words to decide what you asked; the photos go to a model only for a statement (to keep the photo that shows
   the item best) or a question (to say "I see your keys on the desk" when they're in view, checked while the
-  memories are searched). "I found my keys" marks them found without the photos ever being looked at. "Last Scene,
-  continue, what about my glasses?" is a follow-up that keeps the last answer as context. The server replies as soon
+  memories are searched). "I found my keys" marks them found without the photos ever being looked at. A question
+  about an item is answered with its last 5 LastScene locations and where it is from you now (distance, direction,
+  floors). The server replies as soon
   as the wearer can hear it; indexing the memory, describing its photo and logging the question run on a follow-up
   request the Pi makes afterwards. The dashboard's Live page shows every step with its time.
 - **Say "Last Scene"**, wait for the beep, then speak: "I'm putting my keys on the counter" is saved with a photo (high beep), "Where are my keys?" is answered out loud. It records until you stop talking (up to `WAKE_MAX_SECONDS`). Audio stays on the Pi until the phrase is heard; only what's said after the beep is sent (as text, with `STT_ENGINE` set). If it triggers by mistake, raise `WAKE_THRESHOLD`; if it misses you, lower it. `WAKE_WORD` points at the "Last Scene" model (training: [wake/README.md](wake/README.md)); `WAKE_WORD=hey_jarvis` works right away for testing, with "Hey Jarvis" as the phrase.

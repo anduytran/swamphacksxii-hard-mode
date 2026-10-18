@@ -1,6 +1,32 @@
 # swamphacksxii-hard-mode
 LastScene: multimodal ai embedded on hardware to track down items
 
+**Live:** https://www.lastscene.photo · **Demo:** `device/demo_live.sh` (both Pis on the latest code, the camera's
+live view in a browser, the wearable's log on screen)
+
+## What it does
+
+- **Talk to it.** Say "Last Scene", then "I'm putting my pin on the table" (saved with a photo) or "Where's my
+  pin?" (answered out loud). A Raspberry Pi Zero 2 W with a mic and speaker hears the wake word on-device; the
+  server transcribes, decides, searches the household's memories and speaks the answer (ElevenLabs voice).
+- **It watches on its own.** A second Pi with a camera runs a YOLO11s detector (INT8 ONNX, no torch) fine-tuned on
+  the household's own items from the dashboard's Teach items page. Each item it sees becomes a passive sighting:
+  one timeline entry per item, with no notification.
+- **It reads the scene.** When a taught item is seen at 50 % confidence or more (once per item every 30 min), the
+  frame goes to a RAIA agent, which returns JSON: where it is, what's next to it, the room. That's saved as a
+  "LastScene:" memory, so the next "where's my pin?" answers "on the table next to the banana".
+- **LastScene, with distance and direction.** Each item keeps its last 5 LastScene locations (wrong ones can be
+  trashed). Every question about an item gets those locations and where the wearer is now: Wi-Fi positioning
+  (Google, then BeaconDB) plus the household's own room fingerprints ("Last Scene, this is meeting room 2360").
+  For example: "Your pin's in meeting room 2360, about 40 meters north-east, one floor up."
+- **Dashboard.** Items, Timeline, a Reitz Union floor-plan Map, Live (every voice command and camera sighting as it
+  happens), Insights and Teach items, plus an anonymous public lost-items map.
+
+**Built with:** FastAPI on Vercel · TigerData (Postgres + pgvector) · Gemini (speech-to-text, answers, photo
+checks, embeddings) · ElevenLabs (voice) · RAIA (photo context) · Auth0 · React + Vite · Ultralytics YOLO11s → ONNX
+Runtime on Raspberry Pi · openWakeWord · Google Geolocation API and BeaconDB · Vultr (training).
+**AI coding tools:** built with help from Claude Code and Codex.
+
 ## Layout
 
 ```
@@ -231,7 +257,7 @@ The Vercel project uses the FastAPI preset with Root Directory `backend` (and "i
    ```bash
    vercel --prod
    ```
-5. Point the domain: Project → Settings → Domains → add `lastscene.photo` (and `www.lastscene.photo`, redirecting to the apex). Vercel shows the DNS records to create at your registrar, normally an `A` record for `@` → `76.76.21.21` and a `CNAME` for `www` → `cname.vercel-dns.com`. HTTPS is issued automatically once DNS resolves.
+5. Point the domain: Project → Settings → Domains → add `www.lastscene.photo` (and `lastscene.photo`, redirecting to `www`; devices use `www`, since the redirect drops their bearer token). Vercel shows the DNS records to create at your registrar, normally an `A` record for `@` → `76.76.21.21` and a `CNAME` for `www` → `cname.vercel-dns.com`. HTTPS is issued automatically once DNS resolves.
 6. In Auth0 → Applications → **Dashboard** (SPA) → Settings, make sure `https://lastscene.photo` is in **Allowed Callback URLs**, **Allowed Logout URLs** and **Allowed Web Origins**.
 7. On the wearable, set `API_URL=https://lastscene.photo` in `/etc/lastscene/device.env`.
 
