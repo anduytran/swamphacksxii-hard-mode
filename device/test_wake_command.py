@@ -155,7 +155,7 @@ def test_the_frame_handler_hands_the_preroll_to_the_wake():
     d.cfg = config()
     d.live, d.busy = None, threading.Lock()
     d.stream_rec = SimpleNamespace(active=False)
-    d.voice = SimpleNamespace(listening=False)
+    d.voice = dev.VoiceCapture()
     d._recent = dev.deque(maxlen=25)
     fired = threading.Event()
     got = []
@@ -306,3 +306,27 @@ def test_fillers_are_fetched_once_and_kept(tmp_path):
     again = dev.Fillers(tmp_path / "fillers", fetch)
     again.load()
     assert again.clips == [b"RIFF0", b"RIFF1"] and asked == [0, 1, 2]  # from the folder, nothing fetched
+
+
+def test_words_right_after_the_wake_are_kept_while_the_command_starts():
+    v = dev.VoiceCapture()
+    v.hold()
+    for _ in range(5):
+        v.add(frame(8000))  # "where are my keys", said before listen() began
+    ep = dev.Endpointer(max_s=1.0)
+    got = {}
+    t = threading.Thread(target=lambda: got.update(pcm=v.listen(ep, 3, keep_all=True)))
+    t.start()
+    while t.is_alive():  # the mic keeps going, quiet now; max_s ends it
+        v.add(frame(50))
+        threading.Event().wait(0.002)
+    assert got["pcm"] is not None and got["pcm"].startswith(frame(8000) * 5) and ep.spoke
+
+
+def test_a_command_said_entirely_over_the_beep_still_counts():
+    ep = dev.Endpointer(max_s=7, timeout_s=1, ignoring=lambda: ep.frames <= 8)
+    n = feed(ep, [8000] * 8 + [50] * 40)  # talking while the beep plays, then quiet
+    assert ep.reason == "said over the beep" and n is not None
+    quiet = dev.Endpointer(max_s=7, timeout_s=1, ignoring=lambda: quiet.frames <= 2)
+    feed(quiet, [8000] * 2 + [50] * 40)  # just the beep: nothing said
+    assert quiet.reason == "nothing"

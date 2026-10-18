@@ -264,6 +264,17 @@ def template_answer(question: str, memories: list[RetrievedMemory], now: datetim
             f"You left {'them' if plural else 'it'} there {humanize_ago(top.created_at, now)}.")
 
 
+def recall_answer(memories: list[RetrievedMemory], now: datetime | None = None) -> str | None:
+    """When the answer model is too slow: what the most relevant memory says, in the wearer's own words."""
+    if not memories:
+        return None
+    top = memories[0]
+    said = " ".join(top.transcript.split()).rstrip(".")
+    if not said:
+        return None
+    return f'I think you said "{said}", {humanize_ago(top.created_at, now)}.'
+
+
 def audio_seconds(audio: bytes) -> int:
     """Whole seconds of audio, rounded up (at least 1): from the WAV header, else as 16 kHz 16-bit mono."""
     import io

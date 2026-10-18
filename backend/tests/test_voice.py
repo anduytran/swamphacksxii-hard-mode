@@ -541,3 +541,44 @@ def test_fillers_are_spoken_phrases_for_the_device_to_keep(client):  # noqa: F81
     assert unquote(first.headers["x-text"]) == FILLERS[0]
     assert client.get(f"/api/v1/memory/fillers/{len(FILLERS)}", headers=DEVICE).status_code == 404
     assert client.get("/api/v1/memory/fillers/0", headers=CAREGIVER).status_code == 403
+
+
+def test_a_slow_answer_model_gives_way_to_the_memory_itself(client):  # noqa: F811
+    import asyncio
+
+    client.settings.answer_timeout_seconds, client.settings.template_answers = 0.2, False
+
+    async def slow_answer(question, memories, language="en", previous=None):
+        await asyncio.sleep(5)
+        return "too late"
+
+    async def ask(words):
+        return Command(intent="ask", item="banana")
+
+    voice(client, "my banana is on the chair, the red one")
+    client.app_state.ai.answer, client.app_state.ai.decipher = slow_answer, ask
+    resp = wake_clip(client, "Last Scene, where's my banana, the red one", look=PhotoCheck())
+    assert unquote(resp.headers["x-answer"]).startswith('I think you said "my banana is on the chair, the red one"')
+    assert resp.headers["x-answered-by"] == "memory (model too slow)"
+
+
+def test_a_slow_photo_check_never_holds_up_the_answer(client):  # noqa: F811
+    import asyncio
+    import time
+
+    async def slow_look(item, words, pics):
+        await asyncio.sleep(5)
+        return PhotoCheck(visible=True, best_photo=0, where="on the desk")
+
+    async def ask(words):
+        return Command(intent="ask", item="keys")
+
+    voice(client, "I am putting my keys on the counter")
+    client.app_state.ai.decipher = ask
+    files = [("audio", ("v.wav", b"Last Scene, where are my keys", "audio/wav")),
+             ("image", ("p.jpg", b"\xff\xd8photo", "image/jpeg"))]
+    client.app_state.ai.look_for = slow_look
+    started = time.monotonic()
+    resp = client.post("/api/v1/memory/voice", headers=DEVICE, files=files, data={"wake": "true"})
+    assert time.monotonic() - started < 2 and resp.headers["x-answered-by"] != "camera"
+    assert "answered without it" in live(client)[0]["photo_error"]

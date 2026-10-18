@@ -19,7 +19,8 @@ from fastapi import (
     status,
 )
 
-from ..ai import BUSY, DIDNT_CATCH, FILLERS, GLAD_YOU_FOUND, IN_VIEW, AIServices, served, template_answer
+from ..ai import (BUSY, DIDNT_CATCH, FILLERS, GLAD_YOU_FOUND, IN_VIEW, NO_ANSWER, AIServices, recall_answer, served,
+                  template_answer)
 from ..auth import Principal, require_device
 from ..config import Settings, get_settings
 from ..db import MemoryDB
@@ -304,9 +305,15 @@ async def _answer_text(
         answer = template_answer(question, memories) if use_template else None
         answered_by = "template"
         if answer is None:
-            answer = await (ai.answer(question or "Tell me more.", memories, language, previous) if previous
-                            else ai.answer(question, memories, language))
-            answered_by = "llm"
+            try:
+                answer = await asyncio.wait_for(
+                    ai.answer(question or "Tell me more.", memories, language, previous) if previous
+                    else ai.answer(question, memories, language), settings.answer_timeout_seconds)
+                answered_by = "llm"
+            except TimeoutError:  # the model is queued or slow: what the best memory says, right away
+                log.warning("Answer model slower than %.0f s; answering from the memory", settings.answer_timeout_seconds)
+                answer = recall_answer(memories) or phrase(NO_ANSWER, language)
+                answered_by = "memory (model too slow)"
         lap("answer")
     except RateLimited as busy:  # over a model's limit: say so (a cached phrase, no model call)
         log.warning("Answer rate limited: %s", busy)
@@ -329,7 +336,7 @@ async def _spoken_answer(
     if trace:
         trace.add_steps(timings)
         trace.set(question=question or None, answer=answer_text, answered_by=answered_by, outcome="answered")
-    if answered_by in ("template", "llm"):  # a real answer: log the question (for Insights)
+    if answered_by not in ("fixed", "busy"):  # a real answer: log the question (for Insights)
         record_args = (db, ai, geo, device_id, question or (previous[0] if previous else ""), answer_text, where)
         if trace is not None and trace.defer:
             trace.event["pending"] = {"type": "query", "question": record_args[4], "answer": answer_text,
@@ -544,14 +551,18 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
             trace.set(best_photo=view.best_photo, in_view=view.visible, seen_where=view.where or None)
 
     if intent == "ask":
-        # The photo check and the memory search run side by side: whichever answer is used, nobody waits twice.
+        # The photo check runs beside the memory search and never holds up the answer: once the answer is ready
+        # it gets a moment more (IN_VIEW_GRACE_SECONDS), then the answer is spoken without it.
         look = wake and photos
         started = time.perf_counter()
-        view, answered = await asyncio.gather(
-            check_photos() if look else asyncio.sleep(0, None),
-            _answer_text(db, ai, settings, device.sub, words),
-        )
-        if look:
+        photo_task = asyncio.create_task(check_photos()) if look else None
+        answered = await _answer_text(db, ai, settings, device.sub, words)
+        view = None
+        if photo_task is not None:
+            try:
+                view = await asyncio.wait_for(photo_task, settings.in_view_grace_seconds)
+            except TimeoutError:
+                trace.set(photo_error="still looking when the answer was ready; answered without it")
             trace.event["steps"]["photos"] = round((time.perf_counter() - started) * 1000)
             note_view(view)
         trace.clock = time.perf_counter()

@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     # Picking the photo that shows the item (up to four photos): longer than reading words, and it decides which
     # photo a memory keeps, so it gets more time before memory falls back to photo 1.
     photo_check_timeout_seconds: float = 8.0
+    # A spoken answer: past this the wearer hears what the best memory says instead (Gemini free tier can queue
+    # a request for 30 s).
+    answer_timeout_seconds: float = 5.0
+    # The "it's in view right now" check never holds up an answer: once the answer is ready it gets this long.
+    in_view_grace_seconds: float = 0.3
     # Wake commands (the words step and the photo check) have their own models: the fastest with the
     # biggest free limits. Benchmarked Oct 17 on the command task: Gemma 4 26B-A4B ~0.7 s for words and
     # ~1.3 s with 4 photos, 3.5 Flash-Lite about the same, 3.1 Flash-Lite 3.6 s median with 26 s spikes.

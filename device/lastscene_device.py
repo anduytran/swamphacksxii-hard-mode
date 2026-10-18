@@ -596,16 +596,27 @@ class Endpointer:
         self.speech_frames = 0
         self.peak_db = 0.0  # the speech's recent loudest, falling 1 dB a frame
         self.declined = 0
+        self.early_loud = 0  # loud frames while the beep played: words said over it
         self.reason = ""
+
+    def _nothing(self) -> str:
+        """No speech after the beep. If they spoke over it (all of "Last Scene, where are my keys" said at once),
+        that was the command: done, not nothing."""
+        if self.early_loud >= 4:  # 320 ms: longer than the beep itself
+            self.reason = "said over the beep"
+            return "done"
+        self.reason = "nothing"
+        return "nothing"
 
     def feed(self, frame: bytes) -> str:
         """'listening', 'speaking', 'done' or 'nothing'."""
         level = rms(frame)
         self.frames += 1
         if self.ignoring():  # our own beep: neither speech nor the room's quiet
+            if level > max(self.floor * 2.5, 500):
+                self.early_loud += 1  # but someone may be talking over it
             if self.frames >= self.timeout_frames + self.ignore_frames and not self.spoke:
-                self.reason = "nothing"
-                return "nothing"
+                return self._nothing()
             return "speaking" if self.spoke else "listening"
         loud = level > max(self.floor * 2.5, 500)
         if not self.spoke:
@@ -615,8 +626,7 @@ class Endpointer:
                 if not loud:
                     self.floor = 0.9 * self.floor + 0.1 * level
                 if self.frames >= self.timeout_frames:
-                    self.reason = "nothing"
-                    return "nothing"
+                    return self._nothing()
                 return "listening"
         self.speech_frames += 1
         db = 20 * math.log10(level + 1)
@@ -726,25 +736,45 @@ class VoiceCapture:
 
     def __init__(self):
         self.listening = False
+        self.holding = False  # the wake just fired: keep every frame until listen() takes them
+        self._held: list[bytes] = []
+        self._lock = threading.Lock()
         self._endpointer: Endpointer | None = None
         self._frames: list[bytes] = []
         self._preroll: list[bytes] = []
         self._done = threading.Event()
         self._said = False
 
+    def hold(self) -> None:
+        """From this frame on nothing is lost, while the command thread starts up (words said right after
+        "Last Scene", with no pause, would otherwise fall in that gap)."""
+        with self._lock:
+            self._held, self.holding = [], True
+
     def listen(self, endpointer: Endpointer, timeout_s: float, keep_all: bool = False) -> bytes | None:
         """Blocks until speech ends; the PCM spoken, or None when nothing was said. `keep_all`: every frame
         from the start (words said while the beep played aren't lost), not just from when speech began."""
-        self._endpointer, self._frames, self._preroll, self._said = endpointer, [], [], False
-        self._keep_all = keep_all
-        self._done.clear()
-        self.listening = True
+        with self._lock:
+            self._endpointer, self._frames, self._preroll, self._said = endpointer, [], [], False
+            self._keep_all = keep_all
+            self._done.clear()
+            held, self._held, self.holding = self._held, [], False
+            self.listening = True
+            for frame in held:  # what was said between the wake and now, first
+                self._add(frame)
         self._done.wait(timeout_s)
         self.listening = False
         return b"".join(self._frames) if self._said and self._frames else None
 
     def add(self, frame: bytes) -> None:
-        if not self.listening or self._endpointer is None:
+        with self._lock:
+            if self.holding and not self.listening:
+                self._held.append(frame)
+                return
+            self._add(frame)
+
+    def _add(self, frame: bytes) -> None:
+        if not self.listening or self._endpointer is None or self._done.is_set():
             return
         was_quiet = not self._endpointer.spoke
         state = self._endpointer.feed(frame)
@@ -1350,13 +1380,15 @@ class Device:
             live.feed(frame)
         elif self.stream_rec.active:  # a button is held
             self.stream_rec.add(frame)
-        elif self.voice.listening:  # after the wake phrase
+        elif self.voice.listening or self.voice.holding:  # after the wake phrase
             self.voice.add(frame)
         else:
             self._recent.append(frame)  # the last WAKE_PREROLL_SECONDS: holds the wake phrase when it fires
             if self.wake and not self.busy.locked() and self.wake.heard(frame):
                 preroll = b"".join(self._recent)
                 self._recent.clear()
+                if self.cfg.wake_confirm and not self.cfg.live:
+                    self.voice.hold()  # the very next frame is kept: nothing is lost while the thread starts
                 threading.Thread(target=self._wake, args=(preroll,), daemon=True).start()
 
     def _wake(self, preroll: bytes = b"") -> None:
