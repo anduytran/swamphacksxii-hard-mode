@@ -236,6 +236,29 @@ def scan_wifi(interface: str = "wlan0") -> list[dict]:
     return []
 
 
+class CachedLocation:
+    """Where the wearer is, for each passive sighting's "location": the Wi-Fi scan (and fixed position) that
+    whereabouts() sends with voice commands, rescanned at most every `every` seconds so detection isn't held up."""
+
+    def __init__(self, cfg: Config, every: float = 60.0, clock=time.monotonic, scan=None):
+        self.cfg, self.every, self.clock = cfg, every, clock
+        self.scan = scan or (lambda: whereabouts(cfg))
+        self._at, self._value = -1e9, None
+
+    def __call__(self) -> dict | None:
+        if self.clock() - self._at >= self.every:
+            self._at = self.clock()
+            fields = self.scan()
+            value = {}
+            if fields.get("wifi"):
+                value["wifi"] = json.loads(fields["wifi"])
+            if fields.get("lat") and fields.get("lng"):
+                value |= {"lat": float(fields["lat"]), "lng": float(fields["lng"]),
+                          "accuracy_m": float(fields.get("accuracy_m") or 100)}
+            self._value = value or None
+        return self._value
+
+
 def whereabouts(cfg: Config) -> dict:
     """Form fields describing where the wearer is, per LOCATION_SOURCE."""
     fields: dict[str, str] = {}
@@ -1121,10 +1144,12 @@ class Vision:
             argv.append("--dry-run")
         args = build_parser().parse_args(argv)
 
+        location = CachedLocation(self.cfg) if self.cfg.location_source != "none" else None
+
         def loop():
             self.background = {"state": "running", "error": None}
             try:
-                run(args, frames=gate, detector=self.detector)
+                run(args, frames=gate, detector=self.detector, location=location)
                 self.background = {"state": "off", "error": None}
             except BaseException as exc:  # PipelineError is a SystemExit
                 self.background = {"state": "stopped", "error": f"{type(exc).__name__}: {exc}"[:300]}

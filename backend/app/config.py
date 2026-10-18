@@ -157,6 +157,9 @@ class Settings(BaseSettings):
     # A passive sighting of an item the camera already saw passively this recently refreshes that memory (newest
     # photo, box and time) instead of adding another timeline entry: one memory, one raia read, per item. 0 = off.
     passive_merge_minutes: float = 30.0
+    # A passive sighting sent without its own Wi-Fi scan takes the wearable's last known position from this
+    # recently (both Pis are worn together), so every save gets a location. 0 = only the sighting's own.
+    location_reuse_minutes: float = 10.0
 
     # raia (api.raia2.com) reads JSON context from the frame when one of the user's logged items (a Teach item,
     # or one named in a spoken memory) is seen at RAIA_MIN_CONFIDENCE or more: by the detector in an observation,

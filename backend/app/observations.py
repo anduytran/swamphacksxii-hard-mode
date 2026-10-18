@@ -7,6 +7,7 @@ structured labels (no Gemini caption), and keeps each item's last-seen frame for
 navigation.
 """
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -41,6 +42,19 @@ class Scene(BaseModel):
     match_score: float | None = Field(None, ge=0, le=1)
 
 
+class AccessPointIn(BaseModel):
+    bssid: str = Field(..., max_length=32)
+    signal: float = Field(..., ge=-130, le=0)
+
+
+class ObservationLocation(BaseModel):
+    """Where the camera was: a Wi-Fi scan (resolved on the server) and/or a position the device knows."""
+    wifi: list[AccessPointIn] = Field(default_factory=list, max_length=60)
+    lat: float | None = Field(None, ge=-90, le=90)
+    lng: float | None = Field(None, ge=-180, le=180)
+    accuracy_m: float | None = Field(None, ge=0, le=100000)
+
+
 class DetectedObject(BaseModel):
     label: str = Field(..., min_length=1, max_length=80)
     confidence: float = Field(..., ge=0, le=1)
@@ -70,6 +84,7 @@ class Observation(BaseModel):
     image_size: ImageSize
     scene: Scene | None = None
     objects: list[DetectedObject] = Field(..., min_length=1, max_length=50)
+    location: ObservationLocation | None = None  # optional: without it, the wearable's last known position
 
     @field_validator("captured_at")
     @classmethod
@@ -179,6 +194,22 @@ async def _recent_memory(db: MemoryDB, device_ids: list[str], labels: set[str], 
     found = {await db.recent_passive_memory(device_ids, label, settings.passive_merge_minutes, captured_at)
              for label in labels}
     return found.pop() if len(found) == 1 and None not in found else None
+
+
+async def observation_location(geo, db: MemoryDB, device_id: str, obs: Observation, settings: Settings):
+    """Where an observation was seen: its own Wi-Fi scan or position, else the wearable's last known position
+    from the last LOCATION_REUSE_MINUTES (geo.Location), else None."""
+    from .geo import Location, resolve_location
+
+    if obs.location and (obs.location.wifi or obs.location.lat is not None):
+        wifi = json.dumps([a.model_dump() for a in obs.location.wifi]) if obs.location.wifi else None
+        if loc := await resolve_location(geo, wifi, obs.location.lat, obs.location.lng, obs.location.accuracy_m):
+            return loc
+    if settings.location_reuse_minutes > 0 and hasattr(db, "recent_position"):
+        _, device_ids = await scope_for(db, device_id)
+        if found := await db.recent_position(device_ids, settings.location_reuse_minutes):
+            return Location(found[0], found[1], found[2], "recent")
+    return None
 
 
 def too_far_ahead(captured_at: datetime) -> bool:

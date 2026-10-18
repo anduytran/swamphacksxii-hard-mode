@@ -67,3 +67,61 @@ def test_text_chunks_from_structured_labels():
 def test_future_timestamps_are_caught():
     assert too_far_ahead(datetime.now(timezone.utc) + timedelta(minutes=6))
     assert not too_far_ahead(datetime.now(timezone.utc) + timedelta(minutes=1))
+
+
+# ---------------------------------------------------------------- where a passive sighting was seen
+
+class FakeGeo:
+    """Resolves a Wi-Fi scan to the Reitz Union (what Geolocator.locate returns)."""
+    def __init__(self):
+        self.scans = []
+
+    async def locate(self, aps):
+        self.scans.append(aps)
+        from app.geo import Location
+        return Location(29.6465, -82.3475, 25.0, "wifi") if aps else None
+
+
+class PositionsDB:
+    def __init__(self, recent=None):
+        self.recent, self.asked = recent, []
+
+    async def household_of_device(self, device_id):
+        return None
+
+    async def recent_position(self, device_ids, minutes):
+        self.asked.append((device_ids, minutes))
+        return self.recent
+
+
+def locate(observation, db, geo=None, settings=SETTINGS):
+    import asyncio
+    from app.observations import observation_location
+    return asyncio.run(observation_location(geo or FakeGeo(), db, "cam@clients", observation, settings))
+
+
+def test_a_sightings_own_wifi_scan_places_it():
+    geo = FakeGeo()
+    obs = Observation.model_validate(payload(location={"wifi": [{"bssid": "aa:bb:cc:dd:ee:ff", "signal": -60},
+                                                                {"bssid": "11:22:33:44:55:66", "signal": -70}]}))
+    loc = locate(obs, PositionsDB(recent=(1.0, 2.0, 5.0)), geo)
+    assert (loc.lat, loc.lng, loc.source) == (29.6465, -82.3475, "wifi") and len(geo.scans[0]) == 2
+
+
+def test_without_its_own_location_a_sighting_takes_the_wearers_last_position():
+    db = PositionsDB(recent=(29.65, -82.34, 40.0))
+    loc = locate(Observation.model_validate(payload()), db)
+    assert (loc.lat, loc.lng, loc.accuracy_m, loc.source) == (29.65, -82.34, 40.0, "recent")
+    assert db.asked == [(["cam@clients"], 10.0)]
+    assert locate(Observation.model_validate(payload()), PositionsDB(recent=None)) is None
+    off = Settings(_env_file=None, location_reuse_minutes=0)
+    assert locate(Observation.model_validate(payload()), PositionsDB(recent=(1.0, 2.0, 3.0)), settings=off) is None
+
+
+def test_a_device_position_works_without_wifi_and_bad_locations_are_refused():
+    loc = locate(Observation.model_validate(payload(location={"lat": 29.6, "lng": -82.3, "accuracy_m": 15})),
+                 PositionsDB())
+    assert (loc.lat, loc.lng) == (29.6, -82.3)
+    for bad in ({"lat": 120, "lng": 0}, {"wifi": [{"bssid": "x", "signal": 10}]}, {"wifi": [{"signal": -50}]}):
+        with pytest.raises(ValidationError):
+            Observation.model_validate(payload(location=bad))

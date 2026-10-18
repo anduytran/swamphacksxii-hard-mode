@@ -612,7 +612,8 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
         photo_task = asyncio.create_task(check_photos()) if look else None
         if photo_task is not None and raia is not None and raia.configured:
             # The item in view goes to raia (raia.py) after the response, once the photo check is done.
-            background.add_task(context_from_photos, db, ai, raia, settings, device.sub, item, photo_task, photos, "ask")
+            background.add_task(context_from_photos, db, ai, raia, settings, device.sub, item, photo_task, photos, "ask",
+                                lambda memory_id: _locate(geo, db, device.sub, "memory_logs", memory_id, where))
         answered = await _answer_text(db, ai, settings, device.sub, words)
         view = None
         if photo_task is not None:
@@ -661,7 +662,8 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
     data, kind = photos[best]
     saved = await _save_memory(background, db, ai, geo, settings, device.sub, words, data, kind, where, trace=trace)
     if wake and raia is not None and raia.configured:
-        background.add_task(context_from_photos, db, ai, raia, settings, device.sub, item, view, photos, "remember")
+        background.add_task(context_from_photos, db, ai, raia, settings, device.sub, item, view, photos, "remember",
+                            lambda memory_id: _locate(geo, db, device.sub, "memory_logs", memory_id, where))
     trace.lap("save")
     trace.set(outcome="saved", memory_id=saved["id"], saved_photo=best)
     return {**saved, "intent": "remember", "photo": best, "heard": heard}
@@ -693,7 +695,9 @@ async def _run_pending(db: MemoryDB, ai: AIServices, geo: Geolocator, settings: 
         record = await db.insert(device_id, words, typed[best][0], typed[best][1])
         done.update(memory_id=record.id, saved_photo=best, outcome="saved")
         if raia is not None and raia.configured and settings is not None:  # the wearer heard the reply already
-            if raia_memory := await context_from_photos(db, ai, raia, settings, device_id, item, view, typed, "remember"):
+            if raia_memory := await context_from_photos(
+                    db, ai, raia, settings, device_id, item, view, typed, "remember",
+                    lambda memory_id: _locate(geo, db, device_id, "memory_logs", memory_id, where)):
                 done["raia_memory_id"] = raia_memory
         pending = {"type": "memory", "memory_id": record.id, "words": words, "where": pending.get("where", {})}
     if pending["type"] == "memory":

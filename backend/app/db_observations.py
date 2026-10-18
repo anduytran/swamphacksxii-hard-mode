@@ -132,6 +132,23 @@ class ObservationsMixin:
             captured_at,
         )
 
+    async def recent_position(self, device_ids: list[str], minutes: float) -> tuple[float, float, float | None] | None:
+        """The newest located memory or question of these devices from the last `minutes`: (lat, lng, accuracy)."""
+        row = await self.pool.fetchrow(
+            """
+            SELECT lat, lng, accuracy_m FROM (
+                SELECT lat, lng, accuracy_m, created_at FROM memory_logs
+                WHERE device_id = ANY($1::text[]) AND lat IS NOT NULL AND created_at > now() - make_interval(secs => $2)
+                UNION ALL
+                SELECT lat, lng, accuracy_m, created_at FROM query_logs
+                WHERE device_id = ANY($1::text[]) AND lat IS NOT NULL AND created_at > now() - make_interval(secs => $2)
+            ) located ORDER BY created_at DESC LIMIT 1
+            """,
+            device_ids,
+            minutes * 60,
+        )
+        return (row["lat"], row["lng"], row["accuracy_m"]) if row else None
+
     async def recent_passive_memory(self, device_ids: list[str], label: str, minutes: float,
                                     captured_at: datetime) -> str | None:
         """The household's newest passive memory with `label`, if it's from the last `minutes` and not newer

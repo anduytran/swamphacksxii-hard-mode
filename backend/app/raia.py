@@ -263,9 +263,10 @@ async def save_context(db: MemoryDB, ai: AIServices, device_id: str, label: str,
 async def read_item(
     db: MemoryDB, ai: AIServices, raia: Raia, settings: Settings, device_id: str, scope: str, label: str,
     confidence: float, bbox: list[float] | None, scene_label: str | None, image: bytes, image_type: str,
-    captured_at: datetime, via: str,
+    captured_at: datetime, via: str, locate=None,
 ) -> str | None:
-    """One item's frame to raia, if it isn't in its cooldown: the saved memory's id, or None."""
+    """One item's frame to raia, if it isn't in its cooldown: the saved memory's id, or None.
+    `locate(memory_id)`: gives the saved memory the location of the save that triggered it."""
     if not await db.claim_raia_context(scope, label, None, settings.raia_cooldown_minutes):
         log.info("RAIA skip %s (%.2f, %s): read in the last %g min", label, confidence, via,
                  settings.raia_cooldown_minutes)
@@ -289,6 +290,11 @@ async def read_item(
         return None
     memory_id = await save_context(db, ai, device_id, label, ctx, image, image_type)
     await db.finish_raia_context(scope, label, json.dumps(ctx), None, memory_id, conversation_id)
+    if locate is not None:
+        try:
+            await locate(memory_id)
+        except Exception:
+            log.exception("Locating the raia memory %s failed", memory_id)
     log.info("RAIA reply: %s (%s), %.1f s, saved memory %s: %s", label, via, seconds, memory_id, json.dumps(ctx))
     return memory_id
 
@@ -304,7 +310,7 @@ def candidates(obs: Observation, min_confidence: float) -> dict[str, DetectedObj
 
 async def extract_contexts(
     db: MemoryDB, ai: AIServices, raia: Raia, settings: Settings, device_id: str, memory_id: str,
-    obs: Observation, image: bytes, image_type: str,
+    obs: Observation, image: bytes, image_type: str, locate=None,
 ) -> list[str]:
     """For an observation, best effort, after the response: the labels whose context was saved. Never raises."""
     try:
@@ -321,7 +327,7 @@ async def extract_contexts(
                 continue
             if await read_item(db, ai, raia, settings, device_id, scope, label, o.confidence, o.bbox,
                                obs.scene.label if obs.scene else None, image, image_type, obs.captured_at,
-                               f"observation {memory_id}"):
+                               f"observation {memory_id}", locate):
                 saved.append(label)
         return saved
     except Exception:
@@ -331,7 +337,7 @@ async def extract_contexts(
 
 async def context_from_photos(
     db: MemoryDB, ai: AIServices, raia: Raia, settings: Settings, device_id: str, item: str, view,
-    photos: list[tuple[bytes, str]], via: str,
+    photos: list[tuple[bytes, str]], via: str, locate=None,
 ) -> str | None:
     """For a wake command's photo check (`view`: a PhotoCheck, or the task still working it out), best effort:
     the saved memory's id, or None. Never raises."""
@@ -356,7 +362,7 @@ async def context_from_photos(
         best = view.best_photo if 0 <= view.best_photo < len(photos) else 0
         image, image_type = photos[best]
         return await read_item(db, ai, raia, settings, device_id, scope, label, confidence, None, None,
-                               image, image_type, datetime.now(timezone.utc), f"{via}, photo {best}")
+                               image, image_type, datetime.now(timezone.utc), f"{via}, photo {best}", locate)
     except Exception:
         log.exception("RAIA context from %s photos failed", via)
         return None

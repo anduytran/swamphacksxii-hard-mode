@@ -10,6 +10,7 @@ All use the device's Auth0 machine-to-machine token; each device sees its househ
 """
 
 import json
+import logging
 from datetime import datetime, timezone
 
 import asyncpg
@@ -22,12 +23,14 @@ from ..auth import Principal, require_device
 from ..config import Settings, get_settings
 from ..db import MemoryDB
 from ..db_observations import LastSeen
-from ..deps import device_limit, get_ai, get_db, get_raia
-from ..observations import Observation, scope_for, store_observation, too_far_ahead
+from ..deps import device_limit, get_ai, get_db, get_geo, get_raia
+from ..geo import Geolocator, locate_and_record
+from ..observations import Observation, observation_location, scope_for, store_observation, too_far_ahead
 from ..raia import Raia, candidates, extract_contexts
 from .memory import ALLOWED_IMAGE_TYPES, MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, _read
 
 router = APIRouter(prefix="/api/v1", tags=["observations"])
+log = logging.getLogger(__name__)
 
 
 def _label(raw: str) -> str:
@@ -74,6 +77,7 @@ async def ingest_observation(
     ai: AIServices = Depends(get_ai),
     settings: Settings = Depends(get_settings),
     raia: Raia | None = Depends(get_raia),
+    geo: Geolocator = Depends(get_geo),
 ):
     try:
         obs = Observation.model_validate(json.loads(observation))
@@ -123,16 +127,35 @@ async def ingest_observation(
         existing = await db.find_observation(str(obs.observation_id))
         response.status_code = status.HTTP_200_OK
         return {"memory_id": existing[0] if existing else None, "items": [], "duplicate": True}
-    # Context from the frame for the user's items (raia.py), after the response like the memory enrichment.
-    if raia is not None and raia.configured and candidates(obs, settings.raia_min_confidence):
-        args = (db, ai, raia, settings, device.sub, stored.memory_id, obs, image_bytes, image_type)
-        if settings.enrich_in_background:
-            background.add_task(extract_contexts, *args)
-        else:
-            await extract_contexts(*args)
+    # After the response, like the memory enrichment: where it was seen, then context from the frame (raia.py).
+    args = (db, ai, geo, raia, settings, device.sub, stored.memory_id, obs, image_bytes, image_type)
+    if settings.enrich_in_background:
+        background.add_task(_after_observation, *args)
+    else:
+        await _after_observation(*args)
     if not stored.created:  # refreshed the item's recent passive memory: one timeline entry per item
         response.status_code = status.HTTP_200_OK
     return {"memory_id": stored.memory_id, "items": stored.items, "duplicate": False, "merged": not stored.created}
+
+
+async def _after_observation(db, ai, geo, raia: Raia | None, settings: Settings, device_id: str, memory_id: str,
+                             obs: Observation, image: bytes, image_type: str) -> None:
+    """Locate the sighting (its own Wi-Fi scan, else the wearable's last position) and its place; then, for the
+    user's items, raia's read of the frame, saved with the same location. Best effort, never raises."""
+    loc = None
+    try:
+        loc = await observation_location(geo, db, device_id, obs, settings)
+        if loc is not None:
+            await locate_and_record(db, device_id, "memory_logs", memory_id, loc)
+    except Exception:
+        log.exception("Locating observation %s failed", memory_id)
+
+    async def locate(raia_memory_id: str) -> None:
+        if loc is not None:
+            await locate_and_record(db, device_id, "memory_logs", raia_memory_id, loc)
+
+    if raia is not None and raia.configured and candidates(obs, settings.raia_min_confidence):
+        await extract_contexts(db, ai, raia, settings, device_id, memory_id, obs, image, image_type, locate)
 
 
 @router.delete("/observations/{observation_id}")

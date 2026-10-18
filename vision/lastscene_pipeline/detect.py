@@ -191,10 +191,11 @@ def main(argv=None):
     return run(args)
 
 
-def run(args, frames=None, detector=None):
+def run(args, frames=None, detector=None, location=None):
     """The detect loop. `frames` (any iterable of memory_engine Frames) replaces --source, and `detector`
     (anything with detect(image) and name) replaces loading one: the wearable service passes its own
-    motion-gated camera frames and the detector it shares with voice commands (device/lastscene_device.py)."""
+    motion-gated camera frames and the detector it shares with voice commands (device/lastscene_device.py),
+    and `location` (LastSceneBridge's) so each sighting carries where the wearer is."""
     from lastscene_bridge.bridge import LastSceneBridge
     from lastscene_bridge.live_view import FrameDetections, LiveSession
     from lastscene_bridge.observation import scene_block
@@ -245,7 +246,7 @@ def run(args, frames=None, detector=None):
                   source_kind="live")
     bridge = LastSceneBridge(ls, uploader=uploader, min_confidence=args.min_confidence,
                              scene=scene_block(args.scene_label, args.scene_id), pipeline=pipeline_meta(detector),
-                             outbox_dir=args.queue / "outbox" if args.dry_run else None)
+                             outbox_dir=args.queue / "outbox" if args.dry_run else None, location=location)
     if args.dry_run:
         write = bridge._write_outbox
 

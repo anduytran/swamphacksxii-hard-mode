@@ -246,7 +246,7 @@ def test_raia_reads_a_logged_item_once_per_cooldown(c):
     # A spoken memory names the keys; then a sighting is read, and the next one within 30 min isn't.
     spoken = run(db.insert, DEVICE, "I put my keys on the hallway table", None, None)
     run(db.add_items, spoken.id, [("Keys", "hallway table")])
-    first = post(c, obs(label="keys", conf=0.71))
+    first = post(c, {**obs(label="keys", conf=0.71), "location": {"lat": 29.6465, "lng": -82.3475, "accuracy_m": 20}})
     assert first.status_code == 201 and sent.count("/conversations/conv-1/messages") == 1
     assert post(c, obs(label="keys", conf=0.9)).status_code == 201
     assert sent.count("/conversations/conv-1/messages") == 1
@@ -260,6 +260,9 @@ def test_raia_reads_a_logged_item_once_per_cooldown(c):
     chunks = run(db.chunks_for, [memory_id])[memory_id]
     assert ("item", "keys: on the hallway table") in [(ch.kind, ch.content) for ch in chunks]
     assert "hallway table" in run(db.pool.fetchval, "SELECT location FROM memory_items WHERE memory_id = $1::uuid", memory_id)
+    # The raia memory has the sighting's location.
+    where = run(db.pool.fetchrow, "SELECT lat, lng FROM memory_logs WHERE id = $1::uuid", memory_id)
+    assert (round(where["lat"], 4), round(where["lng"], 4)) == (29.6465, -82.3475)
 
     # Past the cooldown it's read again.
     run(db.pool.execute, "UPDATE raia_contexts SET claimed_at = now() - interval '31 minutes' WHERE scope = $1", DEVICE)
@@ -285,3 +288,16 @@ def test_repeat_passive_sightings_refresh_one_memory(c):
     dets = run(db.detections_for, [memory_id])[memory_id]
     assert [(d["label"], d["confidence"]) for d in dets] == [("keys", 0.9)]
     assert c.get("/api/v1/items/keys/last-seen").json()["scene"]["label"] == "hallway table"
+
+
+def test_every_passive_sighting_gets_a_location(c):
+    """Its own position, else the wearer's last known one (both Pis are worn together)."""
+    db, run = c.app.state.db, c.portal.call
+    own = post(c, {**obs(minutes_ago=2), "location": {"lat": 29.6465, "lng": -82.3475, "accuracy_m": 20}})
+    borrowed = post(c, obs(minutes_ago=1, label="wallet"))
+    assert own.status_code == 201 and borrowed.status_code == 201
+    rows = {r["id"]: r for r in run(db.pool.fetch, "SELECT id::text, lat, lng, accuracy_m FROM memory_logs WHERE id = ANY($1::uuid[])",
+                                   [own.json()["memory_id"], borrowed.json()["memory_id"]])}
+    for memory in (own, borrowed):
+        row = rows[memory.json()["memory_id"]]
+        assert (round(row["lat"], 4), round(row["lng"], 4)) == (29.6465, -82.3475)
