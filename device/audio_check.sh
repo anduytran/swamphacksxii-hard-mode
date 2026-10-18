@@ -35,7 +35,8 @@ if [ -n "$card" ] && grep -q voicebonnet "/proc/asound/card$card/id" 2>/dev/null
              "Speaker Channel" "Speaker"; do
         amixer -c "$card" -q sset "$s" on
     done
-    amixer -c "$card" -q sset "Speaker ClassD" 5
+    # Full gain (DAC 0 dB, speaker +12 dB, class-D +2.28 dB): a small speaker on a wearable needs all of it.
+    amixer -c "$card" -q sset DAC1 100%; amixer -c "$card" -q sset Speaker 100%; amixer -c "$card" -q sset "Speaker ClassD" 7
 fi
 if python3 "$HERE/play_scale.py" -D "$OUT" 2>/dev/null; then ok "played a C major scale on $OUT (did you hear it?)"
 else bad "playback on $OUT failed"; fi
