@@ -1,4 +1,4 @@
-// Items: where each thing was last put. The newest gets the big "latest scene" card.
+// Items: each thing's LastScene (where it was last put or seen). The newest gets the big LastScene card.
 import { useState } from "react";
 import { EmptyState, ItemChips, repeat, Saw, SkeletonFeatured, SkeletonItemCard } from "../components/bits";
 import { Icon } from "../components/Icons";
@@ -72,7 +72,7 @@ function Featured({ item, onOpen }: { item: Item; onOpen(): void }) {
       <Photo url={item.image_url} alt={`The ${item.name} on the ${item.location || "spot shown"}`} boxes={item.detection ? [item.detection] : []}>
         <span className="tag">
           <span className="live-dot" />
-          Latest scene
+          LastScene
         </span>
       </Photo>
       <div className="featured-body">

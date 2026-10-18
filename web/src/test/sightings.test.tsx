@@ -15,7 +15,7 @@ const render = (list: Sighting[], confirming: string | null = null) =>
   renderToStaticMarkup(<SightingList name="pin" list={list} confirming={confirming} busy={false} onAsk={() => {}} onTrash={() => {}} />);
 
 describe("SightingList", () => {
-  it("shows each sighting with raia's place words, the place, and which one is last seen", () => {
+  it("shows each sighting with raia's place words, the place, and which one is the LastScene", () => {
     const html = render([sighting({}), sighting({ id: "s2", last_seen: false, where: null, summary: null, nearby: [], room: null,
       place: null, scene: "kitchen counter", confidence: 0.42, maybe: true, source: "raia" })]);
     const t = text(html);
@@ -23,7 +23,7 @@ describe("SightingList", () => {
     expect(t).toContain("On the desk by the laptop");
     expect(t).toContain("Next to laptop, blue mug");
     expect(t).toContain("Reitz Union · office");
-    expect(t).toContain("last seen ·");
+    expect(t).toContain("LastScene ·");
     expect(t).toContain("On the kitchen counter");
     expect(t).toContain("Place not known");
     expect(t).toContain("42% (maybe) · raia");

@@ -160,6 +160,10 @@ class Settings(BaseSettings):
     # A passive sighting sent without its own Wi-Fi scan takes the wearable's last known position from this
     # recently (both Pis are worn together), so every save gets a location. 0 = only the sighting's own.
     location_reuse_minutes: float = 10.0
+    # Spoken answers about an item add where its LastScene is compared with the wearer ("here at Reitz Union",
+    # "at Home, about 1.3 kilometers from you", lastscene.py). Worked out beside the answer; once the answer is
+    # ready it gets at most this long, else the answer goes without it.
+    lastscene_note_seconds: float = 1.0
 
     # raia (api.raia2.com) reads JSON context from the frame when one of the user's logged items (a Teach item,
     # or one named in a spoken memory) is seen at RAIA_MIN_CONFIDENCE or more: by the detector in an observation,

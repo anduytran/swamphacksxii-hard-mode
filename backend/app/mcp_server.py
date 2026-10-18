@@ -177,7 +177,7 @@ async def item_last_seen(
     household_id: HouseholdId,
     item: Annotated[str, Field(min_length=1, max_length=80, description="The item, e.g. 'wallet' or 'keys'. Partial names match.")],
 ) -> dict[str, Any]:
-    """Where and when one item was last seen. `memories`: the newest memories naming the
+    """One item's LastScene: where and when it was last put or seen. `memories`: the newest memories naming the
     item (from what the wearer said and the photo), each with where it was put. `camera`:
     the vision pipeline's latest sightings, with the detector's confidence (`maybe` = low
     confidence) and `found_at` if the wearer has since found it. Both newest first."""
@@ -248,7 +248,7 @@ async def timeline(
 
 @server.tool(annotations=READ_ONLY)
 async def items(household_id: HouseholdId) -> dict[str, Any]:
-    """Every item seen in the last 72 hours: where it was last put and when, how often it
+    """Every item seen in the last 72 hours: its LastScene (where it was last put, and when), how often it
     was mentioned, how often the wearer asked about it, and up to four earlier spots.
     `taught` lists the items the household taught the camera to recognise."""
     req, hid, devices = await _household("items", household_id)

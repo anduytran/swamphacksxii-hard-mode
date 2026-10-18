@@ -56,7 +56,7 @@ export default function MapPage() {
           <div className="legend map-legend">
             <span>
               <i className="swatch room-swatch" />
-              Room shade: questions about items last seen there
+              Room shade: questions about items whose LastScene is there
             </span>
             <span>
               <i className="dot dot-asked" />
@@ -71,7 +71,7 @@ export default function MapPage() {
           <details>
             <summary>Show as table</summary>
             <DataTable
-              headers={["Room", "Put down here", "Questions about items last here", "Items there now"]}
+              headers={["Room", "Put down here", "Questions about items whose LastScene is here", "Items there now"]}
               rows={(house.data?.rooms ?? []).map((r) => [r.name, r.putdowns, r.lost, roomItems(r, house.data?.items ?? []) || "–"])}
             />
           </details>
@@ -178,7 +178,7 @@ function HouseMapView({ data, onRetry }: { data?: HouseMap; onRetry(): void }) {
           </button>
         </div>
       )}
-      <div ref={ref} id="home-map" className={data ? "home-map" : "home-map is-loading"} role="img" aria-label={`Floor plan${current && floors.length > 1 ? ` of ${current.name}` : ""} showing where items were last seen`}>
+      <div ref={ref} id="home-map" className={data ? "home-map" : "home-map is-loading"} role="img" aria-label={`Floor plan${current && floors.length > 1 ? ` of ${current.name}` : ""} showing each item's LastScene`}>
         {data && !data.items.length ? (
           <EmptyState
             title="Nothing to map yet"

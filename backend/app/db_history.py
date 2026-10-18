@@ -145,6 +145,27 @@ class HistoryMixin:
         )
         return [_sighting(r) for r in rows]
 
+    async def lastscene_position(self, scope: str, device_ids: list[str], item: str):
+        """The item's LastScene position, (lat, lng, accuracy_m, place_id, when): the newest of its located
+        sightings, the memory its last-seen frame came from, and located memories that name it. None if unknown."""
+        row = await self.pool.fetchrow(
+            """
+            SELECT lat, lng, accuracy_m, place_id, at FROM (
+                SELECT lat, lng, accuracy_m, place_id::text, captured_at AS at FROM item_history
+                WHERE scope = $1 AND item = $2 AND lat IS NOT NULL
+                UNION ALL
+                SELECT m.lat, m.lng, m.accuracy_m, m.place_id::text, ls.captured_at FROM item_last_seen ls
+                JOIN memory_logs m ON m.id = ls.memory_id WHERE ls.scope = $1 AND ls.item = $2 AND m.lat IS NOT NULL
+                UNION ALL
+                SELECT m.lat, m.lng, m.accuracy_m, m.place_id::text, m.created_at FROM memory_items i
+                JOIN memory_logs m ON m.id = i.memory_id
+                WHERE m.device_id = ANY($3::text[]) AND lower(i.name) = $2 AND m.lat IS NOT NULL
+            ) located ORDER BY at DESC LIMIT 1
+            """,
+            scope, item, device_ids,
+        )
+        return (row["lat"], row["lng"], row["accuracy_m"], row["place_id"], row["at"]) if row else None
+
     async def last_seen_keys(self, scopes: list[str], item: str) -> set[str]:
         """What the item's last-seen comes from: its observation id, else its capture time (isoformat)."""
         rows = await self.pool.fetch(

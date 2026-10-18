@@ -97,7 +97,7 @@ async def items(
     db: MemoryDB = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    """One entry per item: where it was last put, plus where it was before that."""
+    """One entry per item: its LastScene (where it was last put), plus where it was before that."""
     window = settings.retention_hours
     sightings = await db.item_sightings(window, devices)
     asked = Counter(q.item for q in await db.recent_queries(window, devices) if q.item)

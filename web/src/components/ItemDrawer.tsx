@@ -111,6 +111,7 @@ function Detail({ name, item, questions, onClose }: { name: string; item: Item |
         alt={`The ${name} on the ${item.location || "spot shown"}`}
         boxes={item.detection ? [item.detection] : []}
       />
+      <p className="eyebrow">LastScene</p>
       <p className="detail-where">{capitalize(item.location) || "Location not said"}</p>
       <p className="when mono">
         {timeAgo(item.last_seen)} · {clockTime(item.last_seen)}
@@ -125,7 +126,7 @@ function Detail({ name, item, questions, onClose }: { name: string; item: Item |
           {spots.map((s) => (
             <li key={`${s.timestamp}-${s.now}`} className={s.now ? "now" : ""}>
               <strong>{capitalize(s.location) || "Somewhere"}</strong>
-              <span className="muted">{s.now ? `now · ${timeAgo(s.timestamp)}` : timeAgo(s.timestamp)}</span>
+              <span className="muted">{s.now ? `LastScene · ${timeAgo(s.timestamp)}` : timeAgo(s.timestamp)}</span>
             </li>
           ))}
         </ol>
@@ -140,7 +141,7 @@ function Detail({ name, item, questions, onClose }: { name: string; item: Item |
 }
 
 /** The item's last few passive sightings (camera and raia), newest first. A wrong one can be trashed: it and the
- * memory it alone stands for go, and "last seen" falls back to the next one. */
+ * memory it alone stands for go, and its LastScene falls back to the next one. */
 function Sightings({ name }: { name: string }) {
   const api = useApi();
   const [state, setState] = useState<{ list?: Sighting[]; error?: string }>({});
@@ -165,7 +166,7 @@ function Sightings({ name }: { name: string }) {
     setBusy(true);
     try {
       await api(`${path}/${id}`, { method: "DELETE" });
-      invalidateAll(); // the item's last-seen and the timeline may have changed
+      invalidateAll(); // the item's LastScene and the timeline may have changed
       setConfirming(null);
       await load();
     } catch (err) {
@@ -193,7 +194,7 @@ export function SightingList({ name, list, confirming, busy, onAsk, onTrash }: {
   return (
     <section className="detail-section">
       <h3>Last {list.length} sightings</h3>
-      <p className="hint">Seen by the camera on its own. Trash any that aren't the {name}: its last-seen moves to the next one.</p>
+      <p className="hint">Seen by the camera on its own. Trash any that aren't the {name}: its LastScene moves to the next one.</p>
       <ul className="sightings">
         {list.map((s, i) => (
           <li key={s.id} className={s.last_seen ? "now" : ""}>
@@ -210,7 +211,7 @@ export function SightingList({ name, list, confirming, busy, onAsk, onTrash }: {
                 {[s.place?.label, s.room && s.room !== s.place?.label ? s.room : null].filter(Boolean).join(" · ") || "Place not known"}
               </span>
               <time className="mono" dateTime={s.captured_at}>
-                {s.last_seen ? "last seen · " : ""}
+                {s.last_seen ? "LastScene · " : ""}
                 {timeAgo(s.captured_at)} · {clockTime(s.captured_at)}
                 {s.confidence !== null ? ` · ${Math.round(s.confidence * 100)}%${s.maybe ? " (maybe)" : ""}` : ""}
                 {s.source === "raia" ? " · raia" : ""}

@@ -303,6 +303,16 @@ def test_every_passive_sighting_gets_a_location(c):
         row = rows[memory.json()["memory_id"]]
         assert (round(row["lat"], 4), round(row["lng"], 4)) == (29.6465, -82.3475)
 
+    # The item's LastScene position: its newest located sighting.
+    import time as _time
+    for _ in range(10):  # located after the response
+        found = run(db.lastscene_position, DEVICE, [DEVICE], "wallet")
+        if found:
+            break
+        _time.sleep(0.5)
+    assert found and (round(found[0], 4), round(found[1], 4)) == (29.6465, -82.3475)
+    assert run(db.lastscene_position, DEVICE, [DEVICE], "umbrella") is None
+
 
 def test_an_items_last_five_sightings_can_be_trashed(c):
     """Every passive sighting is kept (newest 5 per item) even when memories merge; trashing a wrong one
