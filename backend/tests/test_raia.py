@@ -157,7 +157,7 @@ def from_photos(db, api, view, item="pin", photos=None, client=None):  # noqa: F
 
 def test_an_observed_item_is_read_and_saved_as_a_lastscene_memory():
     db, api = FakeDB(), Api()
-    assert extract(db, api, obs(("keys", 0.31))) == ["keys"]
+    assert extract(db, api, obs(("keys", 0.5))) == ["keys"]  # at the 0.5 threshold
     assert api.calls == [
         ("GET", "/external/users/search"),
         ("POST", "/external/users"),
@@ -215,7 +215,7 @@ def test_not_visible_saves_nothing():
 
 def test_only_detections_above_the_threshold_are_sent():
     db, api = FakeDB(), Api()
-    assert extract(db, api, obs(("keys", 0.30), ("wallet", 0.2))) == []
+    assert extract(db, api, obs(("keys", 0.49), ("wallet", 0.2))) == []
     assert api.calls == [] and db.claims == {}
 
 
@@ -241,7 +241,7 @@ def test_an_item_is_read_at_most_once_per_cooldown():
 
 def test_each_item_has_its_own_cooldown():
     db, api = FakeDB(), Api()
-    assert extract(db, api, obs(("keys", 0.4), ("keys", 0.9), ("wallet", 0.5))) == ["keys", "wallet"]
+    assert extract(db, api, obs(("keys", 0.6), ("keys", 0.9), ("wallet", 0.5))) == ["keys", "wallet"]
     assert len(db.memories) == 2
 
 
@@ -274,7 +274,7 @@ def test_an_item_the_photo_check_sees_sends_the_best_photo():
 
 def test_the_photo_check_must_see_the_item_above_the_threshold():
     db, api = FakeDB(), Api()
-    assert from_photos(db, api, PhotoCheck(visible=True, confidence=0.30)) is None
+    assert from_photos(db, api, PhotoCheck(visible=True, confidence=0.49)) is None
     assert from_photos(db, api, PhotoCheck(visible=False, confidence=0.9)) is None
     assert from_photos(db, api, None) is None
     assert from_photos(db, api, PhotoCheck(visible=True, confidence=0.9), item="") is None
@@ -306,7 +306,6 @@ def test_an_ask_with_the_pin_in_view_sends_it_after_the_answer(client):  # noqa:
     db.household_of_device = fake.household_of_device
     db.household_device_ids = fake.household_device_ids
     client.app_state.raia = raia(api)
-    client.settings.raia_min_confidence = 0.30
 
     async def ask(words):
         return Command(intent="ask", item="pin")

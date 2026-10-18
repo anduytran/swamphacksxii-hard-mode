@@ -150,14 +150,14 @@ class Settings(BaseSettings):
     last_seen_retention_hours: int = 72
 
     # raia (api.raia2.com) reads JSON context from the frame when one of the user's logged items (a Teach item,
-    # or one named in a spoken memory) is seen above RAIA_MIN_CONFIDENCE: by the detector in an observation, or by
-    # a wake command's photo check (its own 0-1 confidence). At most once per item every RAIA_COOLDOWN_MINUTES,
+    # or one named in a spoken memory) is seen at RAIA_MIN_CONFIDENCE or more: by the detector in an observation,
+    # or by a wake command's photo check (its own 0-1 confidence). At most once per item every RAIA_COOLDOWN_MINUTES,
     # after the response; saved as a memory "LastScene: <summary>" with the item's place indexed (raia.py).
     # The conversation endpoints take only the agent key; the org key is kept for the org-level endpoints.
     raia_agent_key: str = ""
     raia_org_key: str = ""
     raia_api_url: str = "https://api.raia2.com/external"
-    raia_min_confidence: float = 0.30
+    raia_min_confidence: float = 0.5
     raia_cooldown_minutes: float = 30.0
     raia_timeout_seconds: float = 60.0
 

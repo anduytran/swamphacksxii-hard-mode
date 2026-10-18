@@ -1,7 +1,7 @@
 """Context from the frame with a raia agent (api.raia2.com), when the camera sees one of the user's items.
 
 Two ways a frame shows one of the user's logged items (a Teach item or alias, or an item named in one of the
-household's spoken memories) above RAIA_MIN_CONFIDENCE:
+household's spoken memories) at RAIA_MIN_CONFIDENCE or more:
   * an observation from the vision pipeline (routers/observations.py): the detector's confidence and box;
   * a wake command's photo check (routers/memory.py, ask and remember): the photo model says the item is in
     one of the photos, with its own 0-1 confidence; that photo is sent.
@@ -248,10 +248,10 @@ async def read_item(
 
 
 def candidates(obs: Observation, min_confidence: float) -> dict[str, DetectedObject]:
-    """The most confident box of each label seen above min_confidence."""
+    """The most confident box of each label seen at min_confidence or more."""
     best: dict[str, DetectedObject] = {}
     for o in obs.objects:
-        if o.confidence > min_confidence and (o.label not in best or o.confidence > best[o.label].confidence):
+        if o.confidence >= min_confidence and (o.label not in best or o.confidence > best[o.label].confidence):
             best[o.label] = o
     return best
 
@@ -299,8 +299,8 @@ async def context_from_photos(
             log.info("RAIA skip %s (%s): no photo check", label, via)
             return None
         confidence = float(getattr(view, "confidence", 0.0) or 0.0)
-        if not view.visible or confidence <= settings.raia_min_confidence:
-            log.info("RAIA skip %s (%s): photo check says visible=%s, confidence %.2f (needs > %.2f)",
+        if not view.visible or confidence < settings.raia_min_confidence:
+            log.info("RAIA skip %s (%s): photo check says visible=%s, confidence %.2f (needs %.2f)",
                      label, via, view.visible, confidence, settings.raia_min_confidence)
             return None
         scope, device_ids = await scope_for(db, device_id)

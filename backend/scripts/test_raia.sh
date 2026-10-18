@@ -5,7 +5,7 @@
 #   backend/scripts/test_raia.sh --db path/to/photo.jpg [label]     also the Postgres test (writes to DATABASE_URL,
 #                                                                   cleans up after itself; creates raia_contexts)
 #
-# 1. tests/test_raia.py: the trigger rules (observations and wake photo checks above 0.30, logged items only,
+# 1. tests/test_raia.py: the trigger rules (observations and wake photo checks at 0.5 or more, logged items only,
 #    30 min cooldown), the JSON context and the "LastScene: " memory, against a mock raia.
 # 2. With --db: tests/test_observations_integration.py's raia test, through POST /api/v1/observations.
 # 3. scripts/raia_context_test.py: the photo to the real agent with RAIA_AGENT_KEY from backend/.env.
