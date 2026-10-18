@@ -1766,6 +1766,12 @@ class Device:
         if self.wake:
             log.info("Listening for the wake phrase (%s)%s", self.cfg.wake_word, "; live conversations on" if self.cfg.live else "")
         log.info("LastScene ready: hold REMEMBER (GPIO%d) or ASK (GPIO%d)", self.cfg.remember_pin, self.cfg.ask_pin)
+        missing = [n for n in ("listening.wav", "stopped.wav") if not (SOUNDS / n).is_file()]
+        if missing:
+            log.warning("Sounds: %s not in %s, so the plain beeps play instead (copy device/sounds there)",
+                        ", ".join(missing), SOUNDS)
+        else:
+            log.info("Sounds: listening.wav and stopped.wav from %s", SOUNDS)
         while True:
             time.sleep(60)
             try:
