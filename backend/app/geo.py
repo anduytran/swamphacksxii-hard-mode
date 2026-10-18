@@ -1,8 +1,9 @@
 """Where a memory happened: Wi-Fi positioning, places, and public statistics.
 
 The wearable (a Pi Zero 2 W, no GPS) sends the Wi-Fi access points it can hear. The
-server turns them into coordinates with a geolocation service, so the key never lives
-on the device and results can be cached. The access-point list is not stored; only the
+server turns them into coordinates with a geolocation service (Google when a key is set,
+then BeaconDB, which is free and needs no key), so no key lives on the device and results
+can be cached. The access-point list is not stored; only the
 resulting position is.
 
 Positions are then grouped into the household's places (home, a café, a park). Places
@@ -74,49 +75,57 @@ def usage_month(now: datetime | None = None) -> str:
 
 
 class Geolocator:
-    """Wi-Fi scan -> coordinates via the Google Geolocation API, behind a spend guard.
+    """Wi-Fi scan -> coordinates: Google's Geolocation API behind a spend guard, then BeaconDB.
 
-    Every call is first counted against GEOLOCATION_MONTHLY_LIMIT in the database; once the
-    month's budget is used (or the database can't be reached), no call is made and the memory
-    falls back to the device's own position. Answers are cached in the database, so a spot
-    the wearer visits often is looked up once.
+    Google is asked only when GOOGLE_GEOLOCATION_API_KEY is set, and every call is first
+    counted against GEOLOCATION_MONTHLY_LIMIT in the database; once the month's budget is used
+    (or the database can't be reached), no Google call is made. BeaconDB (beacondb.net, the
+    community successor to Mozilla Location Service) takes the same request, is free and needs
+    no key, so it answers without a key, past the budget, and when Google finds nothing.
+    Answers are cached in the database, so a spot the wearer visits often is looked up once.
     """
 
     URL = "https://www.googleapis.com/geolocation/v1/geolocate"
+    # BeaconDB asks clients to identify themselves.
+    USER_AGENT = "LastScene/1.0 (+https://www.lastscene.photo)"
 
     def __init__(self, settings: Settings, db=None):
         self.key = settings.google_geolocation_api_key
         self.limit = settings.geolocation_monthly_limit
+        self.beacondb_url = settings.beacondb_url
         self.cache_days = settings.geolocation_cache_days
-        self.db = db  # without one there is no budget to check, so no call is ever made
+        self.db = db  # without one there is no budget to check, so Google is never called
         self._cache: dict[str, Location] = {}
         self._warned_month: str | None = None
 
     @property
-    def enabled(self) -> bool:
+    def google_enabled(self) -> bool:
         return bool(self.key) and self.limit > 0
 
+    @property
+    def providers(self) -> list[str]:
+        return [name for name, on in (("google", self.google_enabled), ("beacondb", bool(self.beacondb_url))) if on]
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.providers)
+
     async def locate(self, aps: list[AccessPoint]) -> Location | None:
-        if not self.enabled or self.db is None or len(aps) < MIN_ACCESS_POINTS:
+        if not self.enabled or len(aps) < MIN_ACCESS_POINTS:
             return None
         # The three strongest access points identify a spot well enough to reuse an answer.
         cache_key = hashlib.sha256("|".join(sorted(a.bssid for a in aps[:3])).encode()).hexdigest()
         if cached := self._cache.get(cache_key):
             return cached
-        month = usage_month()
+        db_ok = self.db is not None
         try:
-            if hit := await self.db.cached_position(cache_key, self.cache_days):
+            if db_ok and (hit := await self.db.cached_position(cache_key, self.cache_days)):
                 loc = Location(*hit, "wifi")
                 self._cache[cache_key] = loc
                 return loc
-            if not await self.db.reserve_geolocation_call(month, self.limit):
-                if self._warned_month != month:
-                    log.warning("Geolocation budget for %s used up (%d calls); Wi-Fi positioning paused", month, self.limit)
-                    self._warned_month = month
-                return None
         except Exception:
-            log.exception("Geolocation spend guard unavailable; skipping the call")
-            return None  # fail closed: no budget check, no call
+            log.exception("Geolocation cache unavailable; skipping Google")
+            db_ok = False  # the budget can't be trusted either
         body = {
             "considerIp": False,  # the server's IP says nothing about the wearer
             "wifiAccessPoints": [
@@ -124,23 +133,55 @@ class Geolocator:
                 for a in aps
             ],
         }
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(self.URL, params={"key": self.key}, json=body)
-        except httpx.HTTPError:
-            log.exception("Geolocation request failed")
+        loc = None
+        if db_ok and await self._google_allowed():
+            loc = await self._ask("Google", self.URL, body, params={"key": self.key})
+        if loc is None and self.beacondb_url:
+            loc = await self._ask("BeaconDB", self.beacondb_url, body)
+        if loc is None:
             return None
-        if resp.status_code != 200:
-            log.warning("Geolocation returned %s: %s", resp.status_code, resp.text[:200])
-            return None
-        data = resp.json()
-        loc = Location(data["location"]["lat"], data["location"]["lng"], data.get("accuracy"), "wifi")
         self._cache[cache_key] = loc
-        try:
-            await self.db.cache_position(cache_key, loc.lat, loc.lng, loc.accuracy_m)
-        except Exception:
-            log.exception("Could not cache a geolocation answer")
+        if db_ok:
+            try:
+                await self.db.cache_position(cache_key, loc.lat, loc.lng, loc.accuracy_m)
+            except Exception:
+                log.exception("Could not cache a geolocation answer")
         return loc
+
+    async def _google_allowed(self) -> bool:
+        """Reserve one call of this month's Google budget; False without a key or a working check."""
+        if not self.google_enabled or self.db is None:
+            return False
+        month = usage_month()
+        try:
+            if await self.db.reserve_geolocation_call(month, self.limit):
+                return True
+        except Exception:
+            log.exception("Geolocation spend guard unavailable; skipping Google")
+            return False  # fail closed: no budget check, no paid call
+        if self._warned_month != month:
+            log.warning("Google geolocation budget for %s used up (%d calls); using BeaconDB only", month, self.limit)
+            self._warned_month = month
+        return False
+
+    async def _ask(self, name: str, url: str, body: dict, params: dict | None = None) -> Location | None:
+        try:
+            async with httpx.AsyncClient(timeout=10, headers={"User-Agent": self.USER_AGENT}) as client:
+                resp = await client.post(url, params=params, json=body)
+        except httpx.HTTPError:
+            log.exception("%s geolocation request failed", name)
+            return None
+        if resp.status_code == 404:
+            return None  # no estimate for these access points
+        if resp.status_code != 200:
+            log.warning("%s geolocation returned %s: %s", name, resp.status_code, resp.text[:200])
+            return None
+        try:
+            data = resp.json()
+            return Location(float(data["location"]["lat"]), float(data["location"]["lng"]), data.get("accuracy"), "wifi")
+        except (ValueError, KeyError, TypeError):
+            log.warning("%s geolocation answer unreadable: %s", name, resp.text[:200])
+            return None
 
 
 async def resolve_location(

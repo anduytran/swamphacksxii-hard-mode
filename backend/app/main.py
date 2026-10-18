@@ -162,11 +162,13 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
     async def healthz():
         settings = get_settings()
         missing = missing_settings(settings)
+        positioning = Geolocator(settings).providers
         # Optional features: whether each is configured, never the value itself.
         return {
             "ok": not missing,
             "missing_settings": missing,
-            "wifi_positioning": bool(settings.google_geolocation_api_key),
+            "wifi_positioning": bool(positioning),
+            "wifi_positioning_providers": positioning,  # google (when keyed), then beacondb
             "raia_context": bool(settings.raia_agent_key),
             "geolocation_budget": await geolocation_budget(settings),
             "model_usage": await model_usage(settings),

@@ -429,7 +429,8 @@ def test_startup_survives_missing_settings_and_healthz_reports_them(monkeypatch)
     assert body["ok"] is False
     assert {"DATABASE_URL", "IMAGE_URL_SECRET", "GEMINI_API_KEY"} <= set(body["missing_settings"])
     assert "OPENAI_API_KEY" not in body["missing_settings"]  # not used with Gemini defaults
-    assert body["wifi_positioning"] is False
+    assert body["wifi_positioning"] is True  # BeaconDB needs no key
+    assert body["wifi_positioning_providers"] == ["beacondb"]
 
 
 def test_healthz_reports_wifi_positioning_without_the_key(monkeypatch):
@@ -440,6 +441,7 @@ def test_healthz_reports_wifi_positioning_without_the_key(monkeypatch):
     with TestClient(main.create_app(use_lifespan=False)) as c:
         resp = c.get("/healthz")
     assert resp.json()["wifi_positioning"] is True
+    assert resp.json()["wifi_positioning_providers"] == ["google", "beacondb"]
     assert "test-geo-key" not in resp.text
 
 
