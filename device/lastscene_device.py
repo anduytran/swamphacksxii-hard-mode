@@ -996,6 +996,23 @@ def intent_of(transcript: str) -> str:
 
 # ---------------------------------------------------------------- item detection on the device
 
+class Remembering:
+    """A detector that keeps its latest result, (monotonic time, detections, frame height and width), so the
+    camera Pi's /stream can draw what the background loop last saw. Everything else passes through."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.last: tuple[float, list, tuple[int, int]] | None = None
+
+    def detect(self, image):
+        hits = self.inner.detect(image)
+        self.last = (time.monotonic(), list(hits), tuple(image.shape[:2]))
+        return hits
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
 def passive_missing(env) -> list[str]:
     """What the background loop still needs to post observations (lastscene_bridge.auth's names)."""
     if env.get("LASTSCENE_DEVICE_TOKEN"):
@@ -1029,7 +1046,7 @@ class Vision:
         def build(model_dir):
             return load_detector(model_dir, load_classes(model_dir, self.root), cfg.min_confidence, "onnx", 4)
 
-        self.detector = ReloadingDetector(pointer, None, build, log=log.info)
+        self.detector = Remembering(ReloadingDetector(pointer, None, build, log=log.info))
         self._read_json = read_json
         self.stats = None
         # The background loop's state, for the camera Pi's /health: "off", "running", or why it isn't.

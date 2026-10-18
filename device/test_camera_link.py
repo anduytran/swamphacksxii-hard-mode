@@ -84,7 +84,7 @@ def test_health_and_unknown_paths(faker):
     url, service = faker
     assert httpx.get(f"{url}/health", headers={"X-Camera-Token": TOKEN}).json() == {"camera": "FakeCamera", "vision": None,
                                                                                  "passive": None}
-    assert httpx.get(f"{url}/stream", headers={"X-Camera-Token": TOKEN}).status_code == 404
+    assert httpx.get(f"{url}/video", headers={"X-Camera-Token": TOKEN}).status_code == 404
 
 
 def test_a_camera_failure_is_a_503_not_a_crash(faker):
@@ -160,3 +160,42 @@ def test_passive_detection_needs_device_credentials_and_says_so(caplog):
     vision.detector = SimpleNamespace(name="yolo11s-int8")
     service = camera_server.CameraService(Config.local({}), camera=FakeCamera(), vision=vision)
     assert service.health()["passive"]["state"] == "off"
+
+
+def test_the_stream_sends_live_frames_with_the_latest_boxes():
+    """GET /stream: MJPEG frames, with what the detector last saw drawn on them (needs OpenCV)."""
+    pytest.importorskip("cv2")
+    import time
+
+    import numpy as np
+
+    class FrameCamera(FakeCamera):
+        def frame(self):
+            return np.zeros((480, 640, 3), dtype=np.uint8)
+
+    remembering = dev.Remembering(SimpleNamespace(detect=lambda image: [], name="yolo11s-int8"))
+    remembering.last = (time.monotonic(), [SimpleNamespace(label="pin", conf=0.87, bbox=(100, 100, 200, 220))],
+                        (480, 640))
+    vision = SimpleNamespace(detector=remembering, background={"state": "running", "error": None})
+    service = camera_server.CameraService(Config.local({}), camera=FrameCamera(), vision=vision)
+    jpeg = service.stream_jpeg()
+    assert jpeg[:2] == b"\xff\xd8"
+    import cv2
+    image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+    assert image.shape == (480, 640, 3) and image[100:220, 100].mean() > 40  # the box's left edge is drawn
+
+    server = camera_server.serve(service, TOKEN, "127.0.0.1", 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        assert httpx.get(f"{url}/stream").status_code == 401
+        with httpx.stream("GET", f"{url}/stream", headers={"X-Camera-Token": TOKEN}, timeout=10) as resp:
+            assert resp.headers["content-type"].startswith("multipart/x-mixed-replace")
+            got = b""
+            for chunk in resp.iter_bytes():
+                got += chunk
+                if got.count(b"--frame") >= 2:
+                    break
+        assert b"Content-Type: image/jpeg" in got and b"\xff\xd8" in got
+    finally:
+        server.shutdown()

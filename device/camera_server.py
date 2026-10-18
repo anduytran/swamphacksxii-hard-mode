@@ -8,7 +8,10 @@ For each memory sreer makes a single request; questions never involve faker:
     GET /photo?for=<the words>    with VISION_DIR: retried until the item the words name is in it
     GET /photo?max=768            no side longer than 768 px (smaller to send, quicker for a model to read)
                                   (headers X-Item, X-Confidence, X-Attempts say what was found)
-    GET /health                   {"camera": ..., "vision": ...}
+    GET /health                   {"camera": ..., "vision": ..., "passive": ...}
+    GET /stream                   live MJPEG (STREAM_FPS, <= 640 px) with the detector's latest boxes drawn on it,
+                                  for watching what passive detection sees (camera_view.py shows it on a laptop);
+                                  at most MAX_STREAMS at once
 
 Every request needs the header X-Camera-Token: <CAMERA_TOKEN> (the same value in both Pis' env).
 Between requests faker can keep running the background item detection (VISION_EVERY), as before;
@@ -24,6 +27,7 @@ import json
 import logging
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -31,6 +35,10 @@ import lastscene_device as dev
 
 log = logging.getLogger("lastscene.camera")
 MAX_WORDS = 300
+STREAM_FPS = float(os.environ.get("STREAM_FPS", 4))
+STREAM_MAX_SIDE = 640
+MAX_STREAMS = 2  # each one encodes JPEGs on the Pi Zero's CPU, next to the detector
+BOX_FRESH_S = 3.0  # the detector's boxes are drawn while they're at most this old
 
 
 class CameraService:
@@ -55,6 +63,34 @@ class CameraService:
             if hit is not None:
                 headers.update({"X-Item": hit.label, "X-Confidence": f"{hit.conf:.2f}"})
             return dev.jpeg_bytes(frame), headers
+
+    def stream_jpeg(self) -> bytes:
+        """One live frame, at most STREAM_MAX_SIDE px, with the detector's latest boxes if they're fresh."""
+        import cv2
+
+        frame = self.camera.frame()
+        h, w = frame.shape[:2]
+        scale = min(1.0, STREAM_MAX_SIDE / max(h, w))
+        if scale < 1.0:
+            frame = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+        last = getattr(getattr(self.vision, "detector", None), "last", None)
+        background = getattr(self.vision, "background", None) or {}
+        status = "no detector" if self.vision is None else f"passive: {background.get('state', 'off')}"
+        if last is not None:
+            at, hits, (dh, dw) = last
+            age = time.monotonic() - at
+            status += f" | last detection pass {age:.0f} s ago"
+            if age <= BOX_FRESH_S:
+                sy, sx = frame.shape[0] / dh, frame.shape[1] / dw
+                for hit in hits:
+                    x1, y1, x2, y2 = hit.bbox
+                    p1, p2 = (int(x1 * sx), int(y1 * sy)), (int(x2 * sx), int(y2 * sy))
+                    color = (80, 220, 80) if hit.conf >= 0.5 else (0, 200, 255)  # green: raia reads at 0.5
+                    cv2.rectangle(frame, p1, p2, color, 2)
+                    cv2.putText(frame, f"{hit.label} {hit.conf:.2f}", (p1[0], max(16, p1[1] - 6)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+        cv2.putText(frame, status, (8, frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+        return dev.jpeg_bytes(frame, quality=70)
 
     def health(self) -> dict:
         return {"camera": type(self.camera).__name__,
@@ -83,6 +119,8 @@ def shrink_jpeg(jpeg: bytes, max_side: int, quality: int = 85) -> bytes:
 
 
 def make_handler(service: CameraService, token: str):
+    streams = threading.BoundedSemaphore(MAX_STREAMS)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "lastscene-camera"
 
@@ -105,8 +143,10 @@ def make_handler(service: CameraService, token: str):
             url = urlparse(self.path)
             if url.path == "/health":
                 return self._json(200, service.health())
+            if url.path == "/stream":
+                return self._stream()
             if url.path != "/photo":
-                return self._json(404, {"detail": "GET /photo or /health"})
+                return self._json(404, {"detail": "GET /photo, /stream or /health"})
             query = parse_qs(url.query)
             words = (query.get("for") or [""])[0][:MAX_WORDS] or None
             max_side = int((query.get("max") or ["0"])[0]) if (query.get("max") or ["0"])[0].isdigit() else 0
@@ -119,6 +159,35 @@ def make_handler(service: CameraService, token: str):
                 return self._json(503, {"detail": f"camera error: {type(exc).__name__}"})
             log.info("Photo: %d bytes%s", len(jpeg), f", {headers['X-Item']} {headers['X-Confidence']}" if "X-Item" in headers else "")
             return self._send(200, jpeg, "image/jpeg", headers)
+
+        def _stream(self):
+            if not streams.acquire(blocking=False):
+                return self._json(429, {"detail": f"at most {MAX_STREAMS} streams at once"})
+            log.info("Stream started")
+            sent = 0
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                while True:
+                    started = time.monotonic()
+                    try:
+                        jpeg = service.stream_jpeg()
+                    except Exception:
+                        log.exception("Stream frame failed")
+                        time.sleep(1)
+                        continue
+                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(jpeg))
+                    self.wfile.write(jpeg + b"\r\n")
+                    self.wfile.flush()
+                    sent += 1
+                    time.sleep(max(0.0, 1 / STREAM_FPS - (time.monotonic() - started)))
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the viewer went away
+            finally:
+                streams.release()
+                log.info("Stream ended after %d frames", sent)
 
         def log_message(self, fmt, *args):  # requests are logged above, without the words
             pass
