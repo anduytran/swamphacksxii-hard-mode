@@ -253,12 +253,20 @@ involve faker, and nothing is streamed or polled in between.
   ```bash
   sudo cp lastscene-camera.service /etc/systemd/system/ && sudo systemctl enable --now lastscene-camera
   ```
+  Tested Oct 17, 2026 over Tailscale: sreer got `/health` and a 1280x720 photo from faker in one request each.
   `GET /photo?for=<words>` retries until the item the words name is in the photo; `GET /health` reports
   the camera and model. Every request needs the header `X-Camera-Token`.
 - **sreer (audio):** the normal setup above, with no camera and no `VISION_DIR`. In `/etc/lastscene/device.env`:
-  `CAMERA=remote`, `CAMERA_URL=http://faker:8765` (Tailscale MagicDNS; or `http://faker.local:8765` on the
-  same Wi-Fi, or faker's `100.x` address), and the same `CAMERA_TOKEN`.
-- **Check the link from sreer:** `curl -s -H "X-Camera-Token: <token>" http://faker:8765/health`.
+  `CAMERA=remote`, `CAMERA_URL=http://<faker's 100.x address>:8765` (or its full Tailscale name,
+  `http://faker.<tailnet>.ts.net:8765`; the bare name `faker` only resolves with MagicDNS search domains on,
+  and `faker.local` only on the same Wi-Fi), and the same `CAMERA_TOKEN`.
+- **Check the link from sreer** (`device.env` is root-only, hence `sudo`):
+  ```bash
+  sudo bash -c 'set -a; . /etc/lastscene/device.env; curl -s -H "X-Camera-Token: $CAMERA_TOKEN" $CAMERA_URL/health'
+  sudo bash -c 'set -a; . /etc/lastscene/device.env; curl -s -o /tmp/t.jpg -w "%{http_code} %{size_download} bytes\n" -H "X-Camera-Token: $CAMERA_TOKEN" $CAMERA_URL/photo'
+  ```
+  A lit scene is ~80-200 KB; a photo under ~30 KB is nearly black (lens covered or pointing at something dark).
+- Only one program can hold a USB camera: stop anything else using it on faker first (`sudo fuser -v /dev/video0`).
 - If faker can't be reached, a memory isn't saved and sreer plays the low beep; questions still work.
 
 ## Pairing and location
