@@ -245,3 +245,30 @@ def test_each_caregiver_has_a_cap_on_ai_dashboard_calls(client, monkeypatch):  #
     log(client, "I am putting my keys on the counter")
     assert client.get("/api/v1/dashboard/search?q=keys", headers=CAREGIVER).status_code == 200
     assert client.get("/api/v1/dashboard/search?q=keys", headers=CAREGIVER).status_code == 429
+
+
+
+def test_wake_commands_have_their_own_fast_models():
+    ai = AIServices(Settings(_env_file=None))
+    assert ai.models("command") == ["gemma-4-26b-a4b-it", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+    assert [(r.limit, r.window) for r in ai.rules("command")] == [(14, "minute"), (1400, "day")]
+    assert ai.models("text")[0] == "gemini-3.1-flash-lite"  # answers and photo descriptions unchanged
+
+
+def test_a_short_deadline_is_enforced_here_not_sent_to_google():
+    """Google refuses request deadlines under 10 s (a 400), so the wait is cut off on our side."""
+    import asyncio as _asyncio
+
+    from app.gemini import GeminiAI
+
+    sent = {}
+
+    async def slow_call(model, contents, config):
+        sent["http_options"] = config.http_options
+        await _asyncio.sleep(5)
+
+    g = GeminiAI(Settings(_env_file=None, gemini_api_key="k"))
+    g.client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=slow_call)))
+    with pytest.raises(TimeoutError):
+        run(g.generate_json("system", ["words"], AIServices, timeout_s=0.05))
+    assert sent["http_options"] is None

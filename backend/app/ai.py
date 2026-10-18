@@ -362,7 +362,7 @@ class AIServices:
         # its Gemini fallbacks.
         tts = "gemini" if s.tts_provider == "elevenlabs" else s.tts_provider
         stt = "gemini" if s.stt_provider == "elevenlabs" else s.stt_provider
-        return {"stt": stt, "tts": tts, "embed": s.embedding_provider,
+        return {"command": "gemini", "stt": stt, "tts": tts, "embed": s.embedding_provider,
                 "text": s.llm_provider, "vision": s.vision_provider, "maps": "gemini"}[stage]
 
     def models(self, stage: str) -> list[str]:
@@ -375,6 +375,8 @@ class AIServices:
             return model_list(s.gemini_tts_model, s.gemini_tts_fallback_models)
         if stage == "embed":
             return [s.gemini_embedding_model]
+        if stage == "command":
+            return model_list(s.gemini_command_model, s.gemini_command_fallback_models)
         return model_list(s.gemini_model, s.gemini_fallback_models)
 
     def rules(self, stage: str, model: str | None = None) -> list[Rule]:
@@ -617,14 +619,15 @@ class AIServices:
         """A photo question with a JSON answer (e.g. Teach's suggested boxes), within the limits."""
         return await self.gemini.generate_json(system, contents, schema, fast=True)
 
+    @limited("command")
     async def decipher(self, words: str) -> Command | None:
-        """What a wake-phrase command asks for, from the words alone (a low-reasoning model; no photos).
-        The caller falls back to the rules in intent.py when it fails or is slow."""
+        """What a wake-phrase command asks for, from the words alone (the fast command models, least
+        thinking; no photos). The caller falls back to the rules in intent.py when it fails or is slow."""
         said = words.replace('"', "'")
-        return await self._generate_json(COMMAND_SYSTEM_PROMPT, f'Words: "{said}"', Command, fast=True,
-                                         timeout_s=self.s.command_timeout_seconds)
+        return await self.gemini.generate_json(COMMAND_SYSTEM_PROMPT, [f'Words: "{said}"'], Command, fast=True,
+                                               timeout_s=self.s.command_timeout_seconds)
 
-    @limited("vision")
+    @limited("command")
     async def look_for(self, item: str, words: str, photos: list[tuple[bytes, str]]) -> PhotoCheck | None:
         """Only for remember and ask: which photo shows the item best, and whether it's in view now.
         None when vision is off."""

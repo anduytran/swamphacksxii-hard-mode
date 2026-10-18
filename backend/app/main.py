@@ -114,7 +114,7 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
         ai = app.state.ai
         caps = {
             r.bucket: r.limit
-            for stage in ("text", "tts", "embed")
+            for stage in ("text", "command", "tts", "embed")
             for model in (ai.models(stage) or [None])  # every model in the fallback lists
             for r in ai.rules(stage, model)
             if r.window == "day"

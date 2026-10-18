@@ -336,20 +336,19 @@ async def voice(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "No speech detected")
     words = strip_wake_phrase(heard)
 
-    # Step 1, words only: what is being asked. The photos stay out of it.
-    command = None
+    # Step 1, words only: what is being asked (the photos stay out of it). The item comes from matching the
+    # household's own saved item names whenever they're said, so it's always the name they taught; the
+    # model's item is used only when none matches, and the rules decide when the model is slow or down.
+    intent, item = classify(heard), ""
     if wake:
-        try:
-            command = await ai.decipher(words)
-        except Exception as exc:  # busy, quota, slow: the rules decide
-            log.warning("Command model unavailable (%s); using the rules", type(exc).__name__)
-    if command:
-        intent, item = command.intent, command.item
-    if not command or (not item and intent != "none"):
-        # No model answer (slow, busy, down), or no item in it: match the household's own item names.
-        names = await saved_item_names(db, device.sub, settings.query_lookback_hours)
-        rule_intent, rule_item = fallback_command(heard, names)
-        intent, item = (intent, item or rule_item) if command else (rule_intent, rule_item)
+        command, names = await asyncio.gather(ai.decipher(words), saved_item_names(db, device.sub, settings.query_lookback_hours),
+                                              return_exceptions=True)
+        if isinstance(command, Exception):
+            log.warning("Command model unavailable (%s); using the rules", type(command).__name__)
+            command = None
+        rule_intent, rule_item = fallback_command(heard, names if isinstance(names, dict) else {})
+        intent = command.intent if command else rule_intent
+        item = rule_item or (command.item if command else "")
 
     # Step 2, only for remember and ask: the photos, to pick the one showing the item / see if it's in view.
     view = None

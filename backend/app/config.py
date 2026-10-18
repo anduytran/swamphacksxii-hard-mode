@@ -75,9 +75,14 @@ class Settings(BaseSettings):
     # Hints for speech-to-text (both providers): "Last Scene" and the household's Teach items and aliases,
     # so names like "swamphacks pins" aren't heard as "Swampfax pins".
     stt_hints: bool = True
-    # The wake-phrase command model (Gemini, low reasoning) gets this long; then the rules decide, so the
-    # wearer never waits on a queued free-tier request (seen taking 24-85 s on Oct 17; usually ~3 s).
-    command_timeout_seconds: float = 6.0
+    # Each wake-command model call (words, then photos) gets this long; then the rules and saved item names
+    # decide, so the wearer never waits on a queued free-tier request (seen taking 24-85 s on Oct 17).
+    command_timeout_seconds: float = 4.0
+    # Wake commands (the words step and the photo check) have their own models: the fastest with the
+    # biggest free limits. Benchmarked Oct 17 on the command task: Gemma 4 26B-A4B ~0.7 s for words and
+    # ~1.3 s with 4 photos, 3.5 Flash-Lite about the same, 3.1 Flash-Lite 3.6 s median with 26 s spikes.
+    gemini_command_model: str = "gemma-4-26b-a4b-it"
+    gemini_command_fallback_models: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
     llm_model: str = "claude-opus-5-5"
     llm_effort: str = "low"
 
@@ -89,7 +94,10 @@ class Settings(BaseSettings):
     # 3.1 Flash Lite 15/500, 3 Flash 5/20, 3.8 Flash 5/20, each TTS model 3/10, Embedding 2 100/1000.
     # gemini-2.5-flash isn't listed there, so it gets the same cap as the other small quotas.
     gemini_model_limits: str = (
-        "gemini-3.1-flash-lite=14/475,gemini-3-flash-preview=4/18,gemini-2.5-flash=4/18,gemini-3.8-flash=4/18"
+        "gemini-3.1-flash-lite=14/475,gemini-3-flash-preview=4/18,gemini-2.5-flash=4/18,gemini-3.8-flash=4/18,"
+        # Not in AI Studio's list for the project yet: kept under the lower published estimates (Gemma 4
+        # reportedly 1,500/day; Flash-Lite estimates run 250-1,500/day). Google's 429 still cools them down.
+        "gemma-4-26b-a4b-it=14/1400,gemini-3.5-flash-lite=9/240"
     )
     gemini_rpm: int = 4  # any text model not listed above
     gemini_rpd: int = 18

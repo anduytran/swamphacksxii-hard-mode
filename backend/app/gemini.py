@@ -5,6 +5,7 @@ stage from settings (STT_PROVIDER, EMBEDDING_PROVIDER, LLM_PROVIDER, TTS_PROVIDE
 VISION_PROVIDER).
 """
 
+import asyncio
 import io
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -126,8 +127,9 @@ class GeminiAI:
         timeout_s: float | None = None,
     ) -> BaseModel | None:
         """`timeout_s`: give up after that long (a free-tier request can sit queued for 20+ s), so a
-        caller with a fallback uses it instead of making the wearer wait."""
-        response = await self.client.aio.models.generate_content(
+        caller with a fallback uses it instead of making the wearer wait. Enforced here: Google refuses a
+        request deadline under 10 s ("Minimum allowed deadline is 10s"), so it can't be sent with the call."""
+        call = self.client.aio.models.generate_content(
             model=self._model(),
             contents=contents,
             config=types.GenerateContentConfig(
@@ -135,9 +137,9 @@ class GeminiAI:
                 response_mime_type="application/json",
                 response_schema=schema,
                 thinking_config=self._thinking(fast),
-                http_options=types.HttpOptions(timeout=int(timeout_s * 1000)) if timeout_s else None,
             ),
         )
+        response = await (asyncio.wait_for(call, timeout_s) if timeout_s else call)
         return response.parsed
 
     async def speak(self, text: str) -> bytes:

@@ -318,3 +318,25 @@ def test_a_model_answer_without_an_item_gets_one_from_saved_names(client):  # no
     client.app_state.db.last_seen = last_seen
     wake_clip(client, "Last Scene, where's the wallet", decipher=Command(intent="ask", item=""), look=PhotoCheck())
     assert client.looked == [("wallet", 4)]
+
+
+def test_a_saved_item_name_beats_the_models_wording(client):  # noqa: F811
+    from app.db_training import TrainingItem
+
+    async def household_of_device(device_id):
+        return ("h1", False)
+
+    async def household_device_ids(household_id):
+        return ["dev1@clients"]
+
+    async def last_seen(scope, item=None):
+        return []
+
+    async def training_items(household_id):
+        return [TrainingItem(id="i1", name="swamphacks pins", aliases=["pins"], samples=[], created_at=None)]
+
+    db = client.app_state.db
+    db.household_of_device, db.household_device_ids, db.last_seen, db.training_items = (
+        household_of_device, household_device_ids, last_seen, training_items)
+    wake_clip(client, "Last Scene, where did my pins go", decipher=Command(intent="ask", item="pin"), look=PhotoCheck())
+    assert client.looked == [("swamphacks pins", 4)]  # the taught name, not the model's "pin"
