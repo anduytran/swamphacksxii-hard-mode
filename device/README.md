@@ -61,7 +61,10 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
    ```bash
    sudo apt update && sudo apt install -y python3-picamera2 python3-gpiozero python3-httpx python3-numpy python3-venv alsa-utils
    sudo python3 -m venv --system-site-packages /opt/lastscene/venv
-   sudo /opt/lastscene/venv/bin/pip install openwakeword
+   # openwakeword's own requirements pull in tflite-runtime, which has no wheel for Python 3.12+ (Raspberry Pi
+   # OS on Debian 13 has 3.13). The device runs its ONNX models, which need only these:
+   sudo /opt/lastscene/venv/bin/pip install onnxruntime tqdm requests
+   sudo /opt/lastscene/venv/bin/pip install --no-deps openwakeword==0.6.0
    sudo /opt/lastscene/venv/bin/python -c "from openwakeword.utils import download_models; download_models(['hey_jarvis'])"
    ```
    (That fetches openWakeWord's shared feature models; the "Last Scene" model itself ships in `wake/`.)
