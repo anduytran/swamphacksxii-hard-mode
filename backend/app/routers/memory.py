@@ -18,7 +18,7 @@ from fastapi import (
     status,
 )
 
-from ..ai import BUSY, DIDNT_CATCH, GLAD_YOU_FOUND, AIServices, template_answer
+from ..ai import BUSY, DIDNT_CATCH, GLAD_YOU_FOUND, IN_VIEW, AIServices, template_answer
 from ..auth import Principal, require_device
 from ..config import Settings, get_settings
 from ..db import MemoryDB
@@ -302,8 +302,9 @@ async def voice(
 
     With wake=true (the device heard something like "Last Scene" on its own model) the clip must start
     with the wake phrase, or nothing happens ({"intent": "ignored"}): that filters the wake model's false
-    alarms. Then a low-reasoning model reads the words and the photos to decide the command (remember,
-    ask, found, none) and which photo shows the item best; the rules in intent.py decide if it can't."""
+    alarms. Then a low-reasoning model reads the words alone to decide the command (remember, ask, found,
+    none; the rules in intent.py decide if it can't). Only for remember and ask do the photos go to a
+    model: to pick the one showing the item, and to say so when what's asked about is in view now."""
     photos = [(await _read(i, MAX_IMAGE_BYTES, "image"), i.content_type) for i in (image or [])[:MAX_WAKE_PHOTOS]]
     heard = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub)))
     await _note_pairing(db, device.sub, pairing_code)
@@ -314,28 +315,43 @@ async def voice(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "No speech detected")
     words = strip_wake_phrase(heard)
 
+    # Step 1, words only: what is being asked. The photos stay out of it.
     command = None
     if wake:
         try:
-            typed = [(data, kind if kind in ALLOWED_IMAGE_TYPES else "image/jpeg") for data, kind in photos]
-            command = await ai.decipher(words, typed)
-        except Exception as exc:  # busy, quota, a bad answer: the rules decide
+            command = await ai.decipher(words)
+        except Exception as exc:  # busy, quota, slow: the rules decide
             log.warning("Command model unavailable (%s); using the rules", type(exc).__name__)
     intent = command.intent if command else classify(heard)
+    item = command.item if command else ""
+
+    # Step 2, only for remember and ask: the photos, to pick the one showing the item / see if it's in view.
+    view = None
+    if wake and photos and intent in ("remember", "ask"):
+        try:
+            typed = [(data, kind if kind in ALLOWED_IMAGE_TYPES else "image/jpeg") for data, kind in photos]
+            view = await ai.look_for(item, words, typed)
+        except Exception as exc:  # remember keeps photo 1; ask answers from the memories
+            log.warning("Photo check unavailable (%s)", type(exc).__name__)
 
     if intent == "ask":
+        if view and view.visible and item and view.where and is_english(await _language(db, device.sub)):
+            answer = IN_VIEW.format(item=item, where=view.where.strip().rstrip("."))
+            speech = await ai.speak(answer)
+            return Response(content=speech, media_type=ai.speech_media_type,
+                            headers={"X-Intent": "ask", "X-Answer": quote(answer), "X-Answered-By": "camera"})
         return await _spoken_answer(background, db, ai, geo, settings, device.sub, words, where, {"X-Intent": "ask"})
-    if intent == "found" and command and command.item:
+    if intent == "found" and item:
         scope, _ = await scope_for(db, device.sub)
-        await db.mark_found(scope, " ".join(command.item.lower().split()), datetime.now(timezone.utc))
+        await db.mark_found(scope, " ".join(item.lower().split()), datetime.now(timezone.utc))
         language = await _language(db, device.sub)
-        speech = await ai.speak(phrase(GLAD_YOU_FOUND, language).format(item=command.item))
+        speech = await ai.speak(phrase(GLAD_YOU_FOUND, language).format(item=item))
         return Response(content=speech, media_type=ai.speech_media_type, headers={"X-Intent": "found"})
     if intent == "none":
         return {"intent": "none"}
     if not photos:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "A memory needs the photo; send image with the audio")
-    best = command.best_photo if command and 0 <= command.best_photo < len(photos) else 0
+    best = view.best_photo if view and 0 <= view.best_photo < len(photos) else 0
     data, kind = photos[best]
     saved = await _save_memory(background, db, ai, geo, settings, device.sub, words, data, kind, where)
     return {**saved, "intent": "remember", "photo": best}

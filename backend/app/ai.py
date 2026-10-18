@@ -83,21 +83,33 @@ doesn't show which:
 
 COMMAND_SYSTEM_PROMPT = """\
 You read one spoken command to LastScene, a memory-aid wearable for someone with memory loss. It was \
-said right after the wake phrase. With it come up to four photos from the wearable's chest camera: \
-photo 0 when the wake phrase was heard, then photos 1-3 a moment apart after they finished speaking.
+said right after the wake phrase. You get only the words.
 - intent: "remember" when they are putting something down or noting where something is ("I'm putting my \
 keys on the counter", "my glasses are in my bag"); "ask" when they want to know where something is or \
 whether they did something ("where are my keys?", "did I take my pills?"); "found" when they say they \
 found something ("I found my wallet"); "none" when it isn't a request to the wearable.
-- item: the physical item, as a short lowercase singular noun phrase ("keys", "reading glasses"), or "".
-- best_photo: the number of the photo that shows that item most clearly where it was put; 0 if none \
-shows it or there are no photos."""
+- item: the physical item, as a short lowercase singular noun phrase ("keys", "reading glasses"), or ""."""
 
 
 class Command(BaseModel):
     intent: Literal["remember", "ask", "found", "none"]
     item: str = ""
+
+
+# Only for "remember" and "ask": the photos never go to the model for anything else.
+PHOTO_SYSTEM_PROMPT = """\
+These are up to four photos from a chest-worn camera, taken moments apart while its wearer, who has memory \
+loss, said: "{words}". Look for this item: {item}.
+- visible: true only if the item is clearly in at least one photo.
+- best_photo: the number (from 0) of the photo that shows it most clearly; 0 if none does.
+- where: if visible, where it is, as a short phrase you would say to the wearer ("on the desk next to the \
+laptop"); otherwise ""."""
+
+
+class PhotoCheck(BaseModel):
+    visible: bool = False
     best_photo: int = 0
+    where: str = ""
 
 
 SUMMARY_SYSTEM_PROMPT = """\
@@ -177,6 +189,7 @@ NO_ANSWER = "Sorry, I couldn't come up with an answer just now."
 # With their translations (languages.py), so every language's audio is cached as well.
 BUSY = "I'm getting a lot of questions right now. Please ask me again in a minute."
 GLAD_YOU_FOUND = "Glad you found your {item}. I'll remember."
+IN_VIEW = "I can see your {item} right now, {where}."
 FIXED_PHRASES = frozenset().union(*(languages.all_translations(p) for p in (DIDNT_CATCH, REFUSED, NO_ANSWER, BUSY)))
 
 _PREPOSITIONS = ("on", "in", "inside", "under", "underneath", "by", "next", "beside", "behind", "near",
@@ -537,10 +550,10 @@ class AIServices:
 
     @limited("text")
     async def _generate_json(
-        self, system: str, text: str, schema: type[BaseModel], *, fast: bool = False
+        self, system: str, text: str, schema: type[BaseModel], *, fast: bool = False, timeout_s: float | None = None
     ) -> BaseModel | None:
         if self.s.llm_provider == "gemini":
-            return await self.gemini.generate_json(system, [text], schema, fast=fast)
+            return await self.gemini.generate_json(system, [text], schema, fast=fast, timeout_s=timeout_s)
         response = await self.claude.beta.messages.parse(
             model=self.s.llm_model,
             max_tokens=1024,
@@ -550,6 +563,7 @@ class AIServices:
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
             messages=[{"role": "user", "content": text}],
+            **({"timeout": timeout_s} if timeout_s else {}),
         )
         if response.stop_reason == "refusal":
             return None
@@ -603,17 +617,24 @@ class AIServices:
         """A photo question with a JSON answer (e.g. Teach's suggested boxes), within the limits."""
         return await self.gemini.generate_json(system, contents, schema, fast=True)
 
+    async def decipher(self, words: str) -> Command | None:
+        """What a wake-phrase command asks for, from the words alone (a low-reasoning model; no photos).
+        The caller falls back to the rules in intent.py when it fails or is slow."""
+        said = words.replace('"', "'")
+        return await self._generate_json(COMMAND_SYSTEM_PROMPT, f'Words: "{said}"', Command, fast=True,
+                                         timeout_s=self.s.command_timeout_seconds)
+
     @limited("vision")
-    async def decipher(self, words: str, photos: list[tuple[bytes, str]]) -> Command | None:
-        """What a wake-phrase command asks for, read by a low-reasoning model from the words and the
-        photos. None when vision is off (the caller falls back to the rules in intent.py)."""
-        if self.s.vision_provider != "gemini":
+    async def look_for(self, item: str, words: str, photos: list[tuple[bytes, str]]) -> PhotoCheck | None:
+        """Only for remember and ask: which photo shows the item best, and whether it's in view now.
+        None when vision is off."""
+        if self.s.vision_provider != "gemini" or not photos:
             return None
         from google.genai import types
 
         parts = [types.Part.from_bytes(data=data, mime_type=kind) for data, kind in photos[:4]]
-        said = words.replace('"', "'")
-        return await self.gemini.generate_json(COMMAND_SYSTEM_PROMPT, [*parts, f'Words: "{said}"'], Command, fast=True,
+        system = PHOTO_SYSTEM_PROMPT.format(words=words.replace('"', "'"), item=item or "the item they mention")
+        return await self.gemini.generate_json(system, [*parts, "Find the item."], PhotoCheck, fast=True,
                                                timeout_s=self.s.command_timeout_seconds)
 
     @limited("maps")

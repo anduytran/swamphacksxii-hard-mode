@@ -1,5 +1,7 @@
 """The wake-phrase route: one clip, and the words decide between saving a memory and answering."""
 
+from urllib.parse import unquote
+
 import pytest
 
 from app.intent import classify, strip_wake_phrase
@@ -127,20 +129,29 @@ def test_speech_to_text_gets_the_wake_phrase_and_teach_items_as_hints(client):  
     assert heard == []
 
 
-# ---------------------------------------------------------------- wake=true: confirm, then decipher
+# ---------------------------------------------------------------- wake=true: confirm, words, then photos if needed
 
-from app.ai import Command  # noqa: E402
+from app.ai import Command, PhotoCheck  # noqa: E402
 from app.intent import has_wake_phrase  # noqa: E402
 
 
-def wake_clip(client, said, photos=4, decipher=None):  # noqa: F811
+def wake_clip(client, said, photos=4, decipher=None, look=None):  # noqa: F811
+    client.looked = []
     if decipher is not None:
-        async def fake(words, pics):
-            client.deciphered = (words, len(pics))
+        async def fake_decipher(words):
+            client.deciphered = words
             if isinstance(decipher, Exception):
                 raise decipher
             return decipher
-        client.app_state.ai.decipher = fake
+        client.app_state.ai.decipher = fake_decipher
+
+    async def fake_look(item, words, pics):
+        client.looked.append((item, len(pics)))
+        if isinstance(look, Exception):
+            raise look
+        return look
+
+    client.app_state.ai.look_for = fake_look
     files = [("audio", ("v.wav", said.encode(), "audio/wav"))]
     files += [("image", (f"p{i}.jpg", b"\xff\xd8photo-%d" % i, "image/jpeg")) for i in range(photos)]
     return client.post("/api/v1/memory/voice", headers=DEVICE, data={"wake": "true"}, files=files)
@@ -149,28 +160,43 @@ def wake_clip(client, said, photos=4, decipher=None):  # noqa: F811
 def test_a_false_wake_is_dropped_before_anything_else(client):  # noqa: F811
     resp = wake_clip(client, "so the last thing I said was", decipher=Command(intent="remember", item="keys"))
     assert resp.status_code == 200 and resp.json() == {"intent": "ignored"}
-    assert client.app_state.db.rows == [] and not hasattr(client, "deciphered")  # no model call either
+    assert client.app_state.db.rows == [] and not hasattr(client, "deciphered") and client.looked == []
 
 
-def test_the_model_decides_and_picks_the_photo_that_shows_the_item(client):  # noqa: F811
+def test_remember_sends_photos_only_after_the_words_decide(client):  # noqa: F811
     resp = wake_clip(client, "Last Scene, I'm putting my keys on the counter",
-                     decipher=Command(intent="remember", item="keys", best_photo=2))
+                     decipher=Command(intent="remember", item="keys"), look=PhotoCheck(visible=True, best_photo=2))
     body = resp.json()
     assert resp.status_code == 200 and body["intent"] == "remember" and body["photo"] == 2
-    assert client.deciphered == ("I'm putting my keys on the counter", 4)
+    assert client.deciphered == "I'm putting my keys on the counter" and client.looked == [("keys", 4)]
     (row,) = client.app_state.db.rows
     assert client.app_state.db.images[row.id][0] == b"\xff\xd8photo-2"
 
 
-def test_a_question_is_answered_out_loud_without_saving(client):  # noqa: F811
-    resp = wake_clip(client, "Last Scene, where did I leave my keys", decipher=Command(intent="ask", item="keys"))
-    assert resp.headers["x-intent"] == "ask" and resp.headers["content-type"].startswith("audio/")
+def test_ask_says_so_when_the_item_is_in_view_now(client):  # noqa: F811
+    resp = wake_clip(client, "Last Scene, where are my keys", decipher=Command(intent="ask", item="keys"),
+                     look=PhotoCheck(visible=True, best_photo=1, where="on the desk next to the laptop."))
+    assert resp.headers["x-intent"] == "ask" and resp.headers["x-answered-by"] == "camera"
+    assert unquote(resp.headers["x-answer"]) == "I can see your keys right now, on the desk next to the laptop."
     assert client.app_state.db.rows == []
 
 
-def test_not_a_request_does_nothing(client):  # noqa: F811
-    resp = wake_clip(client, "Last Scene, never mind", decipher=Command(intent="none"))
-    assert resp.json() == {"intent": "none"} and client.app_state.db.rows == []
+def test_ask_answers_from_memories_when_the_item_isnt_in_view(client):  # noqa: F811
+    resp = wake_clip(client, "Last Scene, where did I leave my keys", decipher=Command(intent="ask", item="keys"),
+                     look=PhotoCheck(visible=False))
+    assert resp.headers["x-intent"] == "ask" and resp.headers.get("x-answered-by") != "camera"
+    assert client.looked == [("keys", 4)]
+
+
+@pytest.mark.parametrize("intent, said", [("found", "Last Scene, I found my keys"), ("none", "Last Scene, never mind")])
+def test_found_and_none_never_send_the_photos_to_a_model(client, intent, said):  # noqa: F811
+    async def mark_found(scope, item, when):
+        return True
+
+    client.app_state.db.mark_found = mark_found
+    wake_clip(client, said, decipher=Command(intent=intent, item="keys" if intent == "found" else ""),
+              look=PhotoCheck(visible=True))
+    assert client.looked == []
 
 
 def test_found_marks_the_item_and_says_so(client):  # noqa: F811
@@ -186,16 +212,28 @@ def test_found_marks_the_item_and_says_so(client):  # noqa: F811
     assert marked == ["keys"]
 
 
-def test_when_the_model_is_busy_the_rules_decide(client):  # noqa: F811
-    resp = wake_clip(client, "Last Scene, I'm putting my glasses on the table", decipher=RuntimeError("429"))
-    assert resp.json()["intent"] == "remember" and resp.json()["photo"] == 0
+def test_not_a_request_does_nothing(client):  # noqa: F811
+    resp = wake_clip(client, "Last Scene, never mind", decipher=Command(intent="none"))
+    assert resp.json() == {"intent": "none"} and client.app_state.db.rows == []
+
+
+def test_when_the_word_model_is_busy_the_rules_decide(client):  # noqa: F811
+    resp = wake_clip(client, "Last Scene, I'm putting my glasses on the table", decipher=RuntimeError("429"),
+                     look=PhotoCheck(visible=True, best_photo=3))
+    assert resp.json()["intent"] == "remember" and resp.json()["photo"] == 3
     resp = wake_clip(client, "Last Scene, where are my glasses?", decipher=RuntimeError("429"))
     assert resp.headers["x-intent"] == "ask"
 
 
+def test_when_the_photo_check_fails_remember_keeps_the_first_photo(client):  # noqa: F811
+    resp = wake_clip(client, "Last Scene, my wallet is in my bag", decipher=Command(intent="remember", item="wallet"),
+                     look=TimeoutError("slow"))
+    assert resp.json()["photo"] == 0
+
+
 def test_an_out_of_range_photo_falls_back_to_the_first(client):  # noqa: F811
     resp = wake_clip(client, "Last Scene, my wallet is in my bag", photos=2,
-                     decipher=Command(intent="remember", item="wallet", best_photo=7))
+                     decipher=Command(intent="remember", item="wallet"), look=PhotoCheck(visible=True, best_photo=7))
     assert resp.json()["photo"] == 0
 
 
