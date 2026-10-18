@@ -36,7 +36,6 @@ export function Navbar() {
     <header className="site-header landing-nav" data-open={open || undefined}>
       <a className="brand" href="#/" aria-label="LastScene home" onClick={close}>
         <BrandMark />
-        <span>LastScene</span>
       </a>
 
       <nav className="landing-links" aria-label="Main">

@@ -151,12 +151,7 @@ export function Icon({ name, className = "i" }: { name: IconName; className?: st
   );
 }
 
+// The hand-drawn "last(raven)cene" wordmark; the raven is the S. The link around it carries the name.
 export function BrandMark() {
-  return (
-    <svg className="brand-mark" width="30" height="30" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-      <rect x="1" y="1" width="30" height="30" rx="9" fill="var(--brand-tile)" stroke="var(--line-strong)" />
-      <rect x="7" y="9.5" width="18" height="13" rx="3" stroke="currentColor" strokeWidth="2" />
-      <circle cx="16" cy="16" r="3.3" stroke="var(--link)" strokeWidth="2" />
-    </svg>
-  );
+  return <img className="brand-mark" src="/logo.png" width="109" height="40" alt="" />;
 }

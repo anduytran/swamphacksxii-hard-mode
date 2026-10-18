@@ -12,7 +12,6 @@ export function Footer(): JSX.Element {
       <div className="l-footer-brand">
         <a className="brand" href="#/" aria-label="LastScene home">
           <BrandMark />
-          <span>LastScene</span>
         </a>
         <p>A memory aid that remembers where things were left.</p>
       </div>

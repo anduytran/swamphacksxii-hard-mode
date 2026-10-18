@@ -94,7 +94,6 @@ export function Header({ page }: { page: Page }) {
     <header className="site-header">
       <a className="brand" href="#/items" aria-label="LastScene home">
         <BrandMark />
-        <span>LastScene</span>
       </a>
 
       {signedIn && (
