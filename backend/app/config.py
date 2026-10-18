@@ -124,8 +124,11 @@ class Settings(BaseSettings):
     caregiver_ai_rpm: int = 30  # per caregiver: dashboard requests that call a model (search, summary)
 
     # Wi-Fi positioning: the wearable sends nearby access points; the server asks Google's
-    # Geolocation API where that is. Empty = positions only from the device (or none).
+    # Geolocation API (when this key is set) and then BeaconDB where that is.
     google_geolocation_api_key: str = ""
+    # BeaconDB: free, no key, same request format as Google (community data, so coverage varies).
+    # Used without a Google key, past the Google budget, and when Google has no answer. Empty = off.
+    beacondb_url: str = "https://api.beacondb.net/v1/geolocate"
     # Spend guard: at most this many Google calls per calendar month (UTC), counted in the
     # database before each call; past it, positions come only from the device. Keep it under
     # Google's free monthly allowance. 0 turns Wi-Fi positioning off.
@@ -148,6 +151,9 @@ class Settings(BaseSettings):
     # How long each item's last-seen frame + box is kept. 72 = same as memories; the
     # integration contract proposes 720 (30 days) once the team agrees.
     last_seen_retention_hours: int = 72
+    # A passive sighting of an item the camera already saw passively this recently refreshes that memory (newest
+    # photo, box and time) instead of adding another timeline entry: one memory, one raia read, per item. 0 = off.
+    passive_merge_minutes: float = 30.0
 
     # raia (api.raia2.com) reads JSON context from the frame when one of the user's logged items (a Teach item,
     # or one named in a spoken memory) is seen at RAIA_MIN_CONFIDENCE or more: by the detector in an observation,

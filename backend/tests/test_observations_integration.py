@@ -49,7 +49,8 @@ class OfflineAI:
 
 @pytest.fixture
 def c():
-    settings = get_settings().model_copy(update={"observation_min_interval_seconds": 0})
+    # Merging off by default: these tests post repeat sightings on purpose (one test turns it on).
+    settings = get_settings().model_copy(update={"observation_min_interval_seconds": 0, "passive_merge_minutes": 0})
     app = create_app(use_lifespan=False)
     app.state.ai = OfflineAI()
     who = {"device": DEVICE}
@@ -264,3 +265,23 @@ def test_raia_reads_a_logged_item_once_per_cooldown(c):
     run(db.pool.execute, "UPDATE raia_contexts SET claimed_at = now() - interval '31 minutes' WHERE scope = $1", DEVICE)
     assert post(c, obs(label="keys", conf=0.9)).status_code == 201
     assert sent.count("/conversations/conv-1/messages") == 2
+
+
+def test_repeat_passive_sightings_refresh_one_memory(c):
+    """Within PASSIVE_MERGE_MINUTES, the same item seen again updates its passive memory: one timeline entry."""
+    c.settings.passive_merge_minutes = 30
+    first = post(c, obs(minutes_ago=3, conf=0.5), image=b"\xff\xd8first")
+    assert first.status_code == 201 and first.json()["merged"] is False
+    again = post(c, obs(minutes_ago=1, conf=0.9, scene="hallway table"), image=b"\xff\xd8second")
+    assert again.status_code == 200 and again.json()["merged"] is True
+    assert again.json()["memory_id"] == first.json()["memory_id"]
+    late = post(c, obs(minutes_ago=5, conf=0.7), image=b"\xff\xd8older")  # an older frame arriving late
+    assert late.status_code == 201 and late.json()["merged"] is False
+
+    db, run = c.app.state.db, c.portal.call
+    memory_id = first.json()["memory_id"]
+    row = run(db.pool.fetchrow, "SELECT image FROM memory_logs WHERE id = $1::uuid", memory_id)
+    assert bytes(row["image"]) == b"\xff\xd8second"
+    dets = run(db.detections_for, [memory_id])[memory_id]
+    assert [(d["label"], d["confidence"]) for d in dets] == [("keys", 0.9)]
+    assert c.get("/api/v1/items/keys/last-seen").json()["scene"]["label"] == "hallway table"

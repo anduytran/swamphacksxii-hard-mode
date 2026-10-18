@@ -83,7 +83,7 @@ class Observation(BaseModel):
 class Stored:
     memory_id: str
     items: list[str]
-    created: bool
+    created: bool  # False: a recent passive memory of the same items was refreshed instead (merged)
 
 
 def summary(obs: Observation, kept: list[DetectedObject]) -> str:
@@ -128,9 +128,16 @@ async def store_observation(
     image: bytes, image_type: str, transcript: str,
 ) -> Stored:
     kept = [o for o in obs.objects if o.confidence >= settings.min_detection_confidence]
-    memory_id = await db.insert_observation(
-        device_id, str(obs.observation_id), obs.captured_at, transcript, image, image_type
-    )
+    scope, device_ids = await scope_for(db, device_id)
+    merge_into = (await _recent_memory(db, device_ids, {o.label for o in kept}, obs.captured_at, settings)
+                  if not transcript else None)
+    if merge_into:
+        memory_id = merge_into
+        await db.refresh_observation(memory_id, str(obs.observation_id), obs.captured_at, image, image_type)
+    else:
+        memory_id = await db.insert_observation(
+            device_id, str(obs.observation_id), obs.captured_at, transcript, image, image_type
+        )
     await db.add_detections(
         memory_id,
         [o.model_dump() for o in kept],
@@ -139,15 +146,18 @@ async def store_observation(
         (obs.image_size.width, obs.image_size.height),
     )
     chunks = text_chunks(obs, kept, transcript, settings)
-    embeddings = await ai.embed_many([text for _, text in chunks])
-    await db.add_chunks(memory_id, [(kind, text, emb) for (kind, text), emb in zip(chunks, embeddings)])
+    if merge_into:  # index only what the memory doesn't say yet (a new place), so a refresh costs no embeddings
+        have = {(c.kind, c.content) for c in (await db.chunks_for([memory_id])).get(memory_id, [])}
+        chunks = [c for c in chunks if c not in have]
+    if chunks:
+        embeddings = await ai.embed_many([text for _, text in chunks])
+        await db.add_chunks(memory_id, [(kind, text, emb) for (kind, text), emb in zip(chunks, embeddings)])
     await db.set_scene(memory_id, f"Seen automatically: {summary(obs, kept)}")
 
     place = obs.scene.label if obs.scene and obs.scene.label else ""
     locating = [o for o in kept if o.event in LOCATING_EVENTS]
     await db.add_items(memory_id, list({o.label: place for o in locating}.items()))
 
-    scope, _ = await scope_for(db, device_id)
     best: dict[str, DetectedObject] = {}
     for o in locating:  # one record per item: the most confident box in this frame
         if o.label not in best or o.confidence > best[o.label].confidence:
@@ -158,7 +168,17 @@ async def store_observation(
             obs.scene.id if obs.scene else None, obs.scene.label if obs.scene else None,
             o.bbox, o.confidence, image, image_type, obs.image_size.width, obs.image_size.height,
         )
-    return Stored(memory_id, sorted({o.label for o in kept}), True)
+    return Stored(memory_id, sorted({o.label for o in kept}), not merge_into)
+
+
+async def _recent_memory(db: MemoryDB, device_ids: list[str], labels: set[str], captured_at: datetime,
+                         settings: Settings) -> str | None:
+    """The passive memory to refresh: one from the last PASSIVE_MERGE_MINUTES holding every label, else None."""
+    if settings.passive_merge_minutes <= 0 or not labels or not hasattr(db, "recent_passive_memory"):
+        return None
+    found = {await db.recent_passive_memory(device_ids, label, settings.passive_merge_minutes, captured_at)
+             for label in labels}
+    return found.pop() if len(found) == 1 and None not in found else None
 
 
 def too_far_ahead(captured_at: datetime) -> bool:

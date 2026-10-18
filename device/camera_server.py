@@ -39,6 +39,7 @@ STREAM_FPS = float(os.environ.get("STREAM_FPS", 4))
 STREAM_MAX_SIDE = 640
 MAX_STREAMS = 2  # each one encodes JPEGs on the Pi Zero's CPU, next to the detector
 BOX_FRESH_S = 3.0  # the detector's boxes are drawn while they're at most this old
+STREAM_WAIT_S = 2.0  # how long a stream frame waits for the detector to finish a pass
 
 
 class CameraService:
@@ -68,6 +69,9 @@ class CameraService:
         """One live frame, at most STREAM_MAX_SIDE px, with the detector's latest boxes if they're fresh."""
         import cv2
 
+        idle = getattr(getattr(self.vision, "detector", None), "idle", None)
+        if idle is not None:  # a frame read while the detector runs comes out torn on the Pi Zero (UsbCamera)
+            idle.wait(STREAM_WAIT_S)
         frame = self.camera.frame()
         h, w = frame.shape[:2]
         scale = min(1.0, STREAM_MAX_SIDE / max(h, w))

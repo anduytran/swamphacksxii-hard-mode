@@ -998,14 +998,22 @@ def intent_of(transcript: str) -> str:
 
 class Remembering:
     """A detector that keeps its latest result, (monotonic time, detections, frame height and width), so the
-    camera Pi's /stream can draw what the background loop last saw. Everything else passes through."""
+    camera Pi's /stream can draw what the background loop last saw, and says when it's running (`idle` is set
+    otherwise): a USB frame captured during detection comes out torn (UsbCamera), so the stream waits for it.
+    Everything else passes through."""
 
     def __init__(self, inner):
         self.inner = inner
         self.last: tuple[float, list, tuple[int, int]] | None = None
+        self.idle = threading.Event()
+        self.idle.set()
 
     def detect(self, image):
-        hits = self.inner.detect(image)
+        self.idle.clear()
+        try:
+            hits = self.inner.detect(image)
+        finally:
+            self.idle.set()
         self.last = (time.monotonic(), list(hits), tuple(image.shape[:2]))
         return hits
 

@@ -130,7 +130,9 @@ async def ingest_observation(
             background.add_task(extract_contexts, *args)
         else:
             await extract_contexts(*args)
-    return {"memory_id": stored.memory_id, "items": stored.items, "duplicate": False}
+    if not stored.created:  # refreshed the item's recent passive memory: one timeline entry per item
+        response.status_code = status.HTTP_200_OK
+    return {"memory_id": stored.memory_id, "items": stored.items, "duplicate": False, "merged": not stored.created}
 
 
 @router.delete("/observations/{observation_id}")
