@@ -6,7 +6,23 @@ models, so `last_scene.onnx` here (205 KB) is a custom one, trained from synthet
 recordings of anyone). Device README step 4 copies this folder to `/opt/lastscene/wake/`, and
 `device.env.example` already points `WAKE_WORD` at it.
 
-## How it does (Oct 17)
+## How it does (Oct 18, retrained with lookalikes)
+
+On Oct 18 it woke on "Let's see. Is my brother going?" (score 0.77), so it was retrained with "let's see" and 25
+similar phrases as weighted negatives (`HARD` in `train/train_last_scene.py`). Same test clips for both models:
+
+| Test | Oct 17 model | Oct 18 model |
+|---|---|---|
+| "last scene", 400 held-out synthetic voices (wake at 0.6) | 100% | 99.0% |
+| 400 synthetic near-misses (wrongly wake at 0.6) | 10.5% | 9.0% |
+| 120 held-out lookalikes ("let's see", "let me see", "let's say"...) | 10.0% | 6.7% |
+| False wakes per hour of general speech, music and noise, at 0.6 | 6.8 | 5.0 |
+| ... at 0.9 | 3.9 | 2.4 |
+
+A false wake that does get through is dropped by the server, which checks for "Last Scene" with speech-to-text and
+keeps nothing from it.
+
+## How it did before (Oct 17)
 
 Measured with `train/eval_wake.py` (max score per clip) and `train/fp_rate.py`:
 
@@ -32,7 +48,11 @@ misses. Synthetic voices aren't you: test with your own voice and the room you'l
 - In a loud room, the buttons are the reliable path. ~7 false wakes an hour means one every ~9 minutes
   of nonstop talk nearby; each one beeps and records what follows.
 
-## Retrain it (about 1.5 h on a Mac CPU, no GPU)
+## Retrain it (about 40 min on a rented 32-core server, or 1.5 h on a Mac CPU)
+
+`train/vultr_train.py` rents a 32-core Vultr server from credit (about $0.88/h), runs `train/remote_train.sh` there
+(setup, a preflight check of every import, training, and the old-vs-new evaluation) and fetches the model before
+destroying the server. Downloads there run at ~2 GB per 20 s. On the Mac:
 
 `train/train_last_scene.py` runs the whole pipeline in stages, each skipped when its output exists, so a
 rerun resumes. It mirrors openWakeWord's `train.py` with smaller downloads:
