@@ -332,3 +332,18 @@ def test_a_wrong_key_is_not_reported_as_a_refused_address():
     with pytest.raises(PipelineError) as e:
         vultr.credit_left()
     assert e.value.code == EXIT_CONFIG and "401" in str(e.value) and "Access Control" not in str(e.value)
+
+
+def test_skipped_items_stay_out_of_the_photo_count_and_reach_the_server_script():
+    import base64
+
+    class TwoItems(Pipeline):
+        def get_json(self, path):
+            return {"version": self.version, "items": [{"name": "keys", "samples": 10}, {"name": "Pin", "samples": 1000}]}
+
+    fake = FakeVultr(stops_after=1)
+    run = runner(fake, TwoItems())
+    run.run(ENV, skip=["pin"])
+    assert run.photos == 10
+    script = base64.b64decode(fake.created[0]["user_data"]).decode()
+    assert "sync --env-file /root/pipeline.env --force --skip pin\n" in script and "shutdown -P +60" in script

@@ -28,6 +28,10 @@ python -m lastscene_pipeline.vultr run --env-file .env
 python -m lastscene_pipeline.vultr cleanup --env-file .env      # destroy anything labelled lastscene-trainer
 ```
 
+`--skip NAME` (repeatable, any case) leaves that Teach item's photos out of training, e.g.
+`run --env-file .env --skip pin`. The item keeps its class id; the model just doesn't learn it. The
+dashboard still reports the model as up to date, because the photos on the server didn't change.
+
 `run` does nothing (and rents nothing) when there are no Teach photos or the published model already
 matches them. The server trains from the `master` branch on GitHub, so push before running.
 

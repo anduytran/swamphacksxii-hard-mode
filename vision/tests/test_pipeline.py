@@ -92,6 +92,16 @@ def test_sync_failure_never_leaves_a_version_behind(tmp_path, photos):
     assert e.value.code == EXIT_NETWORK and not (out / "version").exists()  # next run re-downloads
 
 
+def test_sync_skip_leaves_an_items_photos_out_but_keeps_its_class_id(tmp_path, photos):
+    out = tmp_path / "dataset"
+    data = dataset()
+    data["samples"][1].update(class_id=1, name="Wallet", yolo="1 0.350000 0.350000 0.500000 0.500000")
+    assert run_sync(out, api=FakeApi(VOCAB, data), log=lambda m: None, skip=["wallet"]) == EXIT_OK
+    assert [p.name for p in (out / "images" / "train").iterdir()] == ["a.jpg"]
+    assert [p["name"] for p in json.loads((out / "prompts.json").read_text())] == ["keys"]
+    assert '1: "wallet"' in (out / "data.yaml").read_text() and (out / "version").read_text() == "v1"
+
+
 def test_api_errors_map_to_spec_exit_codes():
     def r(code, location=None):
         return type("R", (), {"status_code": code, "text": "x", "headers": {"Location": location}})()

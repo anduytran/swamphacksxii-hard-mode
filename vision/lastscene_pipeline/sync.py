@@ -1,6 +1,6 @@
 """sync: pull what the household taught on the Teach items page and write it as a YOLO dataset.
 
-    python -m lastscene_pipeline.sync [--out DIR] [--force] [--env-file FILE]
+    python -m lastscene_pipeline.sync [--out DIR] [--force] [--env-file FILE] [--skip NAME ...]
 
 Same folder layout as backend/scripts/fetch_training_set.py, plus classes.json and the unchanged-version skip:
 
@@ -10,6 +10,9 @@ Same folder layout as backend/scripts/fetch_training_set.py, plus classes.json a
     prompts.json                 per photo: image, class_id, name, bbox_xyxy (pixels)
     classes.json                 the vocabulary response as received
     version                      the dataset's version (written last: a failed sync never looks complete)
+
+--skip leaves an item's photos out of training (case-insensitive name). The item keeps its class id, so
+class ids still match the vocabulary, and the model just won't learn it.
 
 Exit codes: 0 synced, 1 config, 2 network/API error, 3 version unchanged (no --force).
 """
@@ -70,7 +73,11 @@ def write_dataset(vocab: dict, data: dict, out: Path, http=None) -> int:
     return len(data["samples"])
 
 
-def run_sync(out: Path, force: bool = False, api: Api | None = None, log=print) -> int:
+def skipped(name: str, skip) -> bool:
+    return name.casefold() in {n.casefold() for n in skip}
+
+
+def run_sync(out: Path, force: bool = False, api: Api | None = None, log=print, skip=()) -> int:
     api = api or Api()
     vocab = api.get_json("/api/v1/training/vocabulary")
     if not force and current_version(out) == vocab["version"]:
@@ -79,8 +86,12 @@ def run_sync(out: Path, force: bool = False, api: Api | None = None, log=print) 
     data = api.get_json("/api/v1/training/dataset")
     if data["version"] != vocab["version"]:  # someone edited between the two requests
         vocab = api.get_json("/api/v1/training/vocabulary")
+    if skip:
+        left_out = sum(skipped(s["name"], skip) for s in data["samples"])
+        data = dict(data, samples=[s for s in data["samples"] if not skipped(s["name"], skip)])
+        log(f"left out {left_out} photo(s) of {', '.join(skip)}")
     count = write_dataset(vocab, data, out)
-    few = [f"{i['name']} ({i['samples']})" for i in vocab["items"] if i["samples"] < 5]
+    few = [f"{i['name']} ({i['samples']})" for i in vocab["items"] if i["samples"] < 5 and not skipped(i["name"], skip)]
     log(f"synced dataset {data['version']}: {len(vocab['classes'])} items, {count} photos -> {out}")
     if few:
         log(f"  fewer than 5 photos: {', '.join(few)}")
@@ -92,10 +103,11 @@ def main():
     p.add_argument("--out", type=Path, help="default $LASTSCENE_DATA/dataset")
     p.add_argument("--force", action="store_true", help="download even when the version is unchanged")
     p.add_argument("--env-file", help="optional KEY=VALUE credentials file (never commit it)")
+    p.add_argument("--skip", action="append", default=[], help="item name whose photos stay out of training (repeatable)")
     args = p.parse_args()
     if args.env_file:
         load_env_file(args.env_file)
-    return run_sync(args.out or data_dir() / "dataset", args.force)
+    return run_sync(args.out or data_dir() / "dataset", args.force, skip=args.skip)
 
 
 if __name__ == "__main__":

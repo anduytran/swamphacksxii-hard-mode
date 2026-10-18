@@ -2,6 +2,7 @@
 
     python -m lastscene_pipeline.vultr status            credit left, expiry, any trainer servers
     python -m lastscene_pipeline.vultr run [--gpu]       train once if the photos changed
+                                         [--skip NAME]   leave an item's photos out (see sync --skip)
     python -m lastscene_pipeline.vultr cleanup           destroy anything this tool created
 
 Needs the pipeline's device credentials and VULTR_API_KEY, both in the --env-file (kept out of git); an
@@ -27,6 +28,7 @@ import base64
 import math
 import os
 import re
+import shlex
 import signal
 import socket
 import sys
@@ -41,6 +43,7 @@ from urllib3.connection import HTTPSConnection
 
 from lastscene_pipeline import EXIT_CONFIG, EXIT_NETWORK, EXIT_NOTHING, EXIT_OK
 from lastscene_pipeline.common import Api, PipelineError, load_env_file, run_main
+from lastscene_pipeline.sync import skipped
 from lastscene_pipeline.train import BACKGROUNDS
 
 VULTR = "https://api.vultr.com/v2"
@@ -217,10 +220,11 @@ def hourly_price(plan: dict) -> float:
     return float(plan.get("hourly_cost") or plan["monthly_cost"] / 672)
 
 
-def trainer_script(env, gpu: bool, ref: str, epochs: int, max_minutes: int) -> str:
+def trainer_script(env, gpu: bool, ref: str, epochs: int, max_minutes: int, skip=()) -> str:
     """cloud-init: install, sync, train, publish, then power off whatever happens (the runner destroys it)."""
     creds = "\n".join(f"{k}={env[k]}" for k in PIPELINE_VARS if env.get(k))
     torch = "pip install torch torchvision" if gpu else "pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu"
+    skip_args = "".join(f" --skip {shlex.quote(n)}" for n in skip)
     device = "$(nvidia-smi >/dev/null 2>&1 && echo 0 || echo cpu)" if gpu else "cpu"  # no driver -> CPU, not a failed run
     return f"""#!/bin/bash
 set -euo pipefail
@@ -237,7 +241,7 @@ git clone -q --depth 1 --branch {ref} {REPO} /opt/lastscene
 cd /opt/lastscene/vision
 python3 -m venv /opt/venv && . /opt/venv/bin/activate
 pip install -q --upgrade pip && {torch} -q && pip install -q -r requirements.txt -r requirements-onnx.txt
-python -m lastscene_pipeline.sync --env-file /root/pipeline.env --force
+python -m lastscene_pipeline.sync --env-file /root/pipeline.env --force{skip_args}
 python -m lastscene_pipeline.train --imgsz 320 --epochs {epochs} --device {device} || [ $? -eq 3 ]
 python -m lastscene_pipeline.publish --env-file /root/pipeline.env || [ $? -eq 3 ]
 """
@@ -247,10 +251,10 @@ class Runner:
     def __init__(self, vultr: Vultr, api: Api | None, guard: Guardrails, sleep=time.sleep, clock=time.monotonic, log=print):
         self.vultr, self.api, self.guard, self.sleep, self.clock, self.log = vultr, api, guard, sleep, clock, log
 
-    def wanted(self, force: bool) -> str | None:
+    def wanted(self, force: bool, skip=()) -> str | None:
         """The dataset version to train, or None when the published model already matches the photos."""
         vocab = self.api.get_json("/api/v1/training/vocabulary")
-        self.photos = sum(i.get("samples") or 0 for i in vocab["items"])
+        self.photos = sum(i.get("samples") or 0 for i in vocab["items"] if not skipped(i["name"], skip))
         if not self.photos:
             self.log("no Teach items photos yet: nothing to train")
             return None
@@ -264,9 +268,9 @@ class Runner:
         r = self.api.request("GET", "/api/v1/training/models/current", ok=(200, 404))
         return r.status_code == 200 and r.json()["version"] == version
 
-    def run(self, env, gpu=False, region="atl", ref="master", epochs=100, max_minutes=None, force=False, poll=30) -> int:
+    def run(self, env, gpu=False, region="atl", ref="master", epochs=100, max_minutes=None, force=False, poll=30, skip=()) -> int:
         self.guard.check_date()
-        version = self.wanted(force)
+        version = self.wanted(force, skip)
         if version is None:
             return EXIT_NOTHING
         if self.vultr.trainers():
@@ -278,7 +282,7 @@ class Runner:
         self.log(f"plan {plan['id']} in {region} at ${hourly_price(plan):.3f}/h, {self.photos} photos, limit {max_minutes} min: "
                  f"worst case ${worst:.2f}, credit ${credit:.2f}")
 
-        script = trainer_script(env, gpu, ref, epochs, max_minutes)
+        script = trainer_script(env, gpu, ref, epochs, max_minutes, skip)
         instance = None
         started = self.clock()
         stop = {"now": False}
@@ -353,6 +357,7 @@ def main():
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--max-minutes", type=int, help="default: estimated from the photo count (time_limit), at least 60")
     p.add_argument("--force", action="store_true", help="train even if the model matches the photos")
+    p.add_argument("--skip", action="append", default=[], help="item name whose photos stay out of training (repeatable)")
     args = p.parse_args()
     if args.env_file:
         load_env_file(args.env_file)
@@ -367,7 +372,7 @@ def main():
     missing = [k for k in PIPELINE_VARS[1:] if not os.environ.get(k)]
     if missing:
         raise PipelineError(EXIT_CONFIG, f"missing {', '.join(missing)} (pass --env-file)")
-    return runner.run(os.environ, args.gpu, args.region, args.ref, args.epochs, args.max_minutes, args.force)
+    return runner.run(os.environ, args.gpu, args.region, args.ref, args.epochs, args.max_minutes, args.force, skip=args.skip)
 
 
 if __name__ == "__main__":
