@@ -43,6 +43,35 @@ def has_wake_phrase(transcript: str) -> bool:
     return any(re.match(r"^(\w+ ){0,2}" + re.escape(p) + r"\b", low) for p in WAKE_PHRASES)
 
 
+_FOUND = re.compile(r"\b(i('ve| have)? found|found (my|the|it|them)|got (my|the) [\w ]+ back)\b")
+
+
+def match_item(text: str, names: dict[str, str]) -> str:
+    """The saved item the words mention, by name: `names` maps every word people use (Teach names,
+    aliases, items the camera or memories recorded) to the item's name. Longest match wins, so
+    "reading glasses" beats "glasses"; "key" matches "keys" and "keys" matches "key". "" if none."""
+    low = " ".join(re.sub(r"[^\w\s']", " ", text.lower()).split())
+    for said in sorted(names, key=len, reverse=True):
+        words = said.lower().split()
+        if not words:
+            continue
+        stem = words[-1][:-1] if words[-1].endswith("s") and len(words[-1]) > 3 else words[-1]
+        pattern = r"\b" + r"\s+".join(re.escape(w) for w in words[:-1] + [stem]) + r"(s|es)?\b"
+        if re.search(pattern, low):
+            return names[said]
+    return ""
+
+
+def fallback_command(transcript: str, names: dict[str, str]) -> tuple[str, str]:
+    """(intent, item) without a model, for when the command model is slow or down: the question rules
+    below, "I found my ..." as found, and the item by name from the household's saved items."""
+    text = strip_wake_phrase(transcript)
+    intent = classify(transcript)
+    if intent != "ask" and _FOUND.search(text.lower()):
+        intent = "found"
+    return intent, match_item(text, names)
+
+
 def classify(transcript: str) -> str:
     """'ask' or 'remember'."""
     text = strip_wake_phrase(transcript)

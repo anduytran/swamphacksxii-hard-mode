@@ -254,3 +254,67 @@ def test_the_old_one_photo_form_still_works(client):  # noqa: F811
 ])
 def test_has_wake_phrase(said, wake):
     assert has_wake_phrase(said) is wake
+
+
+# ---------------------------------------------------------------- slow command model: rules + saved item names
+
+from app.intent import fallback_command, match_item  # noqa: E402
+
+NAMES = {"keys": "keys", "reading glasses": "reading glasses", "glasses": "glasses",
+         "swamphacks pins": "swamphacks pins", "pins": "swamphacks pins", "wallet": "wallet"}
+
+
+@pytest.mark.parametrize("said, expected", [
+    ("Last Scene, where did I put my key", ("ask", "keys")),
+    ("I found my reading glasses", ("found", "reading glasses")),
+    ("my pins are on the desk", ("remember", "swamphacks pins")),
+    ("got my wallet back", ("found", "wallet")),
+    ("where are the glasses", ("ask", "glasses")),
+    ("did I find my keys?", ("ask", "keys")),  # a question, not "found"
+    ("the weather is nice", ("remember", "")),
+])
+def test_fallback_command(said, expected):
+    assert fallback_command(said, NAMES) == expected
+
+
+def test_match_item_needs_whole_words():
+    assert match_item("the keyboard is here", {"keys": "keys"}) == "" and match_item("", NAMES) == ""
+
+
+def test_a_slow_model_still_marks_the_right_item_found_from_saved_names(client):  # noqa: F811
+    from app.db_training import TrainingItem
+
+    marked = []
+
+    async def mark_found(scope, item, when):
+        marked.append(item)
+        return True
+
+    async def household_of_device(device_id):
+        return ("h1", False)
+
+    async def household_device_ids(household_id):
+        return ["dev1@clients"]
+
+    async def last_seen(scope, item=None):
+        return []
+
+    async def training_items(household_id):
+        return [TrainingItem(id="i1", name="swamphacks pins", aliases=["pins"], samples=[], created_at=None)]
+
+    db = client.app_state.db
+    db.mark_found, db.household_of_device, db.household_device_ids = mark_found, household_of_device, household_device_ids
+    db.last_seen, db.training_items = last_seen, training_items
+    resp = wake_clip(client, "Last Scene, I found my pins", decipher=TimeoutError("slow"))
+    assert resp.headers["x-intent"] == "found" and marked == ["swamphacks pins"]
+    assert client.looked == []  # found: still no photos sent
+
+
+def test_a_model_answer_without_an_item_gets_one_from_saved_names(client):  # noqa: F811
+    async def last_seen(scope, item=None):
+        from types import SimpleNamespace
+        return [SimpleNamespace(item="wallet")]
+
+    client.app_state.db.last_seen = last_seen
+    wake_clip(client, "Last Scene, where's the wallet", decipher=Command(intent="ask", item=""), look=PhotoCheck())
+    assert client.looked == [("wallet", 4)]

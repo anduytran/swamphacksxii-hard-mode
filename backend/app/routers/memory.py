@@ -24,7 +24,7 @@ from ..config import Settings, get_settings
 from ..db import MemoryDB
 from ..deps import device_limit, get_ai, get_db, get_geo
 from ..geo import Geolocator, locate_and_record, record_public, resolve_location
-from ..intent import classify, has_wake_phrase, strip_wake_phrase
+from ..intent import classify, fallback_command, has_wake_phrase, strip_wake_phrase
 from ..observations import scope_for
 from ..languages import is_english, normalize, phrase
 from ..limits import RateLimited
@@ -69,6 +69,27 @@ async def stt_hints(db: MemoryDB, device_id: str) -> list[str]:
     except Exception:  # hints are a nicety: transcribe without them
         log.warning("Speech-to-text hints unavailable for this device")
     return hints
+
+
+async def saved_item_names(db: MemoryDB, device_id: str, hours: int) -> dict[str, str]:
+    """Every word the household uses for its items -> the item's name: Teach items and their aliases,
+    items the camera has a last sighting of, and items named in recent memories. Empty on any error."""
+    names: dict[str, str] = {}
+    try:
+        household = await db.household_of_device(device_id)
+        scope, devices = (household[0], await db.household_device_ids(household[0])) if household else (device_id, [device_id])
+        for sighting in await db.item_sightings(hours, devices):
+            names.setdefault(sighting.name.lower(), sighting.name)
+        for seen in await db.last_seen(scope):
+            names.setdefault(seen.item.lower(), seen.item)
+        if household:
+            for item in await db.training_items(household[0]):
+                names[item.name.lower()] = item.name
+                for alias in item.aliases:
+                    names[alias.lower()] = item.name
+    except Exception:
+        log.warning("Saved item names unavailable for this device")
+    return names
 
 
 async def _heard(ai: AIServices, audio: UploadFile | None, transcript: str | None,
@@ -322,8 +343,13 @@ async def voice(
             command = await ai.decipher(words)
         except Exception as exc:  # busy, quota, slow: the rules decide
             log.warning("Command model unavailable (%s); using the rules", type(exc).__name__)
-    intent = command.intent if command else classify(heard)
-    item = command.item if command else ""
+    if command:
+        intent, item = command.intent, command.item
+    if not command or (not item and intent != "none"):
+        # No model answer (slow, busy, down), or no item in it: match the household's own item names.
+        names = await saved_item_names(db, device.sub, settings.query_lookback_hours)
+        rule_intent, rule_item = fallback_command(heard, names)
+        intent, item = (intent, item or rule_item) if command else (rule_intent, rule_item)
 
     # Step 2, only for remember and ask: the photos, to pick the one showing the item / see if it's in view.
     view = None
