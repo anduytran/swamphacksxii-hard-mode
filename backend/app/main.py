@@ -130,17 +130,29 @@ def create_app(use_lifespan: bool = True) -> FastAPI:
         return {b: {"used_today": used.get(f"{b}:day", 0), "limit_per_day": cap} for b, cap in caps.items()}
 
     async def speech_usage(settings) -> dict:
-        """Which voice answers, and for ElevenLabs the characters used this month against the cap."""
-        if settings.tts_provider != "elevenlabs":
-            return {"provider": settings.tts_provider}
-        info = {"provider": "elevenlabs" if settings.elevenlabs_api_key else "gemini (no ELEVENLABS_API_KEY)",
-                "monthly_character_cap": settings.elevenlabs_monthly_chars, "characters_this_month": None}
-        start = Rule("x", 1, "month").span(datetime.now(timezone.utc))[0]
-        try:
-            used = await asyncio.wait_for(app.state.db.slot_usage(["elevenlabs:characters:month"], start), 5)
-            info["characters_this_month"] = used.get("elevenlabs:characters:month", 0)
-        except Exception:
-            pass
+        """Which voice answers and which ears listen; for ElevenLabs, this month's use against the caps."""
+        eleven = bool(settings.elevenlabs_api_key)
+        info = {
+            "provider": settings.tts_provider if settings.tts_provider != "elevenlabs"
+            else ("elevenlabs" if eleven else "gemini (no ELEVENLABS_API_KEY)"),
+            "listening": settings.stt_provider if settings.stt_provider != "elevenlabs"
+            else ("elevenlabs" if eleven else "gemini (no ELEVENLABS_API_KEY)"),
+            "hints": settings.stt_hints,
+        }
+        keys = {}
+        if settings.tts_provider == "elevenlabs":
+            info |= {"monthly_character_cap": settings.elevenlabs_monthly_chars, "characters_this_month": None}
+            keys["characters_this_month"] = "elevenlabs:characters:month"
+        if settings.stt_provider == "elevenlabs":
+            info |= {"monthly_audio_seconds_cap": settings.elevenlabs_stt_monthly_seconds, "audio_seconds_this_month": None}
+            keys["audio_seconds_this_month"] = "elevenlabs-stt:seconds:month"
+        if keys:
+            start = Rule("x", 1, "month").span(datetime.now(timezone.utc))[0]
+            try:
+                used = await asyncio.wait_for(app.state.db.slot_usage(list(keys.values()), start), 5)
+                info |= {field: used.get(key, 0) for field, key in keys.items()}
+            except Exception:
+                pass
         return info
 
     @app.get("/healthz")
