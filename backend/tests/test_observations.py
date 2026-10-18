@@ -125,3 +125,49 @@ def test_a_device_position_works_without_wifi_and_bad_locations_are_refused():
     for bad in ({"lat": 120, "lng": 0}, {"wifi": [{"bssid": "x", "signal": 10}]}, {"wifi": [{"signal": -50}]}):
         with pytest.raises(ValidationError):
             Observation.model_validate(payload(location=bad))
+
+
+# ---------------------------------------------------------------- the public map
+
+class PublicDB(PositionsDB):
+    """A household that shares, whose every position falls in one public place."""
+    def __init__(self, share=True, kind="public"):
+        super().__init__()
+        self.share, self.kind, self.stats = share, kind, []
+
+    async def household_of_device(self, device_id):
+        return ("hh-1", self.share)
+
+    async def places_for(self, household_id):
+        from app.db_places import Place
+        return [Place("p-1", household_id, "Reitz Union", self.kind, 29.6465, -82.3475, 100.0)]
+
+    async def set_location(self, table, row_id, lat, lng, accuracy_m, place_id):
+        pass
+
+    async def add_public_stats(self, household_id, lat, lng, kind, items, day):
+        self.stats.append((household_id, round(lat, 4), round(lng, 4), kind, items))
+
+
+def after(db, new_items):
+    import asyncio
+    from app.routers.observations import _after_observation
+    obs = Observation.model_validate(payload(location={"lat": 29.6465, "lng": -82.3475, "accuracy_m": 20}))
+    asyncio.run(_after_observation(db, None, FakeGeo(), None, SETTINGS, "cam@clients", "m-1", obs, b"", "image/jpeg",
+                                   new_items))
+
+
+def test_a_new_sighting_at_a_public_place_counts_on_the_public_map():
+    db = PublicDB()
+    after(db, ["keys"])
+    assert db.stats == [("hh-1", 29.6465, -82.3475, "left", ["keys"])]
+
+
+@pytest.mark.parametrize("db, new_items", [
+    (PublicDB(), []),  # a merged refresh of the same memory
+    (PublicDB(kind="private"), ["keys"]),
+    (PublicDB(share=False), ["keys"]),
+])
+def test_refreshes_private_places_and_non_sharing_households_stay_off_the_public_map(db, new_items):
+    after(db, new_items)
+    assert db.stats == []

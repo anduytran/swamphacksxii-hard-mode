@@ -24,7 +24,8 @@ from ..config import Settings, get_settings
 from ..db import MemoryDB
 from ..db_observations import LastSeen
 from ..deps import device_limit, get_ai, get_db, get_geo, get_raia
-from ..geo import Geolocator, locate_and_record
+from ..geo import Geolocator, locate_and_record, record_public
+from ..maps_names import name_memory_place
 from ..observations import Observation, observation_location, scope_for, store_observation, too_far_ahead
 from ..raia import Raia, candidates, extract_contexts
 from ..wifi_places import from_wifi_json, room_of_scan, usable
@@ -129,7 +130,9 @@ async def ingest_observation(
         response.status_code = status.HTTP_200_OK
         return {"memory_id": existing[0] if existing else None, "items": [], "duplicate": True}
     # After the response, like the memory enrichment: where it was seen, then context from the frame (raia.py).
-    args = (db, ai, geo, raia, settings, device.sub, stored.memory_id, obs, image_bytes, image_type)
+    # Only a new memory counts on the public map: a merged refresh is the same item seen again.
+    new_items = stored.items if stored.created else []
+    args = (db, ai, geo, raia, settings, device.sub, stored.memory_id, obs, image_bytes, image_type, new_items)
     if settings.enrich_in_background:
         background.add_task(_after_observation, *args)
     else:
@@ -140,9 +143,10 @@ async def ingest_observation(
 
 
 async def _after_observation(db, ai, geo, raia: Raia | None, settings: Settings, device_id: str, memory_id: str,
-                             obs: Observation, image: bytes, image_type: str) -> None:
-    """Locate the sighting (its own Wi-Fi scan, else the wearable's last position) and its place; then, for the
-    user's items, raia's read of the frame, saved with the same location. Best effort, never raises."""
+                             obs: Observation, image: bytes, image_type: str, new_items: list[str] = ()) -> None:
+    """Locate the sighting (its own Wi-Fi scan, else the wearable's last position) and its place; a new memory
+    at a public place, in a household that shares, adds its items to the public map; then, for the user's items,
+    raia's read of the frame, saved with the same location. Best effort, never raises."""
     loc, scan = None, {}
     try:
         scan = from_wifi_json([a.model_dump() for a in obs.location.wifi]) if obs.location else {}
@@ -160,10 +164,13 @@ async def _after_observation(db, ai, geo, raia: Raia | None, settings: Settings,
     try:
         loc = await observation_location(geo, db, device_id, obs, settings)
         if loc is not None:
-            place, _ = await locate_and_record(db, device_id, "memory_logs", memory_id, loc)
+            place, public = await locate_and_record(db, device_id, "memory_logs", memory_id, loc)
             if hasattr(db, "locate_sightings"):
                 await db.locate_sightings(str(obs.observation_id), loc.lat, loc.lng, loc.accuracy_m,
                                           place.id if place else None)
+            if public and new_items:  # an item left at a public place: like a saved memory (memory._enrich_memory)
+                await record_public(db, device_id, loc, "left", list(new_items))
+                await name_memory_place(db, ai, settings, memory_id)  # the cell's Google Maps name, if MAPS_GROUNDING
     except Exception:
         log.exception("Locating observation %s failed", memory_id)
 
