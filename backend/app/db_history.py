@@ -146,6 +146,15 @@ class HistoryMixin:
         )
         return [_sighting(r) for r in rows]
 
+    async def recent_sightings(self, scopes: list[str], limit: int = 30) -> list[tuple[Sighting, dict | None]]:
+        """The camera's newest passive sightings across items, newest first, each with its Wi-Fi scan (Live)."""
+        rows = await self.pool.fetch(
+            f"SELECT {_COLUMNS}, wifi FROM item_history WHERE scope = ANY($1::text[]) AND source = 'auto' "
+            "ORDER BY captured_at DESC LIMIT $2",
+            scopes, limit,
+        )
+        return [(_sighting(r), json.loads(r["wifi"]) if isinstance(r["wifi"], str) else r["wifi"]) for r in rows]
+
     async def lastscene_position(self, scope: str, device_ids: list[str], item: str) -> dict | None:
         """The item's LastScene: {lat, lng, accuracy_m, place_id, at, wifi} of the newest of its sightings, the
         memory its last-seen frame came from, and memories that name it, among those with a position or a Wi-Fi

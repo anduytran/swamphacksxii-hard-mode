@@ -16,6 +16,7 @@ from ..languages import normalize
 from ..rooms import Room
 from ..geo import home_place_id, place_label
 from ..lastscene import relative_to_item
+from ..wifi_places import best_place
 from ..pipeline import retrieve
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
@@ -447,19 +448,47 @@ async def our_places(
 async def live(
     after: int = Query(0, ge=0, description="only events newer than this id (the newest id you have)"),
     devices: list[str] = Depends(household_devices),
+    caregiver: Principal = Depends(require_caregiver),
     db: MemoryDB = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
     """Voice commands as they happen (db_voice_events.py), newest first, for the Live view: what was heard,
-    what was decided and by which model, the photo picked, what was said back, and each step's time."""
+    what was decided and by which model, the photo picked, what was said back, and each step's time. With them,
+    the camera's passive sightings (db_history.py), newest first: the frame and box, what raia read in it, and
+    where (the surveyed room its Wi-Fi matches, or the map place)."""
     if not devices or not hasattr(db, "voice_events"):
-        return {"events": []}
+        return {"events": [], "sightings": []}
     events = await db.voice_events(devices, after)
     for e in events:
         e.pop("pending", None)  # the follow-up's inputs (Wi-Fi scan included) stay server-side
         if e.get("memory_id"):
             e["image_url"] = _image_url(settings, e["memory_id"])
-    return {"events": events}
+    return {"events": events, "sightings": await _live_sightings(db, caregiver, settings)}
+
+
+LIVE_SIGHTINGS = 30
+
+
+async def _live_sightings(db: MemoryDB, caregiver: Principal, settings: Settings) -> list[dict]:
+    if not hasattr(db, "recent_sightings"):
+        return []
+    try:
+        _, scopes, places = await _scopes_and_places(db, caregiver)
+        found = await db.recent_sightings(scopes, LIVE_SIGHTINGS)
+        plan = floor_plan(settings.floor_plan)
+        named = {scope: [p for p in await db.wifi_places(scope) if p.get("room_id")] if hasattr(db, "wifi_places") else []
+                 for scope in {s.scope for s, _ in found}}
+        current = {(s.scope, s.item): await db.last_seen_keys([s.scope], s.item) for s, _ in found}
+        out = []
+        for s, wifi in found:
+            match = best_place(named[s.scope], wifi or {}) if wifi else None
+            room = plan.room(match[0]["room_id"]) if match else None
+            out.append({**_sighting_json(s, settings, places, current[(s.scope, s.item)]), "item": s.item,
+                        "read": bool(s.context), "wifi_room": room.name if room else None})
+        return out
+    except Exception:  # the Live view is for watching; sightings never break the voice events
+        log.exception("Live sightings failed")
+        return []
 
 
 # ---------------------------------------------------------------- an item's last few sightings (db_history)
@@ -493,30 +522,28 @@ async def item_sightings(
     _, scopes, places = await _scopes_and_places(db, caregiver)
     sightings = await db.sightings(scopes, item)
     current = await db.last_seen_keys(scopes, item)
+    return {"item": item, "sightings": [_sighting_json(s, settings, places, current) for s in sightings]}
+
+
+def _sighting_json(s, settings: Settings, places: dict[str, str], current: set[str]) -> dict:
     return {
-        "item": item,
-        "sightings": [
-            {
-                "id": s.id,
-                "captured_at": s.captured_at.isoformat(),
-                "source": s.source,
-                "confidence": s.confidence,
-                "maybe": s.confidence is not None and s.confidence < settings.maybe_confidence,
-                "bbox": s.bbox,
-                "image_size": {"width": s.image_width, "height": s.image_height} if s.image_width else None,
-                "image_url": signing.image_url(settings.image_url_secret, f"ih-{s.id}", settings.image_url_ttl_seconds)
-                if s.has_image else None,
-                "where": (s.context or {}).get("where") or None,
-                "summary": (s.context or {}).get("summary") or None,
-                "nearby": (s.context or {}).get("nearby") or [],
-                "room": (s.context or {}).get("room") or None,
-                "scene": s.scene_label,
-                "location": {"lat": s.lat, "lng": s.lng, "accuracy_m": s.accuracy_m} if s.lat is not None else None,
-                "place": {"id": s.place_id, "label": places.get(s.place_id)} if s.place_id else None,
-                "last_seen": (s.observation_id or s.captured_at.isoformat()) in current,
-            }
-            for s in sightings
-        ],
+        "id": s.id,
+        "captured_at": s.captured_at.isoformat(),
+        "source": s.source,
+        "confidence": s.confidence,
+        "maybe": s.confidence is not None and s.confidence < settings.maybe_confidence,
+        "bbox": s.bbox,
+        "image_size": {"width": s.image_width, "height": s.image_height} if s.image_width else None,
+        "image_url": signing.image_url(settings.image_url_secret, f"ih-{s.id}", settings.image_url_ttl_seconds)
+        if s.has_image else None,
+        "where": (s.context or {}).get("where") or None,
+        "summary": (s.context or {}).get("summary") or None,
+        "nearby": (s.context or {}).get("nearby") or [],
+        "room": (s.context or {}).get("room") or None,
+        "scene": s.scene_label,
+        "location": {"lat": s.lat, "lng": s.lng, "accuracy_m": s.accuracy_m} if s.lat is not None else None,
+        "place": {"id": s.place_id, "label": places.get(s.place_id)} if s.place_id else None,
+        "last_seen": (s.observation_id or s.captured_at.isoformat()) in current,
     }
 
 

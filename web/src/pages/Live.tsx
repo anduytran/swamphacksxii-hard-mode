@@ -1,11 +1,13 @@
 // Live: each voice command as it happens, for testing and the demo. What speech-to-text heard, what was
-// decided (and by the model or the rules), the photo picked, what was said back, and each step's time.
+// decided (and by the model or the rules), the photo picked, what was said back, and each step's time. The
+// camera's passive sightings come in between, by time: the frame and box, what was read in it, and where.
 import { useEffect, useRef, useState } from "react";
 import { EmptyState } from "../components/bits";
 import { publicGet, useApi } from "../lib/api";
-import { clockTime } from "../lib/format";
+import { capitalize, clockTime } from "../lib/format";
 import { retryPhoto } from "../lib/photo";
-import type { Health, VoiceEvent } from "../lib/types";
+import { Photo } from "../components/Photo";
+import type { Health, LiveSighting, VoiceEvent } from "../lib/types";
 
 const POLL_MS = 2000;
 const HEALTH_MS = 10000;
@@ -14,10 +16,13 @@ const KEEP = 100;
 export default function LivePage() {
   const api = useApi();
   const [events, setEvents] = useState<VoiceEvent[]>([]);
+  const [sightings, setSightings] = useState<LiveSighting[]>([]);
+  const [showCamera, setShowCamera] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
   const cleared = useRef(0); // Clear hides everything up to this id
+  const clearedAt = useRef(""); // and every sighting up to this time
 
   useEffect(() => {
     if (paused) return;
@@ -26,9 +31,10 @@ export default function LivePage() {
     const poll = async () => {
       try {
         // The whole recent list each time: a command's follow-up updates its card after the reply.
-        const res = await api<{ events: VoiceEvent[] }>("/api/v1/dashboard/live");
+        const res = await api<{ events: VoiceEvent[]; sightings?: LiveSighting[] }>("/api/v1/dashboard/live");
         if (stop) return;
         setEvents(res.events.filter((e) => e.id > cleared.current).slice(0, KEEP));
+        setSightings((res.sightings ?? []).filter((x) => x.captured_at > clearedAt.current));
         setError(null);
       } catch (e) {
         if (!stop) setError(e instanceof Error ? e.message : String(e));
@@ -53,6 +59,8 @@ export default function LivePage() {
     };
   }, []);
 
+  const entries = liveEntries(events, showCamera ? sightings : []);
+
   return (
     <section className="page live">
       <div className="page-head">
@@ -67,10 +75,15 @@ export default function LivePage() {
           <button type="button" className="pill" onClick={() => setPaused((p) => !p)} aria-pressed={paused}>
             {paused ? "Resume" : "Pause"}
           </button>
+          <button type="button" className="pill quiet" onClick={() => setShowCamera((v) => !v)} aria-pressed={showCamera}>
+            {showCamera ? "Hide camera" : "Show camera"}
+          </button>
           <button type="button" className="pill quiet" onClick={() => {
             cleared.current = Math.max(cleared.current, ...events.map((e) => e.id));
+            clearedAt.current = new Date().toISOString();
             setEvents([]);
-          }} disabled={!events.length}>
+            setSightings([]);
+          }} disabled={!events.length && !sightings.length}>
             Clear
           </button>
         </div>
@@ -79,16 +92,83 @@ export default function LivePage() {
       {error && <p className="live-error" role="status">Couldn't update: {error}</p>}
       {health && <Usage health={health} />}
 
-      {events.length === 0 ? (
-        <EmptyState text='Nothing yet. Say "Last Scene" to the wearable, or press a button; each command shows up here within a few seconds.' />
+      {entries.length === 0 ? (
+        <EmptyState text='Nothing yet. Say "Last Scene" to the wearable, press a button, or put an item in front of the camera; each shows up here within a few seconds.' />
       ) : (
         <ol className="live-list" aria-live="polite">
-          {events.map((e) => (
-            <EventCard key={e.id} e={e} />
-          ))}
+          {entries.map((x) =>
+            x.kind === "voice" ? <EventCard key={`v${x.e.id}`} e={x.e} /> : <SightingCard key={`s${x.s.id}`} s={x.s} />,
+          )}
         </ol>
       )}
     </section>
+  );
+}
+
+type Entry = { kind: "voice"; at: string; e: VoiceEvent } | { kind: "sighting"; at: string; s: LiveSighting };
+
+/** Voice commands and camera sightings in one list, newest first. */
+export function liveEntries(events: VoiceEvent[], sightings: LiveSighting[]): Entry[] {
+  const all: Entry[] = [
+    ...events.map((e) => ({ kind: "voice" as const, at: e.created_at, e })),
+    ...sightings.map((s) => ({ kind: "sighting" as const, at: s.captured_at, s })),
+  ];
+  return all.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, KEEP);
+}
+
+const READ_FROM = 0.5; // RAIA_MIN_CONFIDENCE: the frame is read (where, next to what) at this or more
+
+/** A passive sighting: the camera saw an item on its own, nobody asked. */
+function SightingCard({ s }: { s: LiveSighting }) {
+  const where = s.where || s.summary || (s.scene ? `on the ${s.scene}` : null);
+  const place = [s.wifi_room, s.place?.label, s.room && s.room !== s.wifi_room ? s.room : null].filter(Boolean).join(" · ");
+  const sure = s.confidence ?? 0;
+  return (
+    <li className="card live-event live-sighting">
+      <div className="live-head">
+        <span className="chip live-outcome good">Camera saw it</span>
+        <span className="chip">passive</span>
+        <span className="chip">{s.item}</span>
+        {s.last_seen && <span className="chip auto">LastScene</span>}
+        <time className="live-time mono" dateTime={s.captured_at}>
+          {clockTime(s.captured_at)}
+        </time>
+      </div>
+      <div className="live-body">
+        <Photo
+          className="live-photo live-sighting-photo"
+          url={s.image_url}
+          alt={`The camera's frame of the ${s.item}`}
+          boxes={s.bbox ? [{ label: s.item, confidence: sure, bbox: s.bbox, maybe: s.maybe }] : []}
+        />
+        <dl className="live-facts">
+          <dt>Sure</dt>
+          <dd>
+            {Math.round(sure * 100)}%{s.maybe && <span className="muted"> · maybe</span>}
+          </dd>
+          <dt>Where</dt>
+          <dd>{where ? capitalize(where) : <span className="muted">not described</span>}</dd>
+          {s.nearby.length > 0 && (
+            <>
+              <dt>Next to</dt>
+              <dd>{s.nearby.join(", ")}</dd>
+            </>
+          )}
+          <dt>Place</dt>
+          <dd>{place || <span className="muted">not known yet</span>}</dd>
+          <dt>Photo read</dt>
+          <dd>
+            {s.read ? (
+              "yes, described above"
+            ) : (
+              <span className="muted">
+                {sure < READ_FROM ? "no: under 50% sure" : "no: read once per item every 30 min (or still reading)"}
+              </span>
+            )}
+          </dd>
+        </dl>
+      </div>
+    </li>
   );
 }
 

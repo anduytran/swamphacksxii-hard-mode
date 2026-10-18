@@ -35,6 +35,10 @@ class WifiMixin:
         # The floor-plan room a named place is (FLOOR_PLAN), and the room a memory's scan put it in.
         await conn.execute("ALTER TABLE wifi_places ADD COLUMN IF NOT EXISTS room_id text")
         await conn.execute("ALTER TABLE memory_logs ADD COLUMN IF NOT EXISTS wifi_room text")
+        # Where a named place is: the position (Google / BeaconDB, from its Wi-Fi) when it was last named.
+        for column, kind in (("lat", "double precision"), ("lng", "double precision"), ("accuracy_m", "real"),
+                             ("located_at", "timestamptz")):
+            await conn.execute(f"ALTER TABLE wifi_places ADD COLUMN IF NOT EXISTS {column} {kind}")
 
     async def set_scan(self, table: str, row_id: str, aps: dict[str, int]) -> None:
         assert table in ("memory_logs", "query_logs")
@@ -80,11 +84,20 @@ class WifiMixin:
 
     async def wifi_places(self, scope: str) -> list[dict]:
         rows = await self.pool.fetch(
-            "SELECT id::text, name, aps, samples, updated_at, room_id FROM wifi_places WHERE scope = $1 ORDER BY name",
+            "SELECT id::text, name, aps, samples, updated_at, room_id, lat, lng, accuracy_m FROM wifi_places "
+            "WHERE scope = $1 ORDER BY name",
             scope,
         )
         return [{"id": r["id"], "name": r["name"], "aps": _aps(r["aps"]), "samples": r["samples"],
-                 "updated_at": r["updated_at"], "room_id": r["room_id"]} for r in rows]
+                 "updated_at": r["updated_at"], "room_id": r["room_id"], "lat": r["lat"], "lng": r["lng"],
+                 "accuracy_m": r["accuracy_m"]} for r in rows]
+
+    async def set_wifi_place_position(self, place_id: str, lat: float, lng: float, accuracy_m: float | None) -> None:
+        """The place's position from its latest naming: saying "this is ..." again moves it."""
+        await self.pool.execute(
+            "UPDATE wifi_places SET lat = $2, lng = $3, accuracy_m = $4, located_at = now() WHERE id = $1::uuid",
+            place_id, lat, lng, accuracy_m,
+        )
 
     async def save_wifi_place(self, scope: str, name: str, aps: dict[str, int], place_id: str | None = None,
                               room_id: str | None = None) -> dict:

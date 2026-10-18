@@ -322,6 +322,13 @@ export interface Sighting {
   last_seen: boolean;
 }
 
+/** A passive sighting on the Live page (GET /api/v1/dashboard/live): any item, with the room its Wi-Fi matches. */
+export interface LiveSighting extends Sighting {
+  item: string;
+  read: boolean; // raia read the frame (where, next to what)
+  wifi_room: string | null; // the surveyed floor-plan room its Wi-Fi scan matches
+}
+
 export interface SightingsResponse {
   item: string;
   sightings: Sighting[];

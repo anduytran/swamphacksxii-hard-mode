@@ -528,10 +528,11 @@ async def _context_ready(task: "asyncio.Task | None", settings: Settings, trace:
     return located
 
 
-async def _name_place(db, ai: AIServices, settings: Settings, device_id: str, place: str, where: Whereabouts,
-                      heard: str, trace: Trace) -> Response:
-    """Remember the Wi-Fi heard here as the place called `place`, and say so. A name that is one of the floor
-    plan's rooms ("the Grand Ballroom", "room 2350") ties the place to that room, for the map."""
+async def _name_place(db, ai: AIServices, geo: Geolocator, settings: Settings, device_id: str, place: str,
+                      where: Whereabouts, heard: str, trace: Trace) -> Response:
+    """Remember the Wi-Fi heard here as the place called `place`, with its position (Google / BeaconDB from the
+    same scan, else the device's own), and say so. A name that is one of the floor plan's rooms ("the Grand
+    Ballroom", "room 2350") ties the place to that room, for the map."""
     scan, name = from_wifi_json(where.wifi), clean_name(place)
     plan = floor_plan(settings.floor_plan)
     room = room_for(name, plan=plan)
@@ -540,9 +541,13 @@ async def _name_place(db, ai: AIServices, settings: Settings, device_id: str, pl
     trace.lap("decide")
     if usable(scan) and hasattr(db, "save_wifi_place"):
         scope, _ = await scope_for(db, device_id)
-        saved = await name_place(db, scope, name, scan, room.id if room else None)
+        saved, loc = await asyncio.gather(name_place(db, scope, name, scan, room.id if room else None),
+                                          _locate_quietly(geo, where))
+        if loc is not None and hasattr(db, "set_wifi_place_position"):
+            await db.set_wifi_place_position(saved["id"], loc.lat, loc.lng, loc.accuracy_m)
         answer = f"Got it, this is {_spoken_room(room.name)}." if room else f"Got it, this is {display(saved['name'])}."
-        trace.set(outcome="named place", wifi_aps=len(scan))
+        trace.set(outcome="named place", wifi_aps=len(scan),
+                  position=f"{loc.lat:.5f}, {loc.lng:.5f} ±{loc.accuracy_m or 0:.0f} m ({loc.source})" if loc else None)
     else:
         answer = "I can't hear enough Wi-Fi here to remember this place."
         trace.set(outcome="no wifi", wifi_aps=len(scan))
@@ -551,6 +556,15 @@ async def _name_place(db, ai: AIServices, settings: Settings, device_id: str, pl
     trace.set(answer=answer)
     return Response(content=speech, media_type=ai.speech_media_type,
                     headers={"X-Intent": "place", "X-Answer": quote(answer), "X-Heard": quote(heard)})
+
+
+async def _locate_quietly(geo: Geolocator, where: Whereabouts):
+    """Where the wearer is now, or None (no service answered, or it failed): naming a place never waits on it."""
+    try:
+        return await resolve_location(geo, where.wifi, where.lat, where.lng, where.accuracy_m)
+    except Exception:
+        log.exception("Locating a named place failed")
+        return None
 
 
 def _spoken_room(name: str) -> str:
@@ -592,7 +606,7 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
     # "this is the Reitz Union": the Wi-Fi heard here becomes that place's fingerprint (wifi_places.py).
     if wake and (place := place_command(words)) and not match_item(place, await saved_item_names(
             db, device.sub, settings.query_lookback_hours)):
-        return await _name_place(db, ai, settings, device.sub, place, where, heard, trace)
+        return await _name_place(db, ai, geo, settings, device.sub, place, where, heard, trace)
 
     # Step 1, words only: what is being asked (the photos stay out of it). The item comes from matching the
     # household's own saved item names whenever they're said, so it's always the name they taught; the

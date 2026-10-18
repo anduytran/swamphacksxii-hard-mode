@@ -8,7 +8,7 @@ from urllib.parse import unquote
 from app.ai import Command, PhotoCheck
 from app.config import Settings
 from app.geo import Location
-from app.lastscene import Relative, bearing, compass, lastscene_note, spoken_distance
+from app.lastscene import Relative, bearing, compass, lastscene_note, relative_to_item, spoken_distance
 from tests.test_api import DEVICE, client  # noqa: F401  (client is a fixture)
 
 REITZ = (29.6465, -82.3475)
@@ -339,3 +339,76 @@ def test_the_wearers_phone_hotspot_is_left_out_of_fingerprints():
     assert similarity(room_a, room_b) == 0.0
     assert from_wifi_json('[{"bssid": "36:97:B4:00:00:01", "signal": -50}]') == {}
     assert "36:97:b4:00:00:01" not in merge(room_a, room_b)
+
+
+def test_live_lists_passive_sightings_with_the_room_their_wifi_matches():
+    from app.routers.dashboard import _live_sightings
+    from app.auth import Principal
+
+    surveyed = {"e8:00:00:00:00:01": -60, "e8:00:00:00:00:02": -65, "e8:00:00:00:00:03": -70}
+    pin = SimpleNamespace(id="s1", scope="house-1", item="pin", captured_at=NOW, source="auto", memory_id=None,
+                          observation_id="o1", has_image=True, image_width=640, image_height=480, bbox=[0.1, 0.1, 0.2, 0.2],
+                          confidence=0.82, scene_label=None, context={"where": "on the desk", "summary": "A pin on a desk."},
+                          lat=None, lng=None, accuracy_m=None, place_id=None)
+    keys = SimpleNamespace(**{**vars(pin), "id": "s2", "item": "keys", "observation_id": "o2", "context": None})
+
+    class LiveDB:
+        async def households_for(self, sub):
+            return [SimpleNamespace(id="house-1")]
+
+        async def places_for(self, household_id):
+            return []
+
+        async def device_ids_for(self, sub):
+            return ["cam@clients"]
+
+        async def recent_sightings(self, scopes, limit):
+            assert "house-1" in scopes
+            return [(pin, surveyed), (keys, None)]
+
+        async def wifi_places(self, scope):
+            return [{"id": "w1", "name": "meeting room 2360", "aps": surveyed, "room_id": "room_2360"}]
+
+        async def last_seen_keys(self, scopes, item):
+            return {"o1"} if item == "pin" else set()
+
+    settings = Settings(_env_file=None, image_url_secret="x" * 32)
+    out = asyncio.run(_live_sightings(LiveDB(), Principal(sub="owner", claims={}), settings))
+    assert [(s["item"], s["read"], s["wifi_room"], s["last_seen"]) for s in out] == [
+        ("pin", True, "Meeting Room 2360", True), ("keys", False, None, False)]
+    assert out[0]["where"] == "on the desk" and out[0]["image_url"].startswith("/api/v1/images/ih-s1")
+
+
+def test_named_places_keep_a_position_used_when_no_service_answers():
+    """Naming a place saves where it is; a scan that matches it later is placed there even without Google."""
+    reitz = {**PLACES[0], "lat": REITZ[0], "lng": REITZ[1], "accuracy_m": 15.0}
+    home = {**PLACES[1], "lat": HOME[0], "lng": HOME[1], "accuracy_m": 20.0}
+    db = ScanDB(HOME_SCAN, REITZ_LATER, [reitz, home])
+    rel = asyncio.run(relative_to_item(db, NoGeo(), SETTINGS, "house-1", ["cam@clients"], "pin"))
+    assert rel.meters is not None and 1300 < rel.meters < 1500 and rel.compass == "south-west"
+
+
+class NoGeo:
+    async def locate(self, aps):
+        return None
+
+
+def test_naming_a_place_saves_its_position(client):  # noqa: F811
+    db, positions = client.app_state.db, []
+
+    async def wifi_places(scope):
+        return []
+
+    async def save_wifi_place(scope, name, aps, place_id=None, room_id=None):
+        return {"id": "w1", "name": name, "samples": 1, "room_id": room_id}
+
+    async def set_wifi_place_position(place_id, lat, lng, accuracy_m):
+        positions.append((place_id, lat, lng, accuracy_m))
+
+    db.wifi_places, db.save_wifi_place, db.set_wifi_place_position = wifi_places, save_wifi_place, set_wifi_place_position
+    client.app_state.geo.locate = FakeGeo().locate
+    files = [("audio", ("v.wav", b"Last Scene, this is meeting room 2350", "audio/wav"))]
+    resp = client.post("/api/v1/memory/voice", headers=DEVICE, files=files,
+                       data={"wake": "true", "wifi": json_scan(REITZ_SCAN)})
+    assert resp.status_code == 200 and resp.headers["x-intent"] == "place"
+    assert positions == [("w1", REITZ[0], REITZ[1], 15.0)]

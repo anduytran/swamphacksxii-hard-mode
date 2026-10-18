@@ -110,6 +110,13 @@ async def wearer_position(geo, db, device_ids: list[str], wifi: str | None, lat:
     return None
 
 
+def _named_position(named: list[dict], scan: dict[str, int]) -> Location | None:
+    found = best_place(named, scan) if usable(scan) else None
+    if found and found[0].get("lat") is not None:
+        return Location(found[0]["lat"], found[0]["lng"], found[0].get("accuracy_m"), "named place")
+    return None
+
+
 async def relative_to_item(db, geo, settings: Settings, scope: str, device_ids: list[str], item: str,
                            wifi: str | None = None, lat: float | None = None, lng: float | None = None,
                            accuracy_m: float | None = None, minutes: float | None = None) -> Relative | None:
@@ -127,11 +134,16 @@ async def relative_to_item(db, geo, settings: Settings, scope: str, device_ids: 
     if not usable(here_scan) and hasattr(db, "recent_scan"):
         here_scan = await db.recent_scan(device_ids, minutes) or {}
     here = await wearer_position(geo, db, device_ids, wifi, lat, lng, accuracy_m, settings, minutes)
+    named = await db.wifi_places(scope) if hasattr(db, "wifi_places") else []
+    # No position from a service: a scan that matches a named place is where that place was named.
+    if here is None and (spot := _named_position(named, here_scan)):
+        here = spot
+    if found.get("lat") is None and (spot := _named_position(named, item_scan)):
+        found = {**found, "lat": spot.lat, "lng": spot.lng, "accuracy_m": spot.accuracy_m}
     if here is None and not (usable(item_scan) and usable(here_scan)):
         return None
 
     plan = floor_plan(settings.floor_plan)
-    named = await db.wifi_places(scope) if hasattr(db, "wifi_places") else []
     rooms = {}
     for side, scan in (("item", item_scan), ("wearer", here_scan)):
         room_id = await room_of_scan(db, scope, scan) if usable(scan) else None

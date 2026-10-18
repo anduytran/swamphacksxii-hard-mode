@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { orderedSteps, timelineSegments } from "../pages/Live";
-import type { VoiceEvent } from "../lib/types";
+import { liveEntries, orderedSteps, timelineSegments } from "../pages/Live";
+import type { LiveSighting, VoiceEvent } from "../lib/types";
 
 const base: VoiceEvent = {
   id: 1, device_id: "d", created_at: "2026-10-17T23:00:00Z", kind: "wake", outcome: "answered", photos: 4,
@@ -30,5 +30,20 @@ describe("orderedSteps", () => {
     expect(orderedSteps({ save: 7, speak: 1, photos: 4010, transcribe: 598, decide: 740 }).map(([k]) => k)).toEqual([
       "transcribe", "decide", "photos", "save", "speak",
     ]);
+  });
+});
+
+describe("liveEntries", () => {
+  it("puts camera sightings between voice commands, newest first", () => {
+    const sighting = (id: string, at: string): LiveSighting => ({
+      id, captured_at: at, source: "auto", confidence: 0.8, maybe: false, bbox: null, image_size: null, image_url: null,
+      where: null, summary: null, nearby: [], room: null, scene: null, location: null, place: null, last_seen: false,
+      item: "pin", read: false, wifi_room: null,
+    });
+    const entries = liveEntries(
+      [{ ...base, id: 1, created_at: "2026-10-18T08:00:00Z" }, { ...base, id: 2, created_at: "2026-10-18T08:10:00Z" }],
+      [sighting("a", "2026-10-18T08:05:00Z"), sighting("b", "2026-10-18T08:12:00Z")],
+    );
+    expect(entries.map((x) => (x.kind === "voice" ? `v${x.e.id}` : `s${x.s.id}`))).toEqual(["sb", "v2", "sa", "v1"]);
   });
 });

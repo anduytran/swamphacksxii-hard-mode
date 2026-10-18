@@ -330,6 +330,8 @@ def test_an_items_last_five_sightings_can_be_trashed(c):
     assert [s["scene"] for s in listed] == ["floor", "bed", "sink", "shelf", "chair"]  # newest 5
     assert listed[0]["last_seen"] and not any(s["last_seen"] for s in listed[1:])
     assert all(s["image_url"].startswith("/api/v1/images/ih-") for s in listed)
+    live = [s for s in c.get("/api/v1/dashboard/live").json()["sightings"] if s["item"] == "banana"]
+    assert [s["id"] for s in live][:5] == [s["id"] for s in listed] and live[0]["last_seen"]  # the Live page's too
     photo = c.get(listed[1]["image_url"])
     assert photo.status_code == 200 and photo.content.startswith(b"\xff\xd8")
 
@@ -347,7 +349,7 @@ def test_an_items_last_five_sightings_can_be_trashed(c):
 def test_wifi_fingerprints_are_kept_and_places_can_be_named(c):
     """A sighting keeps its Wi-Fi scan (memory and sighting); the LastScene lookup returns it; named places save."""
     db, run = c.app.state.db, c.portal.call
-    scan = [{"bssid": f"aa:00:00:00:00:0{i}", "signal": -60 - 3 * i} for i in range(1, 5)]
+    scan = [{"bssid": f"a8:00:00:00:00:0{i}", "signal": -60 - 3 * i} for i in range(1, 5)]
     sent = post(c, {**obs(minutes_ago=1, label="orange"), "location": {"wifi": scan}})
     assert sent.status_code == 201
     import time as _time
@@ -368,7 +370,10 @@ def test_wifi_fingerprints_are_kept_and_places_can_be_named(c):
     assert run(db.delete_wifi_place, [DEVICE], saved["id"]) and run(db.wifi_places, DEVICE) == []
 
     # A named place that is a floor-plan room: surveyed, and later sightings there land in it.
-    run(db.save_wifi_place, DEVICE, "Rion Ballroom", found["wifi"], None, "rion")
+    rion = run(db.save_wifi_place, DEVICE, "Rion Ballroom", found["wifi"], None, "rion")
+    run(db.set_wifi_place_position, rion["id"], 29.6465, -82.3475, 15.0)
+    [named] = run(db.wifi_places, DEVICE)
+    assert (named["lat"], named["lng"], named["accuracy_m"]) == (29.6465, -82.3475, 15.0)
     assert run(db.surveyed_rooms, [DEVICE]) == {"rion": 1}
     again = post(c, {**obs(minutes_ago=0, label="banana"), "location": {"wifi": scan}})
     for _ in range(10):
