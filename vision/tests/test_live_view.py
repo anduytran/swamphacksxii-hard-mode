@@ -85,10 +85,29 @@ def put_keys_down(session, det, bus, n=6):
 
 def test_commands_from_text_and_keys():
     assert [parse_command(t) for t in ("where\n", " W ", "where are my keys?", "found", "found it!", "f",
-                                        "quit", "q", "exit", "hello", "")] == \
-        ["where", "where", "where", "found", "found", "found", "quit", "quit", "quit", None, None]
-    assert [key_command(k) for k in (ord("w"), ord("f"), ord("q"), 27, -1, ord("x"))] == \
-        ["where", "found", "quit", "quit", None, None]
+                                        "search", "zoom", "s", "quit", "q", "exit", "hello", "")] == \
+        ["where", "where", "where", "found", "found", "found", "search", "search", "search",
+         "quit", "quit", "quit", None, None]
+    assert [key_command(k) for k in (ord("w"), ord("f"), ord("s"), ord("q"), 27, -1, ord("x"))] == \
+        ["where", "found", "search", "quit", "quit", None, None]
+
+
+def test_manual_tiled_search_is_one_frame_and_does_not_create_a_memory(setup, bus):
+    session, det, bridge, log = setup
+    calls = []
+    result = {"visible": True, "label": "bunch of keys", "model": "xl+tiles",
+              "bbox": [20, 30, 80, 90], "confidence": 0.57}
+    session.ls.locate = lambda image, label, search=False: calls.append((image, label, search)) or result
+
+    session.submit("search")
+    session.step(frame(0, bus))
+
+    assert len(calls) == 1 and calls[0][1:] == ("bunch of keys", True)
+    assert session.last_search_result == result
+    assert session.last_search_frame_id == 0
+    assert session.ls.memories("bunch of keys") == []
+    assert bridge.stats["observations"] == 0
+    assert any("not saved or uploaded" in line for line in log)
 
 
 def test_where_guides_then_found_clears_once_with_keys(setup, bus):

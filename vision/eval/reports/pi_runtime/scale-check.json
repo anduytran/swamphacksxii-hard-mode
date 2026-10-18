@@ -1,0 +1,23 @@
+{
+  "manual_crop_source_xyxy": [
+    850,
+    300,
+    1500,
+    950
+  ],
+  "results": [
+    {
+      "mode": "manual_crop",
+      "max_raw_class_score": 0.004377216100692749,
+      "seconds": 0.974431174000074,
+      "detections": []
+    },
+    {
+      "mode": "rotated180",
+      "max_raw_class_score": 0.00017526745796203613,
+      "seconds": 0.6265779390000716,
+      "detections": []
+    }
+  ],
+  "limitation": "Human-selected target crop; not automatic detection or recall."
+}

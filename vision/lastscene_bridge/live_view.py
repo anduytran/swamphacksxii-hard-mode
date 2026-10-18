@@ -31,11 +31,12 @@ import cv2
 from lastscene_bridge.observation import item_label
 from memory_engine.api import resolve_label
 
-WINDOW = "LastSeen live (w: where are my keys  f: found it  q: quit)"
+WINDOW = "LastSeen live (w: where  s: tiled search  f: found  q: quit)"
 COMMANDS = {"w": "where", "where": "where", "where are my keys": "where",
+            "s": "search", "search": "search", "zoom": "search",
             "f": "found", "found": "found", "found it": "found",
             "q": "quit", "quit": "quit", "exit": "quit"}
-KEYS = {ord("w"): "where", ord("f"): "found", ord("q"): "quit", 27: "quit"}  # 27 = Esc
+KEYS = {ord("w"): "where", ord("s"): "search", ord("f"): "found", ord("q"): "quit", 27: "quit"}  # 27 = Esc
 
 LIVE = (0, 200, 0)        # BGR: detector box in this frame
 MEMORY = (0, 140, 255)    # projected "last seen here" box
@@ -201,6 +202,9 @@ class LiveSession:
         self.guiding = False
         self.memory_id = None
         self.last_guide = None
+        self.last_frame = None
+        self.last_search_result = None
+        self.last_search_frame_id = None
         self.notice, self.notice_until = None, 0
         self.stopped = False
         self._inset = None
@@ -236,6 +240,8 @@ class LiveSession:
             cmd = self.commands.get_nowait()
             if cmd == "where":
                 self.where()
+            elif cmd == "search":
+                self.search()
             elif cmd == "found":
                 self.found()
             elif cmd == "quit":
@@ -271,6 +277,31 @@ class LiveSession:
                      + (f", backend {status}" if status is not None else ", not sent (dry run)" if not self.uploading else ""))
         return result
 
+    def search(self):
+        """Run the existing XL tiled detector once on the current frame, without making a memory."""
+        if self.last_frame is None:
+            self.log("  tiled search unavailable: waiting for the first camera frame")
+            self._notify("Tiled search: waiting for a camera frame")
+            return None
+        try:
+            result = self.ls.locate(self.last_frame.image, self.prompt, search=True)
+        except Exception as exc:  # keep an optional manual search from stopping the demo loop
+            self.last_search_result = None
+            self.last_search_frame_id = self.last_frame.frame_id
+            self.log(f"  tiled search failed: {type(exc).__name__}: {exc}")
+            self._notify(f"Tiled search failed ({type(exc).__name__})")
+            return None
+        self.last_search_result = result
+        self.last_search_frame_id = self.last_frame.frame_id
+        if result.get("visible"):
+            confidence = result.get("confidence", 0.0)
+            self.log(f"  tiled search candidate for {self.item}: confidence {confidence:.2f}; not saved or uploaded")
+            self._notify(f"Possible {self.item} in frame ({confidence:.2f}); not saved")
+        else:
+            self.log(f"  tiled search found no {self.item} in the current frame; nothing saved or uploaded")
+            self._notify(f"No {self.item} detected by tiled search")
+        return result
+
     # --- frame loop ----------------------------------------------------------
     def run(self, frames):
         for f in frames:
@@ -281,6 +312,7 @@ class LiveSession:
             self.handle_commands()  # e.g. "found" typed while a dropped stream was reconnecting
 
     def step(self, f) -> list[str]:
+        self.last_frame = f
         self.handle_commands()
         if self.stopped:
             return []
@@ -321,8 +353,12 @@ class LiveSession:
         vis = f.image.copy()
         h, w = vis.shape[:2]
         scale = max(0.6, w / 1600)
-        draw(vis, guidance_overlay(g, vis.shape) if g else
-             detection_overlay([d for d in dets if d.label in self.ls.prompts]))
+        overlays = (guidance_overlay(g, vis.shape) if g else
+                    detection_overlay([d for d in dets if d.label in self.ls.prompts]))
+        if self.last_search_frame_id == f.frame_id and self.last_search_result and self.last_search_result.get("visible"):
+            overlays.append({"kind": "search", "box": self.last_search_result["bbox"], "style": "dashed",
+                             "label": f"tiled search candidate {self.last_search_result['confidence']:.2f} (not saved)"})
+        draw(vis, overlays)
         if g:
             _text(vis, guidance_cue(g, self.item), (16, h - 60), scale)
             self._draw_inset(vis)
@@ -333,7 +369,7 @@ class LiveSession:
                   f"{self.item}" + (f", latest {_clock(when)}" if latest else "")
                   + f" | observations {self.bridge.stats['observations']} {'queued' if self.uploading else 'written (dry run)'}")
         _text(vis, status, (16, int(34 * scale)), scale)
-        _text(vis, "w: where are my keys   f: found it   q: quit", (16, h - 20), scale * 0.8)
+        _text(vis, "w: where   s: tiled search (not saved)   f: found   q: quit", (16, h - 20), scale * 0.8)
         if self.notice and time.monotonic() < self.notice_until:
             _text(vis, self.notice, (16, int(80 * scale)), scale * 1.2, (0, 255, 255))
         cv2.imshow(WINDOW, vis)

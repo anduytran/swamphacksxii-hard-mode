@@ -330,6 +330,8 @@ On "found it", call `found(label=...)`, not `found(memory_id)`. Scene matching c
 
 `resolve_label` maps "keys", "my keys", "car keys" and similar to the detector prompt `"bunch of keys"`. File-based access still works: `memories.json` keeps every old field and adds `place_status`, `scene_verdict`, `scene_inliers` and `compared_with`.
 
+In the live bridge, type `search` or press `s` to run one full-frame-plus-tiles search on the current frame. In the default `lastscene_bridge.run` setup this uses the XL search detector; runtimes that inject `search_detector` use that detector instead. The candidate is shown with an orange dashed box and is not added to memory or uploaded. This is deliberately a user-requested check: current clip evaluation found one false memory when tiled proposals were fed continuously into the normal memory logic.
+
 ## Known limits (measured or reasoned, not hidden)
 
 - The scene matcher hasn't been tested on real 3D scenes. Parallax, clutter, reflective surfaces and ESP32 blur will all reduce matches. Very large viewpoint changes can produce `different_scene` for the same place (seen at 40% warps).
