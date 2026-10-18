@@ -26,7 +26,7 @@ describe("SightingList", () => {
     expect(t).toContain("LastScene ·");
     expect(t).toContain("On the kitchen counter");
     expect(t).toContain("Place not known");
-    expect(t).toContain("42% (maybe) · raia");
+    expect(t).toContain("42% (maybe) · described from the photo");
     expect(html).toContain('src="/api/v1/images/ih-s1?exp=1&amp;sig=x"');
     expect(html.match(/<li class="now"/g)?.length).toBe(1);
     expect(html.match(/>Trash<\/button>/g)?.length).toBe(2);

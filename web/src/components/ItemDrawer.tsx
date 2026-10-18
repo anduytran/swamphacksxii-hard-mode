@@ -214,7 +214,7 @@ export function SightingList({ name, list, confirming, busy, onAsk, onTrash }: {
                 {s.last_seen ? "LastScene · " : ""}
                 {timeAgo(s.captured_at)} · {clockTime(s.captured_at)}
                 {s.confidence !== null ? ` · ${Math.round(s.confidence * 100)}%${s.maybe ? " (maybe)" : ""}` : ""}
-                {s.source === "raia" ? " · raia" : ""}
+                {s.source === "raia" ? " · described from the photo" : ""}
               </time>
               {confirming === s.id ? (
                 <span className="confirm-row">
