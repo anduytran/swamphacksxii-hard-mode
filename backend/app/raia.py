@@ -76,7 +76,8 @@ def prompt(label: str, bbox: list[float] | None, scene_label: str | None) -> str
         f'"surface": "what it is on or in", "nearby": ["up to {MAX_NEARBY} things right next to it"], '
         f'"room": "the room or kind of place, or \\"\\"", "visible_text": "words readable near it, or \\"\\"", '
         f'"summary": "one short sentence saying where the {label} is"}}\n'
-        f'If there is no {label}, answer {{"visible": false}}.'
+        f'If there is no {label}, answer {{"visible": false}}. The answers are read out to the wearer: say "your hand", '
+        f'"in front of you", never "the person\'s hand".'
     )
 
 

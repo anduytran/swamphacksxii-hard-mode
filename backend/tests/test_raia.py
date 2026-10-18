@@ -220,6 +220,7 @@ def test_prompt_asks_for_the_json_fields():
     for field in ("visible", "where", "surface", "nearby", "room", "visible_text", "summary"):
         assert f'"{field}"' in text
     assert "box" not in text and "camera's location" not in text
+    assert '"your hand"' in text and "never \"the person's hand\"" in text
     assert "kitchen" in prompt("pin", [0.1, 0.1, 0.2, 0.2], "kitchen")
 
 
