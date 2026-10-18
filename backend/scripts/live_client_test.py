@@ -6,8 +6,8 @@
 2. The silent raia read it triggers (the server does it after the response): raia_contexts and the
    "LastScene: ..." memory, read from DATABASE_URL (backend/.env), read-only. Skipped without --db-check.
 3. A wake ask, as the audio Pi sends it with on-device speech-to-text: "Last Scene, where is my <item>?".
-4. A follow-up that needs that answer: "Last Scene, can you point me in the right direction?" (answered in the
-   item's raia conversation when it has one: X-Answered-By: raia).
+4. "Last Scene, which way is my <item>?": every ask about an item is answered with its last 5 LastScene
+   locations and where it is from the wearer as context, so it says which way without a follow-up.
 
 Writes real data for the device's household: one observation, a raia memory, two voice events. Prints no secrets.
 """
@@ -162,8 +162,8 @@ def main() -> int:
     step(3, f'Ask: "Last Scene, where is my {args.item}?"')
     show_answer(voice(http, f"Last Scene, where is my {args.item}?", image), args.out / "answer-1.wav")
 
-    step(4, 'Follow-up: "Last Scene, can you point me in the right direction?"')
-    show_answer(voice(http, "Last Scene, can you point me in the right direction?", image), args.out / "answer-2.wav")
+    step(4, f'Ask: "Last Scene, which way is my {args.item}?"')
+    show_answer(voice(http, f"Last Scene, which way is my {args.item}?", image), args.out / "answer-2.wav")
     return 0
 
 

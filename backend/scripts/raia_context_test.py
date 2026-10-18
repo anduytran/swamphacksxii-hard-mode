@@ -41,8 +41,6 @@ async def main() -> int:
                          "(default: none, as wake photos are sent)")
     ap.add_argument("--scene", default=None, help="optional camera location, as detect --scene-label sends it")
     ap.add_argument("--scope", default="smoke-test", help="conversation user fkId suffix (default smoke-test)")
-    ap.add_argument("--follow-up", default="Can you point me in the right direction?",
-                    help='then ask this in the same conversation, as a wearer\'s follow-up ("" to skip)')
     args = ap.parse_args()
 
     settings = Settings()
@@ -67,12 +65,6 @@ async def main() -> int:
         reply, conversation_id = await raia.describe(args.scope, args.label, args.bbox, args.scene, image, image_type,
                                                      started)
         seconds = (datetime.now(timezone.utc) - started).total_seconds()
-        answer = None
-        if args.follow_up:
-            asked = datetime.now(timezone.utc)
-            answer = await raia.follow_up(conversation_id, args.label, args.follow_up,
-                                          (f"where is my {args.label}?", "(the answer from the photo)"))
-            follow_seconds = (datetime.now(timezone.utc) - asked).total_seconds()
     except Exception as exc:
         print(f"\nFAILED: {exc}", file=sys.stderr)
         return 1
@@ -89,9 +81,6 @@ async def main() -> int:
     print(f"  item: {args.label} -> {place_of(ctx)}")
     for kind, text in chunks_for(args.label, ctx):
         print(f"  chunk [{kind}] {text}")
-    if answer is not None:
-        print(f"\nFollow-up in conversation {conversation_id} ({follow_seconds:.1f} s):\n"
-              f"  Q: {args.follow_up}\n  A: {answer}")
     return 0
 
 

@@ -44,7 +44,10 @@ lists, markdown or emoji. Vary how you start; openers like "Oh yeah," "Ah," or "
 about two hours ago."
 - If none of the notes are about what they asked, say so kindly, e.g. "Hmm, I don't have a note about \
 that yet. Tell me next time you put it down?"
-- If an earlier exchange is given, this is a follow-up to it: answer in that context.
+- If the item's LastScene locations are given (newest first, from the camera) with where it is from the \
+wearer, the newest one is where it is now: say where, then how far, which way and how many floors from \
+the wearer when known, e.g. "Your pin's on the desk in meeting room 2360, about 40 meters north-east, one \
+floor up." Up to 160 characters for this. Mention an older location only if they ask about it.
 - Latency-sensitive; begin your visible answer immediately."""
 
 
@@ -609,12 +612,12 @@ class AIServices:
         return response.parsed_output
 
     async def answer(self, question: str, memories: list[RetrievedMemory], language: str = languages.DEFAULT_LANGUAGE,
-                     previous: tuple[str, str] | None = None) -> str:
-        """`previous`: the last (question, answer) when this is a "continue" follow-up."""
+                     context: str | None = None) -> str:
+        """`context`: the item's last LastScene locations and where it is from the wearer (lastscene.item_context)."""
         notes = "\n".join(_note(m) for m in memories) or "(nothing retrieved)"
         system = f"{ANSWER_SYSTEM_PROMPT}\n- {languages.instruction(language)}"
-        earlier = f"Earlier exchange:\nQ: {previous[0]}\nA: {previous[1]}\n\n" if previous else ""
-        text = await self._generate(system, f"{earlier}Memories:\n{notes}\n\nQuestion: {question}", fast=True)
+        located = f"{context}\n\n" if context else ""
+        text = await self._generate(system, f"{located}Memories:\n{notes}\n\nQuestion: {question}", fast=True)
         if text is None:
             return languages.phrase(REFUSED, language)
         return text or languages.phrase(NO_ANSWER, language)

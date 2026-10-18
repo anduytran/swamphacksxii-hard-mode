@@ -112,7 +112,6 @@ class Api:
     def __init__(self, reply=None, user_exists=False, fail=None, not_found=404):
         self.reply = json.dumps(CONTEXT) if reply is None else reply
         self.user_exists, self.fail, self.not_found = user_exists, fail, not_found
-        self.follow_up_reply = "It's on the desk to your left, right by the laptop."
         self.calls: list[tuple[str, str]] = []
         self.uploaded: bytes | None = None
         self.messages: list[dict] = []
@@ -149,8 +148,7 @@ class Api:
                                              "storagePath": "conversations/conv-1/frame.jpg"})
         if path == "/conversations/conv-1/messages":
             self.messages.append(body)
-            reply = self.follow_up_reply if "files" not in body else self.reply
-            return httpx.Response(201, json={"id": "m-2", "message": reply, "conversationId": "conv-1",
+            return httpx.Response(201, json={"id": "m-2", "message": self.reply, "conversationId": "conv-1",
                                              "senderRole": "assistant"})
         raise AssertionError(f"unexpected {req.method} {req.url}")
 
@@ -388,90 +386,3 @@ def test_a_failed_prompt_is_logged_as_a_warning(caplog):
     assert failed and failed[0].levelname == "WARNING" and "500" in failed[0].getMessage()
 
 
-# ---------------------------------------------------------------- follow-ups that need the last answer
-
-def test_needs_context_spots_follow_ups():
-    from app.intent import needs_context
-    for said in ("Can you point me in the right direction?", "which way is it", "where exactly?",
-                 "is it still there", "guide me to it", "how do I get there"):
-        assert needs_context(said), said
-    for said in ("where is my pin", "I put my keys on the table", "what did I do this morning"):
-        assert not needs_context(said), said
-
-
-def _wired(client, api):  # noqa: F811
-    """The API test client with raia and its stored context, via FakeDB's raia methods."""
-    db, fake = client.app_state.db, FakeDB()
-    for name in ("logged_items", "claim_raia_context", "finish_raia_context", "raia_context",
-                 "household_of_device", "household_device_ids"):
-        setattr(db, name, getattr(fake, name))
-    client.app_state.raia = raia(api)
-    return fake
-
-
-def _ask(client, said, item="pin", look=None):  # noqa: F811
-    async def decipher(words):
-        return Command(intent="ask", item=item)
-
-    async def looked(item, words, photos):
-        return look
-
-    client.app_state.ai.decipher, client.app_state.ai.look_for = decipher, looked
-    files = [("audio", ("v.wav", said.encode(), "audio/wav")), ("image", ("p.jpg", b"\xff\xd8pin", "image/jpeg"))]
-    return client.post("/api/v1/memory/voice", headers=DEVICE, files=files, data={"wake": "true"})
-
-
-def test_point_me_in_the_right_direction_continues_in_the_raia_conversation(client):  # noqa: F811
-    from urllib.parse import unquote
-    api = Api()
-    fake = _wired(client, api)
-    first = _ask(client, "Last Scene, where is my pin", look=PhotoCheck(visible=True, where="on the desk", confidence=0.9))
-    assert first.status_code == 200 and fake.conversations[("house-1", "pin")] == "conv-1"
-
-    resp = _ask(client, "Last Scene, can you point me in the right direction?")
-    assert resp.status_code == 200 and resp.headers["x-answered-by"] == "raia"
-    assert unquote(resp.headers["x-answer"]) == "It's on the desk to your left, right by the laptop."
-    follow = api.messages[-1]
-    assert "files" not in follow and "point me in the right direction" in follow["message"]
-    assert "where is my pin" in follow["message"]  # the last exchange goes along
-
-
-def test_without_raia_the_answer_model_gets_the_stored_context(client):  # noqa: F811
-    api = Api()
-    fake = _wired(client, api)
-    _ask(client, "Last Scene, where is my pin", look=PhotoCheck(visible=True, where="on the desk", confidence=0.9))
-    fake.conversations[("house-1", "pin")] = None  # read before conversations were kept
-    seen = []
-
-    async def answer(question, memories, language="en", previous=None):
-        seen.append((question, previous))
-        return "Turn left, it's on the desk."
-
-    client.app_state.ai.answer = answer
-    resp = _ask(client, "Last Scene, which way is it?")
-    assert resp.status_code == 200 and resp.headers["x-answered-by"] != "raia"
-    question, previous = seen[-1]
-    assert question == "which way is it?" and previous[0].endswith("where is my pin")
-    assert "What the camera saw" in previous[1] and "Next to: laptop, blue mug." in previous[1]
-
-
-def test_a_slow_raia_follow_up_falls_back_to_the_answer_model(client):  # noqa: F811
-    api = Api()
-    _wired(client, api)
-    _ask(client, "Last Scene, where is my pin", look=PhotoCheck(visible=True, where="on the desk", confidence=0.9))
-
-    async def slow(*args):
-        import asyncio as aio
-        await aio.sleep(10)
-
-    client.app_state.raia.follow_up = slow
-    client.settings.answer_timeout_seconds = 0.2
-    seen = []
-
-    async def answer(question, memories, language="en", previous=None):
-        seen.append(previous)
-        return "It's on the desk."
-
-    client.app_state.ai.answer = answer
-    resp = _ask(client, "Last Scene, point me in the right direction")
-    assert resp.status_code == 200 and seen and "What the camera saw" in seen[-1][1]

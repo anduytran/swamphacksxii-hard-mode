@@ -26,17 +26,17 @@ from ..config import Settings, get_settings
 from ..db import MemoryDB
 from ..deps import device_limit, get_ai, get_db, get_geo, get_raia
 from ..geo import Geolocator, locate_and_record, record_public, resolve_location
-from ..intent import (after_wake_phrase, classify, continue_command, fallback_command, match_item, needs_context,
+from ..intent import (after_wake_phrase, classify, fallback_command, match_item,
                       place_command, strip_wake_phrase)
 from ..observations import scope_for
 from ..languages import is_english, normalize, phrase
 from ..limits import RateLimited
 from ..maps_names import name_memory_place
 from ..pipeline import ingest_image, ingest_speech, retrieve
-from ..lastscene import lastscene_note
+from ..lastscene import ItemContext, item_context
 from ..home_map import floor_plan, room_for
 from ..wifi_places import clean_name, display, from_wifi_json, learn, name_place, room_of_scan, usable
-from ..raia import Raia, context_from_photos, context_note, norm
+from ..raia import Raia, context_from_photos
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
 log = logging.getLogger(__name__)
@@ -308,9 +308,12 @@ async def _language(db: MemoryDB, device_id: str) -> str:
 
 async def _answer_text(
     db: MemoryDB, ai: AIServices, settings: Settings, device_id: str, question: str,
-    previous: tuple[str, str] | None = None,
+    context: "asyncio.Task | None" = None, trace: Trace | None = None,
 ) -> tuple[str, str, dict[str, float]]:
-    """(answer, answered_by, stage -> ms) for a question, from the saved memories; nothing spoken yet."""
+    """(answer, answered_by, stage -> ms) for a question, from the saved memories; nothing spoken yet.
+    `context`: the task gathering the item's last LastScene locations and where it is from the wearer
+    (_context_task, started beside the memory search); the answer model gets it when it's ready within
+    LASTSCENE_NOTE_SECONDS of the search."""
     timings: dict[str, float] = {}
     clock = time.perf_counter()
 
@@ -320,28 +323,36 @@ async def _answer_text(
         timings[stage] = (now - clock) * 1000
         clock = now
 
-    if not question and not previous:
+    if not question:
+        if context is not None:
+            context.cancel()
         return phrase(DIDNT_CATCH, await _language(db, device_id)), "fixed", timings
     language = None
     try:
-        embedding, language = await asyncio.gather(ai.embed(question or previous[0], query=True), _language(db, device_id))
+        embedding, language = await asyncio.gather(ai.embed(question, query=True), _language(db, device_id))
         lap("embed")
-        memories = await retrieve(db, ai, question or previous[0], [device_id], settings.query_lookback_hours,
-                                  embedding=embedding)
+        memories = await retrieve(db, ai, question, [device_id], settings.query_lookback_hours, embedding=embedding)
         lap("retrieve")
-        # Template answers are English sentences; other languages and follow-ups always go to the model.
-        use_template = settings.template_answers and is_english(language) and not previous
+        located = await _context_ready(context, settings, trace)
+        if context is not None:
+            lap("lastscene")
+        # Template answers are English sentences without the LastScene context; other languages, and answers
+        # with that context, go to the model.
+        use_template = settings.template_answers and is_english(language) and located is None
         answer = template_answer(question, memories) if use_template else None
         answered_by = "template"
         if answer is None:
             try:
                 answer = await asyncio.wait_for(
-                    ai.answer(question or "Tell me more.", memories, language, previous) if previous
+                    ai.answer(question, memories, language, context=located.prompt) if located
                     else ai.answer(question, memories, language), settings.answer_timeout_seconds)
                 answered_by = "llm"
             except TimeoutError:  # the model is queued or slow: what the best memory says, right away
                 log.warning("Answer model slower than %.0f s; answering from the memory", settings.answer_timeout_seconds)
-                answer = recall_answer(memories) or phrase(NO_ANSWER, language)
+                recalled = recall_answer(memories)
+                sentence = located.sentence if located else None
+                answer = (f"{recalled.rstrip()} {sentence}" if recalled and sentence else recalled or sentence
+                          or phrase(NO_ANSWER, language))
                 answered_by = "memory (model too slow)"
         lap("answer")
     except RateLimited as busy:  # over a model's limit: say so (a cached phrase, no model call)
@@ -353,25 +364,10 @@ async def _answer_text(
 async def _spoken_answer(
     background: BackgroundTasks, db: MemoryDB, ai: AIServices, geo: Geolocator, settings: Settings,
     device_id: str, question: str, where: Whereabouts, extra_headers: dict | None = None, trace: Trace | None = None,
-    previous: tuple[str, str] | None = None, answer: tuple[str, str, dict[str, float]] | None = None,
-    lastscene: "asyncio.Task | None" = None,
+    answer: tuple[str, str, dict[str, float]] | None = None,
 ) -> Response:
-    """Answer out loud. `answer`: an (answer, answered_by, timings) already worked out (_answer_text).
-    `lastscene`: the task working out where the item's LastScene is from the wearer (_lastscene_task); its
-    sentence is added when it's ready within LASTSCENE_NOTE_SECONDS of the answer."""
-    answer_text, answered_by, timings = answer or await _answer_text(db, ai, settings, device_id, question, previous)
-    if lastscene is not None and answered_by not in ("fixed", "busy"):
-        clock = time.perf_counter()
-        try:
-            if note := await asyncio.wait_for(lastscene, settings.lastscene_note_seconds):
-                answer_text = f"{answer_text.rstrip()} {note}"
-                if trace:
-                    trace.set(lastscene=note)
-        except TimeoutError:
-            log.info("LastScene comparison slower than %.1f s; answered without it", settings.lastscene_note_seconds)
-        except Exception:
-            log.exception("LastScene comparison failed")
-        timings["lastscene"] = (time.perf_counter() - clock) * 1000
+    """Answer out loud. `answer`: an (answer, answered_by, timings) already worked out (_answer_text)."""
+    answer_text, answered_by, timings = answer or await _answer_text(db, ai, settings, device_id, question, trace=trace)
     clock = time.perf_counter()
     speech = await ai.speak(answer_text)
     timings["speak"] = (time.perf_counter() - clock) * 1000
@@ -381,7 +377,7 @@ async def _spoken_answer(
         trace.add_steps(timings)
         trace.set(question=question or None, answer=answer_text, answered_by=answered_by, outcome="answered")
     if answered_by not in ("fixed", "busy"):  # a real answer: log the question (for Insights)
-        record_args = (db, ai, geo, device_id, question or (previous[0] if previous else ""), answer_text, where)
+        record_args = (db, ai, geo, device_id, question, answer_text, where)
         if trace is not None and trace.defer:
             trace.event["pending"] = {"type": "query", "question": record_args[4], "answer": answer_text,
                                       "where": asdict(where)}
@@ -504,15 +500,32 @@ async def voice(
 
 
 TRUSTED_WAKE_SCORE = 0.9  # a wake this sure counts even when speech-to-text doesn't hear "Last Scene"
-CONTINUE_WITHIN_S = 600  # "continue" follows on from an answer this recent
 
 
-def _lastscene_task(db, geo, settings: Settings, device_id: str, item: str, where: Whereabouts):
-    """Start comparing where the wearer is with the item's LastScene (lastscene.py), beside the answer."""
+def _context_task(db, geo, settings: Settings, device_id: str, item: str, where: Whereabouts):
+    """Start gathering the item's last LastScene locations and where it is from the wearer (lastscene.py),
+    beside the memory search, for the answer model."""
     if not item:
         return None
-    return asyncio.create_task(lastscene_note(db, geo, settings, device_id, item, where.wifi, where.lat, where.lng,
-                                              where.accuracy_m))
+    return asyncio.create_task(item_context(db, geo, settings, device_id, item, where.wifi, where.lat, where.lng,
+                                            where.accuracy_m))
+
+
+async def _context_ready(task: "asyncio.Task | None", settings: Settings, trace: Trace | None) -> ItemContext | None:
+    """The item context once it's ready, waiting at most LASTSCENE_NOTE_SECONDS; None without it."""
+    if task is None:
+        return None
+    try:
+        located = await asyncio.wait_for(task, settings.lastscene_note_seconds)
+    except TimeoutError:
+        log.info("LastScene context slower than %.1f s; answered without it", settings.lastscene_note_seconds)
+        return None
+    except Exception:
+        log.exception("LastScene context failed")
+        return None
+    if located and trace:
+        trace.set(lastscene=located.sentence, lastscene_context=located.prompt)
+    return located
 
 
 async def _name_place(db, ai: AIServices, settings: Settings, device_id: str, place: str, where: Whereabouts,
@@ -545,64 +558,6 @@ def _spoken_room(name: str) -> str:
     return "meeting room " + name.removeprefix("Meeting Room ") if name.startswith("Meeting Room ") else f"the {name}"
 
 
-async def _previous_turn(db: MemoryDB, device_id: str) -> dict | None:
-    """The last answer this device heard: {"question", "answer", "item"}, for follow-ups."""
-    if not hasattr(db, "voice_events"):
-        return None
-    now = datetime.now(timezone.utc)
-    for e in await db.voice_events([device_id], 0, 10):
-        when = datetime.fromisoformat(e["created_at"])
-        if (now - when).total_seconds() > CONTINUE_WITHIN_S:
-            return None
-        if e.get("answer") and (e.get("question") or e.get("heard")):
-            return {"question": e.get("question") or e["heard"], "answer": e["answer"], "item": e.get("item") or ""}
-    return None
-
-
-async def _previous_exchange(db: MemoryDB, device_id: str) -> tuple[str, str] | None:
-    """The last (question, answer) this device heard, for "continue"."""
-    turn = await _previous_turn(db, device_id)
-    return (turn["question"], turn["answer"]) if turn else None
-
-
-async def _follow_up(background, db, ai, geo, settings, device_id: str, question: str, turn: dict, where,
-                     headers: dict, trace: Trace, raia: Raia | None) -> Response:
-    """A follow-up that needs the last answer. When the camera's frame of that item was read by raia, the
-    question continues in that raia conversation (it has the photo); otherwise, or when raia is slow, the answer
-    model gets the last exchange plus the stored context, as if it were the same conversation."""
-    previous = (turn["question"], turn["answer"])
-    item = norm(turn.get("item") or "")
-    stored = None
-    if item and hasattr(db, "raia_context"):
-        try:
-            scope, _ = await scope_for(db, device_id)
-            stored = await db.raia_context(scope, item)
-        except Exception:
-            log.exception("Looking up the stored context for %s failed", item)
-    ctx = json.loads(stored["context"]) if stored and stored.get("context") else None
-    trace.set(item=item or None, follow_up_context=bool(ctx))
-    english = is_english(await _language(db, device_id))
-    lastscene = _lastscene_task(db, geo, settings, device_id, item, where) if english else None
-    if ctx and stored.get("conversation_id") and raia is not None and raia.configured:
-        started = time.perf_counter()
-        try:
-            text = await asyncio.wait_for(raia.follow_up(stored["conversation_id"], item, question, previous),
-                                          settings.answer_timeout_seconds)
-            log.info("RAIA follow-up in %s about %s, %.1f s: %s", stored["conversation_id"], item,
-                     time.perf_counter() - started, text)
-            if text:
-                return await _spoken_answer(background, db, ai, geo, settings, device_id, question, where, headers,
-                                            trace=trace, answer=(text, "raia", {"raia": (time.perf_counter() - started) * 1000}),
-                                            lastscene=lastscene)
-        except Exception as exc:  # slow or down: the answer model, with the context below
-            log.warning("RAIA follow-up about %s unavailable (%s); answering with the stored context",
-                        item, type(exc).__name__)
-    if ctx:
-        previous = (previous[0], f"{previous[1]}\n{context_note(ctx, stored.get('finished_at'))}")
-    return await _spoken_answer(background, db, ai, geo, settings, device_id, question, where, headers,
-                                trace=trace, previous=previous, lastscene=lastscene)
-
-
 async def _voice(background, audio, image, transcript, wake, where, pairing_code, device, db, ai, geo, settings,
                  trace: Trace, raia: Raia | None = None):
     photos = [(await _read(i, MAX_IMAGE_BYTES, "image"), i.content_type) for i in (image or [])[:MAX_WAKE_PHOTOS]]
@@ -633,24 +588,6 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
             trace.set(outcome="nothing to do", intent="none")
             return {"intent": "none", "heard": heard}
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "No speech detected")
-
-    # "continue", or a question that leans on the last answer ("point me in the right direction"): a follow-up,
-    # with the last exchange (and what the camera saw of its item) as context.
-    follow_up = continue_command(words)
-    turn = await _previous_turn(db, device.sub) if follow_up is not None or needs_context(words) else None
-    if follow_up is not None or turn is not None:
-        question = words if follow_up is None else follow_up
-        trace.set(intent="ask", continued=turn["question"] if turn else None, decided_by="rules")
-        trace.lap("decide")
-        if turn is None and not question:
-            trace.set(outcome="nothing to do")
-            return {"intent": "none", "heard": heard}
-        headers = {"X-Intent": "ask", "X-Heard": quote(heard)}
-        if turn is None:  # "continue, where's my wallet" with nothing before it: a plain question
-            return await _spoken_answer(background, db, ai, geo, settings, device.sub, question, where, headers,
-                                        trace=trace)
-        return await _follow_up(background, db, ai, geo, settings, device.sub, question or "Tell me more.", turn,
-                                where, headers, trace, raia)
 
     # "this is the Reitz Union": the Wi-Fi heard here becomes that place's fingerprint (wifi_places.py).
     if wake and (place := place_command(words)) and not match_item(place, await saved_item_names(
@@ -697,12 +634,12 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
         look = wake and photos
         started = time.perf_counter()
         photo_task = asyncio.create_task(check_photos()) if look else None
-        lastscene = _lastscene_task(db, geo, settings, device.sub, item, where) if is_english(await _language(db, device.sub)) else None
+        context = _context_task(db, geo, settings, device.sub, item, where)
         if photo_task is not None and raia is not None and raia.configured:
             # The item in view goes to raia (raia.py) after the response, once the photo check is done.
             background.add_task(context_from_photos, db, ai, raia, settings, device.sub, item, photo_task, photos, "ask",
                                 lambda memory_id: _locate(geo, db, device.sub, "memory_logs", memory_id, where))
-        answered = await _answer_text(db, ai, settings, device.sub, words)
+        answered = await _answer_text(db, ai, settings, device.sub, words, context, trace)
         view = None
         if photo_task is not None:
             try:  # shielded: the check keeps going for raia when the answer doesn't wait for it
@@ -713,8 +650,6 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
             note_view(view)
         trace.clock = time.perf_counter()
         if view and view.visible and item and view.where and is_english(await _language(db, device.sub)):
-            if lastscene is not None:  # it's in view: where it was recorded doesn't matter now
-                lastscene.cancel()
             answer = IN_VIEW.format(item=item, where=view.where.strip().rstrip("."))
             speech = await ai.speak(answer)
             trace.lap("speak")
@@ -722,8 +657,7 @@ async def _voice(background, audio, image, transcript, wake, where, pairing_code
             return Response(content=speech, media_type=ai.speech_media_type,
                             headers={"X-Intent": "ask", "X-Answer": quote(answer), "X-Answered-By": "camera", **heard_header})
         return await _spoken_answer(background, db, ai, geo, settings, device.sub, words, where,
-                                    {"X-Intent": "ask", **heard_header}, trace=trace, answer=answered,
-                                    lastscene=lastscene)
+                                    {"X-Intent": "ask", **heard_header}, trace=trace, answer=answered)
     if intent == "found" and item:
         scope, _ = await scope_for(db, device.sub)
         await db.mark_found(scope, " ".join(item.lower().split()), datetime.now(timezone.utc))

@@ -10,10 +10,6 @@ both send it). The agent answers in JSON (surface, nearby, room, readable text, 
 memory of its own, transcript "LastScene: <summary>", with the item and its place indexed like a spoken memory
 ("pin: on the table next to the laptop"), so "where's my pin?" finds it, often without the answer model.
 
-Follow-ups that need the last answer ("point me in the right direction", routers/memory.py) continue in the raia
-conversation that read the item's frame, so the agent answers with the photo in view (follow_up). Without one,
-or when raia is slow, the stored context goes to the answer model with the last exchange (context_note).
-
 The external API, Agent-Secret-Key header (https://api.raia2.com/api/external/docs):
     GET  /external/users/search?fkId=...                  the household's conversation user (404 = none yet)
     POST /external/users                                  create it (firstName, lastName, fkId)
@@ -212,38 +208,9 @@ class Raia:
         })).json()
         return _reply_text(reply), conv_id
 
-    async def follow_up(self, conversation_id: str, item: str, question: str,
-                        previous: tuple[str, str] | None) -> str:
-        """A wearer's follow-up about `item`, in the conversation that read its photo: a short spoken answer."""
-        earlier = f'Just before, they asked "{previous[0]}" and heard "{previous[1]}". ' if previous else ""
-        message = (
-            f"Follow-up from the person wearing the camera, who is looking for their {item}. "
-            f'{earlier}Now they say: "{question}". Answer from the photo and what you said about it, as one friendly '
-            f"spoken sentence under 100 characters, in plain text, not JSON. Directions are from the camera's view: "
-            f"its left is their left."
-        )
-        reply = (await self._call("follow-up", "POST", f"/conversations/{conversation_id}/messages",
-                                  json={"message": message})).json()
-        text = _reply_text(reply)
-        ctx = parse_context(text) if text.lstrip().startswith("{") else None  # an agent that kept to JSON
-        return (ctx["summary"] if ctx else clean(text)) or ""
-
 
 def _reply_text(reply: dict) -> str:
     return (reply.get("fullAIResponse") or {}).get("outputText") or reply.get("message") or ""
-
-
-def context_note(ctx: dict, seen_at: datetime | None = None) -> str:
-    """The stored JSON context as a line for the answer model, so a follow-up has what the camera saw."""
-    when = f" ({seen_at:%H:%M} UTC)" if seen_at else ""
-    note = f"What the camera saw{when}: {ctx.get('summary', '')}"
-    if ctx.get("nearby"):
-        note += f" Next to: {', '.join(ctx['nearby'])}."
-    if ctx.get("room"):
-        note += f" Room: {ctx['room']}."
-    if ctx.get("visible_text"):
-        note += f" Readable nearby: {ctx['visible_text']}."
-    return note
 
 
 async def save_context(db: MemoryDB, ai: AIServices, device_id: str, label: str, ctx: dict,

@@ -60,6 +60,7 @@ class Relative:
     wearer_place: str | None
     item_at: datetime
     accuracy_m: float | None  # the two fixes' accuracy together
+    wearer: Location | None = None  # the wearer's position, for distances to earlier sightings
 
     @property
     def compass(self) -> str | None:
@@ -170,6 +171,7 @@ async def relative_to_item(db, geo, settings: Settings, scope: str, device_ids: 
         wearer_place=places["wearer"] or labels.get(here_place or ""),
         item_at=found["at"],
         accuracy_m=((found.get("accuracy_m") or 0) + (here.accuracy_m or 0)) if here and found.get("lat") is not None else None,
+        wearer=here,
     )
 
 
@@ -180,3 +182,73 @@ async def lastscene_note(db, geo, settings: Settings, device_id: str, item: str,
     scope, device_ids = await scope_for(db, device_id)
     rel = await relative_to_item(db, geo, settings, scope, device_ids, item, wifi, lat, lng, accuracy_m)
     return rel.sentence() if rel else None
+
+
+@dataclass
+class ItemContext:
+    """What an answer about an item is given: its last LastScene locations and where it is from the wearer."""
+    prompt: str  # for the answer model
+    sentence: str | None  # the geolocation sentence, said when the model doesn't answer (template, timeout)
+
+
+def _ago(then: datetime, now: datetime) -> str:
+    minutes = max(0, round((now - then).total_seconds() / 60))
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes} min ago"
+    hours = minutes / 60
+    if hours < 10:
+        return f"{hours:.1f} h ago".replace(".0 h", " h")
+    return f"{hours:.0f} h ago" if hours < 48 else f"{hours / 24:.0f} days ago"
+
+
+async def item_context(db, geo, settings: Settings, device_id: str, item: str, wifi: str | None = None,
+                       lat: float | None = None, lng: float | None = None,
+                       accuracy_m: float | None = None) -> ItemContext | None:
+    """The item's last few LastScene locations (db_history: newest first, the first being where it is now) with
+    where each is from the wearer, and the geolocation summary (relative_to_item). None when nothing is known."""
+    from datetime import timezone
+
+    item = " ".join((item or "").lower().split())
+    if not item:
+        return None
+    scope, device_ids = await scope_for(db, device_id)
+    rel = await relative_to_item(db, geo, settings, scope, device_ids, item, wifi, lat, lng, accuracy_m)
+    sightings = await db.sightings([scope], item) if hasattr(db, "sightings") else []
+    if rel is None and not sightings:
+        return None
+    labels: dict[str, str] = {}
+    household = await db.household_of_device(device_id)
+    if household and hasattr(db, "places_for"):
+        map_places = await db.places_for(household[0])
+        home = home_place_id(map_places)
+        labels = {p.id: place_label(p, home, i) for i, p in enumerate(map_places, 1)}
+    now = datetime.now(timezone.utc)
+    lines = []
+    for i, s in enumerate(sightings, 1):
+        ctx = s.context or {}
+        what = ctx.get("where") or ctx.get("summary") or (f"on the {s.scene_label}" if s.scene_label else "seen by the camera")
+        bits = [what]
+        if ctx.get("nearby"):
+            bits.append("next to " + ", ".join(ctx["nearby"]))
+        if s.place_id and labels.get(s.place_id):
+            bits.append(f"at {labels[s.place_id]}")
+        if rel and rel.wearer and s.lat is not None:
+            meters = distance_m(rel.wearer.lat, rel.wearer.lng, s.lat, s.lng)
+            bits.append("where the wearer is" if meters < HERE_M else
+                        f"{spoken_distance(meters)} {compass(bearing(rel.wearer.lat, rel.wearer.lng, s.lat, s.lng))} "
+                        f"of the wearer")
+        lines.append(f"{i}. {_ago(s.captured_at, now)}: {'; '.join(bits)}")
+    parts = []
+    if lines:
+        parts.append(f"The {item}'s last LastScene locations, newest first (the first is where it is now):\n"
+                     + "\n".join(lines))
+    if rel:
+        accuracy = f" (positions within about {rel.accuracy_m:.0f} m)" if rel.accuracy_m else ""
+        rooms = ""
+        if rel.wearer_room or rel.item_room:
+            rooms = f" The wearer is in {rel.wearer_room or 'an unknown room'}; the {item} is in {rel.item_room or 'an unknown room'}."
+        said = rel.sentence().replace("Its LastScene", f"The {item}'s LastScene", 1)
+        parts.append(f"Where it is from the wearer now: {said}{rooms}{accuracy}")
+    return ItemContext("\n\n".join(parts), rel.sentence() if rel else None)

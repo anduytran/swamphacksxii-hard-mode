@@ -253,7 +253,7 @@ export interface VoiceEvent {
   heard?: string;
   words?: string; // what counts: the words after "Last Scene"
   question?: string;
-  continued?: string; // "continue": the earlier question it follows on from
+  lastscene_context?: string; // what the answer was given: the item's last LastScene locations, where it is from the wearer
   intent?: string;
   item?: string;
   item_from?: string;

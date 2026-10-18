@@ -104,13 +104,49 @@ def test_the_wearers_position_comes_from_this_request_else_their_last_known_one(
     assert note(FakeDB(None, recent=(*REITZ, 30.0), places=places)) is None  # the item was never located
 
 
-def test_an_ask_adds_where_its_lastscene_is(client):  # noqa: F811
-    """Through POST /api/v1/memory/voice: the answer, then the LastScene sentence."""
-    db = client.app_state.db
-    fake = FakeDB((*HOME, 20.0, "p-home", NOW), recent=(*REITZ, 30.0),
-                  places=[place("p-reitz", "Reitz Union", REITZ), place("p-home", "Home", HOME)])
-    for name in ("lastscene_position", "recent_position", "places_for", "household_of_device", "household_device_ids"):
-        setattr(db, name, getattr(fake, name))
+def sighting(minutes_ago, spot, where, nearby=(), place_id=None):
+    from datetime import timedelta
+    return SimpleNamespace(captured_at=datetime.now(timezone.utc) - timedelta(minutes=minutes_ago),
+                           context={"where": where, "nearby": list(nearby)}, scene_label=None, place_id=place_id,
+                           lat=spot[0] if spot else None, lng=spot[1] if spot else None)
+
+
+class SightingsDB(FakeDB):
+    """FakeDB with the item's last LastScene locations (db_history.sightings, newest first)."""
+    def __init__(self, *args, sightings=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.history = list(sightings)
+
+    async def sightings(self, scopes, item):
+        assert (scopes, item) == (["house-1"], "pin")
+        return self.history
+
+
+def _pin_db():
+    return SightingsDB((*HOME, 20.0, "p-home", NOW), recent=(*REITZ, 30.0),
+                       places=[place("p-reitz", "Reitz Union", REITZ), place("p-home", "Home", HOME)],
+                       sightings=[sighting(5, HOME, "on the kitchen counter", ["blue mug"], "p-home"),
+                                  sighting(90, REITZ, "on the desk", ["laptop"], "p-reitz"),
+                                  sighting(60 * 30, None, "in the coat pocket")])
+
+
+def test_the_item_context_lists_its_last_lastscenes_and_where_it_is_from_the_wearer():
+    from app.lastscene import item_context
+    ctx = asyncio.run(item_context(_pin_db(), FakeGeo(), SETTINGS, "cam@clients", "Pin"))
+    lines = ctx.prompt.splitlines()
+    assert lines[0] == "The pin's last LastScene locations, newest first (the first is where it is now):"
+    assert lines[1] == "1. 5 min ago: on the kitchen counter; next to blue mug; at Home; 1.4 kilometers south-west of the wearer"
+    assert lines[2] == "2. 1.5 h ago: on the desk; next to laptop; at Reitz Union; where the wearer is"
+    assert lines[3] == "3. 30 h ago: in the coat pocket"
+    assert lines[-1].startswith("Where it is from the wearer now: The pin's LastScene is at Home, about 1.4 kilometers")
+    assert ctx.sentence == "Its LastScene is at Home, about 1.4 kilometers south-west of you."
+    assert asyncio.run(item_context(SightingsDB(), FakeGeo(), SETTINGS, "cam@clients", "pin")) is None
+
+
+def _ask_pin(client, db):  # noqa: F811
+    for name in ("lastscene_position", "recent_position", "places_for", "household_of_device", "household_device_ids",
+                 "sightings"):
+        setattr(client.app_state.db, name, getattr(db, name))
 
     async def decipher(words):
         return Command(intent="ask", item="pin")
@@ -120,10 +156,32 @@ def test_an_ask_adds_where_its_lastscene_is(client):  # noqa: F811
 
     client.app_state.ai.decipher, client.app_state.ai.look_for = decipher, look
     files = [("audio", ("v.wav", b"Last Scene, where is my pin", "audio/wav")), ("image", ("p.jpg", b"\xff\xd8x", "image/jpeg"))]
-    resp = client.post("/api/v1/memory/voice", headers=DEVICE, files=files, data={"wake": "true"})
-    assert resp.status_code == 200
-    answer = unquote(resp.headers["x-answer"])
-    assert answer.endswith("Its LastScene is at Home, about 1.4 kilometers south-west of you.")
+    return client.post("/api/v1/memory/voice", headers=DEVICE, files=files, data={"wake": "true"})
+
+
+def test_an_ask_gives_the_answer_model_the_lastscenes_and_where_it_is(client):  # noqa: F811
+    """Through POST /api/v1/memory/voice: every ask about an item, no follow-up needed."""
+    seen = []
+
+    async def answer(question, memories, language="en", context=None):
+        seen.append(context)
+        return "Your pin's on the kitchen counter at Home, about 1.4 kilometers south-west."
+
+    client.app_state.ai.answer = answer
+    resp = _ask_pin(client, _pin_db())
+    assert resp.status_code == 200 and resp.headers["x-answered-by"] == "llm"
+    assert "1. 5 min ago: on the kitchen counter" in seen[-1] and "Where it is from the wearer now" in seen[-1]
+    assert unquote(resp.headers["x-answer"]) == "Your pin's on the kitchen counter at Home, about 1.4 kilometers south-west."
+
+
+def test_a_slow_answer_model_still_says_where_its_lastscene_is(client):  # noqa: F811
+    async def slow(question, memories, language="en", context=None):
+        await asyncio.sleep(5)
+
+    client.app_state.ai.answer = slow
+    client.settings.answer_timeout_seconds = 0.2
+    resp = _ask_pin(client, _pin_db())
+    assert unquote(resp.headers["x-answer"]).endswith("Its LastScene is at Home, about 1.4 kilometers south-west of you.")
 
 
 # ---------------------------------------------------------------- Wi-Fi fingerprints (wifi_places.py)

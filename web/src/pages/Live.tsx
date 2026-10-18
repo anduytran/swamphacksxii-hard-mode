@@ -159,10 +159,10 @@ function EventCard({ e }: { e: VoiceEvent }) {
               <dd>{e.words ? `“${e.words}”` : <span className="muted">nothing after “Last Scene”</span>}</dd>
             </>
           )}
-          {e.continued && (
+          {e.lastscene_context && (
             <>
-              <dt>Continues</dt>
-              <dd>“{e.continued}”</dd>
+              <dt>LastScene</dt>
+              <dd style={{ whiteSpace: "pre-line" }}>{e.lastscene_context}</dd>
             </>
           )}
           {e.device?.recorded_s !== undefined && (

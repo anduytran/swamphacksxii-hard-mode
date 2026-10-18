@@ -402,7 +402,7 @@ def test_a_failure_to_record_never_breaks_the_command(client):  # noqa: F811
     assert resp.status_code == 200 and resp.json()["intent"] == "none"
 
 
-# ---------------------------------------------------------------- only the words after "Last Scene"; continue; defer
+# ---------------------------------------------------------------- only the words after "Last Scene"; defer
 
 def test_only_the_words_after_the_wake_phrase_count(client):  # noqa: F811
     resp = wake_clip(client, "so I was telling her, Last Scene, I'm putting my keys on the counter",
@@ -415,27 +415,6 @@ def test_only_the_words_after_the_wake_phrase_count(client):  # noqa: F811
 def test_the_wake_phrase_alone_does_nothing(client):  # noqa: F811
     resp = wake_clip(client, "Last Scene.", decipher=Command(intent="remember", item="keys"))
     assert resp.json()["intent"] == "none" and not hasattr(client, "deciphered")
-
-
-def test_continue_follows_on_from_the_last_answer(client):  # noqa: F811
-    seen = []
-
-    async def answer(question, memories, language="en", previous=None):
-        seen.append((question, previous))
-        return "Your glasses are by the sink."
-
-    client.app_state.ai.answer = answer
-    wake_clip(client, "Last Scene, where are my keys", decipher=Command(intent="ask", item="keys"), look=PhotoCheck())
-    first = live(client)[0]["answer"]
-    resp = wake_clip(client, "Last Scene, continue, what about my glasses?", decipher=RuntimeError("unused"))
-    assert resp.headers["x-intent"] == "ask"
-    assert seen[-1] == ("what about my glasses?", ("where are my keys", first))
-    assert live(client)[0]["continued"] == "where are my keys"
-
-
-def test_continue_with_nothing_before_it_does_nothing(client):  # noqa: F811
-    resp = wake_clip(client, "Last Scene, continue")
-    assert resp.json()["intent"] == "none"
 
 
 def test_a_remember_replies_at_once_and_saves_the_best_photo_on_followup(client):  # noqa: F811
@@ -551,7 +530,7 @@ def test_a_slow_answer_model_gives_way_to_the_memory_itself(client):  # noqa: F8
 
     client.settings.answer_timeout_seconds, client.settings.template_answers = 0.2, False
 
-    async def slow_answer(question, memories, language="en", previous=None):
+    async def slow_answer(question, memories, language="en", context=None):
         await asyncio.sleep(5)
         return "too late"
 

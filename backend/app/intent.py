@@ -50,25 +50,6 @@ def after_wake_phrase(transcript: str) -> str | None:
     return None if m is None else transcript[m.end():].strip()
 
 
-_CONTINUE = re.compile(r"^\W*(?:continue|go on|and also|follow(?:ing)? up)\b[\W_]*", re.IGNORECASE)
-
-
-def continue_command(words: str) -> str | None:
-    """'continue, what about my glasses' -> 'what about my glasses' (a follow-up in the same conversation);
-    'continue' alone -> ''. None when it isn't a continue command."""
-    m = _CONTINUE.match(words or "")
-    return None if m is None else words[m.end():].strip()
-
-
-# Questions that lean on the last answer ("point me in the right direction", "which way?", "is it still there?").
-_NEEDS_CONTEXT = re.compile(
-    r"\b(point me|right direction|which (way|direction|side)|where exactly|guide me|lead me|take me( there| to it)?|"
-    r"walk me|how do i get (there|to (it|them))|(is|are) (it|they) still|what'?s (next to|near|around) (it|them)|"
-    r"(left|right) or (left|right)|closer|turn (left|right))\b",
-    re.IGNORECASE,
-)
-
-
 # Naming where the wearer is: "this is the Reitz Union", "we're in the kitchen", "I'm at home".
 _PLACE = re.compile(
     r"^\W*(?:this is|this place is|here is|remember this place as|call this place|name this place|"
@@ -87,11 +68,6 @@ def place_command(words: str) -> str | None:
     if name.lower().startswith(("my ", "your ", "it", "that", "what", "where", "how")) or name.lower() in _NOT_PLACES:
         return None
     return name
-
-
-def needs_context(words: str) -> bool:
-    """A follow-up that only makes sense after the last answer, said without "continue"."""
-    return bool(_NEEDS_CONTEXT.search(words or ""))
 
 
 def has_wake_phrase(transcript: str) -> bool:
