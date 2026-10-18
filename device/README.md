@@ -209,6 +209,29 @@ python3 lastscene_device.py --watch 120                                  # backg
 - **Memory is the limit:** free memory dipped to 16–67 MB during a 15 s clip with both models loaded. Keep
   `MAX_RECORD_SECONDS` short, or set `VISION_DIR=` empty on a board that also runs other things.
 
+## Two Pis: camera on one, audio on the other
+
+The wearable can be split across two Pi Zero 2 Ws: **faker** has the camera (and runs the item detector),
+**sreer** has the mic, speaker, buttons and LEDs and runs the client. They talk as little as possible: for
+each memory sreer makes **one** request and faker answers with one JPEG (~100–200 KB). Questions never
+involve faker, and nothing is streamed or polled in between.
+
+- **faker (camera):** copy `lastscene_device.py` and `camera_server.py` (and the `vision/` folder for item
+  detection) to `/opt/lastscene`. In `/etc/lastscene/camera.env` set `CAMERA_TOKEN` (make one with
+  `python3 -c "import secrets; print(secrets.token_urlsafe(24))"`), `CAMERA` / `CAMERA_INDEX`, and for item
+  detection `VISION_DIR` and `LASTSCENE_DATA` (plus `API_URL` and the device's Auth0 settings if its background
+  detection should upload). Then:
+  ```bash
+  sudo cp lastscene-camera.service /etc/systemd/system/ && sudo systemctl enable --now lastscene-camera
+  ```
+  `GET /photo?for=<words>` retries until the item the words name is in the photo; `GET /health` reports
+  the camera and model. Every request needs the header `X-Camera-Token`.
+- **sreer (audio):** the normal setup above, with no camera and no `VISION_DIR`. In `/etc/lastscene/device.env`:
+  `CAMERA=remote`, `CAMERA_URL=http://faker:8765` (Tailscale MagicDNS; or `http://faker.local:8765` on the
+  same Wi-Fi, or faker's `100.x` address), and the same `CAMERA_TOKEN`.
+- **Check the link from sreer:** `curl -s -H "X-Camera-Token: <token>" http://faker:8765/health`.
+- If faker can't be reached, a memory isn't saved and sreer plays the low beep; questions still work.
+
 ## Pairing and location
 
 - **Pairing code.** Generate one per device and put it on the case label with the Client ID; set it as `PAIRING_CODE` in `/etc/lastscene/device.env`. The device sends it with every request; a caregiver enters the Client ID + code on the dashboard's **Household** page to add the wearable to their household.

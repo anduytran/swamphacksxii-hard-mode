@@ -100,7 +100,9 @@ class Config:
     live_max_seconds: int = 90
     live_silence_seconds: float = 8  # a conversation ends after this long with nobody talking
     live_hold_seconds: float = 2  # hold ASK this long without speaking to start one
-    camera: str = "auto"  # auto (a Camera Module if one is connected, else USB) | picam | usb
+    camera: str = "auto"  # auto (a Camera Module if one is connected, else USB) | picam | usb | remote
+    camera_url: str = ""  # CAMERA=remote: the camera Pi's camera_server.py, e.g. http://faker:8765
+    camera_token: str = ""  # CAMERA=remote: the camera Pi's CAMERA_TOKEN
     camera_index: int = 0  # USB: /dev/video<N>
     vision_dir: str = ""  # the repo's vision/ folder; empty = no on-device item detection
     min_confidence: float = 0.35  # the server drops detections under 0.35
@@ -143,6 +145,8 @@ class Config:
             live_hold_seconds=float(env.get("LIVE_HOLD_SECONDS", 2)),
             camera=env.get("CAMERA", "auto").lower(),
             camera_index=int(env.get("CAMERA_INDEX", 0)),
+            camera_url=env.get("CAMERA_URL", "").rstrip("/"),
+            camera_token=env.get("CAMERA_TOKEN", ""),
             vision_dir=env.get("VISION_DIR", ""),
             min_confidence=float(env.get("MIN_CONFIDENCE", 0.35)),
             capture_retries=int(env.get("CAPTURE_RETRIES", 3)),
@@ -714,7 +718,45 @@ class UsbCamera:
         return jpeg_bytes(self.frame())
 
 
+class RemoteCamera:
+    """The camera on the other Pi (camera_server.py on faker), for a two-Pi wearable.
+
+    One GET per photo and nothing in between: no stream, no polling, and questions never ask for one.
+    Given the words, the camera Pi retries until the item they name is in the photo (if it runs the
+    item detector), so this waits for the words like on-device detection does."""
+
+    checks_items = True  # the photo can wait for the words: the camera Pi looks for what they name
+
+    def __init__(self, url: str, token: str, http: httpx.Client | None = None, timeout: float = 15.0):
+        if not url or not token:
+            raise ValueError("CAMERA=remote needs CAMERA_URL and CAMERA_TOKEN")
+        self.url, self.token = url.rstrip("/"), token
+        self.http = http or httpx.Client(timeout=httpx.Timeout(timeout, connect=3.0))
+
+    def capture_jpeg(self, words: str | None = None) -> bytes:
+        params = {"for": words[:300]} if words else None
+        for attempt in (1, 2):  # one quick retry for a dropped connection; anything else is final
+            try:
+                resp = self.http.get(f"{self.url}/photo", params=params, headers={"X-Camera-Token": self.token})
+                break
+            except httpx.TransportError:
+                if attempt == 2:
+                    raise
+        resp.raise_for_status()
+        if not resp.headers.get("content-type", "").startswith("image/jpeg"):
+            raise RuntimeError("the camera Pi didn't send a JPEG")
+        if item := resp.headers.get("x-item"):
+            log.info("Camera Pi: photo shows %s (%s) after %s attempt(s)", item, resp.headers.get("x-confidence"),
+                     resp.headers.get("x-attempts"))
+        return resp.content
+
+    def frame(self):
+        raise RuntimeError("the camera is on the other Pi: it sends JPEGs, not live frames")
+
+
 def make_camera(cfg: Config):
+    if cfg.camera == "remote":
+        return RemoteCamera(cfg.camera_url, cfg.camera_token)
     if cfg.camera in ("auto", "picam"):
         try:
             return Camera()
@@ -1069,7 +1111,7 @@ class Device:
 
         # Item detection: one detector for voice commands and the background loop, paused while busy.
         self.vision: Vision | None = None
-        if cfg.vision_dir:
+        if cfg.vision_dir and not isinstance(self.camera, RemoteCamera):  # remote: detection runs on the camera Pi
             try:
                 self.vision = Vision(cfg, self.camera, paused=self.busy.locked)
                 log.info("Item detection on the device: %s", self.vision.detector.name)
@@ -1114,6 +1156,13 @@ class Device:
 
     def _photo(self, words: str | None) -> bytes:
         """The photo for a memory. With item detection: retried until the item the words name is in it."""
+        if isinstance(self.camera, RemoteCamera):  # the camera Pi does the looking (one request)
+            try:
+                return self.camera.capture_jpeg(words)
+            except Exception:
+                log.exception("No photo from the camera Pi (%s)", self.cfg.camera_url)
+                play_wav(self.cfg.audio_out, tone(440))  # the low beep: this memory can't be saved
+                raise
         if self.vision is None:
             return self.camera.capture_jpeg()
         t0 = time.monotonic()
@@ -1233,7 +1282,8 @@ class Device:
             return
         try:
             # With item detection the photo waits for the words (to know what to look for).
-            photo = self.camera.capture_jpeg() if mode == "remember" and self.vision is None else None
+            waits = self.vision is not None or getattr(self.camera, "checks_items", False)
+            photo = self.camera.capture_jpeg() if mode == "remember" and not waits else None
             # With the wake phrase on, the mic is already open: record from the shared stream.
             rec = self.stream_rec if self.mic else Recorder(self.cfg.audio_in, self.cfg.max_record_seconds)
             rec.start()

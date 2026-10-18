@@ -1,0 +1,17 @@
+[Unit]
+Description=LastScene camera Pi (photos for the audio Pi, item detection)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# CAMERA_TOKEN (the same as on the audio Pi), VISION_DIR, and for background uploads the device's Auth0 settings
+EnvironmentFile=/etc/lastscene/camera.env
+WorkingDirectory=/opt/lastscene
+ExecStart=/opt/lastscene/venv/bin/python /opt/lastscene/camera_server.py
+Restart=always
+RestartSec=5
+User=lastscene
+SupplementaryGroups=video
+
+[Install]
+WantedBy=multi-user.target
