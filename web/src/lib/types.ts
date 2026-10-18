@@ -183,10 +183,11 @@ export interface LostMap {
   simulated?: boolean;
 }
 
-/** A photo someone added to teach the vision pipeline an item; bbox is [x, y, w, h], 0..1. */
+/** A confirmed Teach photo. Absent photos have no box and stay out of ordinary YOLO training. */
 export interface TrainingSample {
   id: string;
-  bbox: [number, number, number, number];
+  annotation?: "present" | "absent" | "excluded" | "unreviewed"; // older API responses imply present
+  bbox: [number, number, number, number] | null;
   width: number;
   height: number;
   image_url: string;
@@ -240,6 +241,7 @@ export interface ReviewQueue {
   count: number;
   per_item: Record<string, number>;
   candidates: ReviewCandidate[];
+  excluded?: ReviewCandidate[];
 }
 
 /** One voice command on the Live page (GET /api/v1/dashboard/live). */

@@ -13,7 +13,7 @@ note / suggested columns, are left from the removed Gemini box suggestions and i
 from dataclasses import dataclass
 from datetime import datetime
 
-REVIEW_DECISIONS = ("yes", "fixed", "not")
+REVIEW_DECISIONS = ("yes", "fixed", "not", "excluded")
 
 
 @dataclass
@@ -161,3 +161,12 @@ class ReviewMixin:
             item_id,
             memory_id,
         )
+
+    async def restore_excluded_review(self, household_id: str, item_id: str, memory_id: str) -> bool:
+        status = await self.pool.execute(
+            "UPDATE training_reviews r SET decision = NULL, updated_at = now() FROM training_items i "
+            "WHERE r.item_id = i.id AND i.household_id = $1::uuid AND r.item_id = $2::uuid "
+            "AND r.memory_id = $3::uuid AND r.decision = 'excluded'",
+            household_id, item_id, memory_id,
+        )
+        return status.endswith(" 1")

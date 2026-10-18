@@ -15,9 +15,9 @@ import { usableBox } from "../lib/box";
 import { publishReviewCount } from "../lib/reviewCount";
 import { openPhoto, PHOTO_ACCEPT, retryPhoto } from "../lib/photo";
 
-const GOOD_ENOUGH = 10; // photos per item before it's "ready"
+const GOOD_ENOUGH = 9; // guidance only: three useful views in each of three distances
 const MAX_SIDE = 1024; // photos are shrunk to this before upload (the pipeline trains at 640)
-const PER_RANGE = 2; // photos per distance before that range counts as covered
+const PER_RANGE = 3; // photos per distance before that range counts as covered
 const PREVIEW = 3; // newest photos on an item's card; the rest open in its photo view, so the page loads few
 
 export default function TeachPage() {
@@ -61,9 +61,7 @@ export default function TeachPage() {
         )}
       </div>
       <p className="lede teach-lede">
-        The wearable's camera knows everyday things like keys and glasses. Show it <em>your</em> keys: add an item, then take{" "}
-        {GOOD_ENOUGH} or so photos of it and draw a box around it in each. Mix close-ups with photos from a step back and
-        from across the room, where the wearable usually sees things. Photos stay until you delete them.
+        Help the camera recognize your specific item. Take 3–4 different photos up close, 3–4 from a step back, and 3–4 from across the room—roughly 9–12 useful photos. Change the angle, lighting, background, and placement when you can. If two photos look almost identical, skip one and try a different view.
       </p>
 
       {households && !households.length ? (
@@ -86,7 +84,7 @@ export default function TeachPage() {
         </div>
       ) : (
         <>
-          {review.data && review.data.count > 0 && <NeedsALook queue={review.data} base={base} api={api} onChange={changed} />}
+          {review.data && (review.data.count > 0 || !!review.data.excluded?.length) && <NeedsALook queue={review.data} base={base} api={api} onChange={changed} />}
           {model.data && <ModelLine status={model.data} />}
           <div className="teach-grid">
             <FormCard
@@ -122,8 +120,8 @@ export default function TeachPage() {
             <summary>For the vision pipeline team</summary>
             <p>
               The pipeline reads these with the wearable's token: <code>GET /api/v1/training/vocabulary</code> (class names for{" "}
-              <code>set_classes</code>) and <code>GET /api/v1/training/dataset</code> (each photo with its YOLO label).{" "}
-              <code>backend/scripts/fetch_training_set.py dataset</code> turns that into a YOLO folder with <code>data.yaml</code>.
+              <code>set_classes</code>) and <code>GET /api/v1/training/dataset</code> (boxed photos plus explicit absent examples).{" "}
+              <code>backend/scripts/fetch_training_set.py dataset</code> writes the YOLO folder and keeps item-specific absent examples separately.
             </p>
           </details>
         </>
@@ -149,11 +147,19 @@ function ItemCard({
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [queue, setQueue] = useState<File[]>([]);
+  const [paused, setPaused] = useState(false);
+  const [savingPending, setSavingPending] = useState(false);
+  const [relabel, setRelabel] = useState<{ sample: TrainingSample; file: File } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [viewing, setViewing] = useState(false);
   const [error, setError] = useState("");
-  const count = item.samples.length;
-  const room = maxPhotos - count;
+  const count = item.samples.filter((s) => s.annotation === "present" || (!s.annotation && !!s.bbox)).length;
+  const total = item.samples.length;
+  const unlabeled = item.samples.filter((s) => s.annotation === "unreviewed").length;
+  const room = maxPhotos - total;
+  const ranges = spread(item.samples.flatMap((s) => s.annotation !== "excluded" && s.bbox ? [s.bbox] : []), PER_RANGE);
+  const progress = RANGES.reduce((sum, range) => sum + Math.min(ranges.counts[range.key], PER_RANGE), 0);
+  const ready = progress >= GOOD_ENOUGH;
 
   const remove = async (path: string) => {
     setError("");
@@ -172,14 +178,16 @@ function ItemCard({
           <h2>{item.name}</h2>
           {item.aliases.length > 0 && <p className="hint">Also: {item.aliases.join(", ")}</p>}
         </div>
-        <span className={count >= GOOD_ENOUGH ? "chip good" : count >= 5 ? "chip" : "chip warn"}>
-          {count >= GOOD_ENOUGH ? <><Icon name="shield" /> Ready</> : `${count} of ${GOOD_ENOUGH} photos`}
+        <span className={ready ? "chip good" : count >= 5 ? "chip" : "chip warn"}>
+          {ready ? <><Icon name="shield" /> Good variety</> : `${count} useful photo${count === 1 ? "" : "s"}`}
         </span>
       </header>
-      <div className="teach-meter" role="meter" aria-label={`${item.name} photos`} aria-valuemin={0} aria-valuemax={GOOD_ENOUGH} aria-valuenow={Math.min(count, GOOD_ENOUGH)}>
-        <span style={{ width: `${Math.min(100, (count / GOOD_ENOUGH) * 100)}%` }} />
+      <div className="teach-meter" role="meter" aria-label={`${item.name} different-distance photo goal`} aria-valuemin={0} aria-valuemax={GOOD_ENOUGH} aria-valuenow={progress}>
+        <span style={{ width: `${(progress / GOOD_ENOUGH) * 100}%` }} />
       </div>
       <DistanceSpread samples={item.samples} />
+      <p className="hint teach-tip">Tip: Different views teach the camera more than repeated shots of the same view.</p>
+      {unlabeled > 0 && <p className="hint">{unlabeled} photo{unlabeled === 1 ? "" : "s"} still need{unlabeled === 1 ? "s" : ""} a label. Select “Label photo” below to return to them.</p>}
       {needsLook > 0 && (
         <button type="button" className="needs-look-line" onClick={() => document.getElementById("needs-a-look")?.scrollIntoView({ behavior: "smooth", block: "start" })}>
           <Icon name="sparkle" />
@@ -187,16 +195,24 @@ function ItemCard({
         </button>
       )}
 
-      {count > 0 ? (
+      {total > 0 ? (
         <>
           <SampleGrid
             item={item.name}
             samples={item.samples.slice(-PREVIEW).reverse()}
             remove={(s) => remove(`${base}/samples/${s.id}`)}
+            restore={async (s) => {
+              try {
+                const response = await fetch(s.image_url);
+                if (!response.ok) throw new Error("Couldn't open this photo; refresh and try again.");
+                const blob = await response.blob();
+                setRelabel({ sample: s, file: new File([blob], "photo.jpg", { type: blob.type || "image/jpeg" }) });
+              } catch (err) { setError((err as Error).message); }
+            }}
           />
-          {count > PREVIEW && (
+          {total > PREVIEW && (
             <button type="button" className="pill quiet see-all" onClick={() => setViewing(true)}>
-              See all {count} photos
+              See all {total} photos
             </button>
           )}
         </>
@@ -215,7 +231,7 @@ function ItemCard({
           onChange={(e) => {
             const files = [...(e.target.files ?? [])].slice(0, Math.max(0, room));
             e.target.value = "";
-            if (files.length) setQueue(files);
+            if (files.length) { setPaused(false); setQueue(files); }
           }}
         />
         <button type="button" className="primary" disabled={room <= 0} onClick={() => fileRef.current?.click()}>
@@ -225,7 +241,7 @@ function ItemCard({
           <span className="confirm-row">
             <button type="button" className="pill danger" onClick={() => remove(`${base}/items/${item.id}`)}>
               Delete {item.name}
-              {count ? ` and ${count} photo${count === 1 ? "" : "s"}` : ""}
+              {total ? ` and ${total} photo${total === 1 ? "" : "s"}` : ""}
             </button>
             <button type="button" className="pill quiet" onClick={() => setConfirming(false)}>
               Cancel
@@ -239,9 +255,23 @@ function ItemCard({
       </div>
       {error && <p className="form-msg error">{error}</p>}
 
-      {viewing && <ItemPhotos item={item} remove={(s) => remove(`${base}/samples/${s.id}`)} onClose={() => setViewing(false)} />}
+      {paused && queue.length > 0 && <p className="hint">{savingPending ? "Saving unlabeled photos for later…" : "Some photos could not be saved."} <button type="button" className="pill quiet" disabled={savingPending} onClick={() => setPaused(false)}>Continue labeling remaining photos</button></p>}
 
-      {queue.length > 0 && (
+      {relabel && <BoxEditor item={item.name} files={[relabel.file]}
+        upload={async (_photo, box) => { await api(`${base}/samples/${relabel.sample.id}`, { method: "PATCH", body: { bbox: box } }); onChange(); setRelabel(null); }}
+        markAbsent={async () => { await api(`${base}/samples/${relabel.sample.id}`, { method: "PATCH", body: { annotation: "absent" } }); onChange(); setRelabel(null); }}
+        markExcluded={async () => { await api(`${base}/samples/${relabel.sample.id}`, { method: "PATCH", body: { annotation: "excluded" } }); onChange(); setRelabel(null); }}
+        onClose={() => setRelabel(null)} />}
+
+      {viewing && <ItemPhotos item={item} remove={(s) => remove(`${base}/samples/${s.id}`)} restore={async (s) => {
+        const response = await fetch(s.image_url);
+        if (!response.ok) { setError("Couldn't open this photo; refresh and try again."); return; }
+        const blob = await response.blob();
+        setViewing(false);
+        setRelabel({ sample: s, file: new File([blob], "photo.jpg", { type: blob.type || "image/jpeg" }) });
+      }} onClose={() => setViewing(false)} />}
+
+      {queue.length > 0 && !paused && (
         <BoxEditor
           item={item.name}
           files={queue}
@@ -249,12 +279,52 @@ function ItemCard({
             const form = new FormData();
             form.append("image", photo.blob, "photo.jpg");
             form.append("bbox", JSON.stringify(box));
+            form.append("annotation", "present");
             form.append("width", String(photo.width));
             form.append("height", String(photo.height));
             await api(`${base}/items/${item.id}/samples`, { method: "POST", body: form });
           }}
-          onClose={() => {
-            setQueue([]);
+          markAbsent={async (photo) => {
+            const form = new FormData();
+            form.append("image", photo.blob, "photo.jpg");
+            form.append("annotation", "absent");
+            form.append("width", String(photo.width));
+            form.append("height", String(photo.height));
+            await api(`${base}/items/${item.id}/samples`, { method: "POST", body: form });
+          }}
+          markExcluded={async (photo) => {
+            const form = new FormData();
+            form.append("image", photo.blob, "photo.jpg");
+            form.append("annotation", "excluded");
+            form.append("width", String(photo.width));
+            form.append("height", String(photo.height));
+            await api(`${base}/items/${item.id}/samples`, { method: "POST", body: form });
+          }}
+          onClose={async (remaining) => {
+            setPaused(true);
+            setSavingPending(true);
+            setQueue(remaining);
+            for (let i = 0; i < remaining.length; i++) {
+              try {
+                const photo = await prepare(remaining[i]);
+                try {
+                  const form = new FormData();
+                  form.append("image", photo.blob, "photo.jpg");
+                  form.append("annotation", "unreviewed");
+                  form.append("width", String(photo.width));
+                  form.append("height", String(photo.height));
+                  await api(`${base}/items/${item.id}/samples`, { method: "POST", body: form });
+                } finally { URL.revokeObjectURL(photo.url); }
+                setQueue(remaining.slice(i + 1));
+              } catch (err) {
+                setError(err instanceof ApiError ? err.detail : (err as Error).message);
+                setSavingPending(false);
+                onChange();
+                return;
+              }
+            }
+            setPaused(false);
+            setSavingPending(false);
             onChange();
           }}
         />
@@ -264,12 +334,13 @@ function ItemCard({
 }
 
 /** Photos with their boxes, newest first, each with a delete button. */
-function SampleGrid({ item, samples, remove }: { item: string; samples: TrainingSample[]; remove(s: TrainingSample): void }) {
+function SampleGrid({ item, samples, remove, restore }: { item: string; samples: TrainingSample[]; remove(s: TrainingSample): void; restore?(s: TrainingSample): void }) {
   return (
     <ul className="sample-grid">
       {samples.map((s, i) => (
         <li key={s.id}>
-          <SampleThumb sample={s} alt={`${item}, photo ${i + 1}`} />
+          <SampleThumb sample={s} alt={s.annotation === "absent" ? `Photo ${i + 1}: ${item} is not there` : `${item}, photo ${i + 1}`} />
+          {(s.annotation === "excluded" || s.annotation === "unreviewed") && restore && <button type="button" className="pill quiet" onClick={() => restore(s)}>Label photo</button>}
           <button type="button" className="icon-btn sample-delete" aria-label={`Delete photo ${i + 1} of ${item}`} onClick={() => remove(s)}>
             <Icon name="close" />
           </button>
@@ -280,7 +351,7 @@ function SampleGrid({ item, samples, remove }: { item: string; samples: Training
 }
 
 /** Every photo of one item, grouped by distance (close up, a step back, across the room), newest first. */
-function ItemPhotos({ item, remove, onClose }: { item: TrainingItem; remove(s: TrainingSample): void; onClose(): void }) {
+function ItemPhotos({ item, remove, restore, onClose }: { item: TrainingItem; remove(s: TrainingSample): void; restore(s: TrainingSample): void; onClose(): void }) {
   const newest = [...item.samples].reverse();
   return (
     <Dialog open onClose={onClose} className="box-dialog" labelledBy="photos-title">
@@ -288,7 +359,7 @@ function ItemPhotos({ item, remove, onClose }: { item: TrainingItem; remove(s: T
         <div>
           <h2 id="photos-title">{item.name}: all photos</h2>
           <p className="hint">
-            {item.samples.length} photo{item.samples.length === 1 ? "" : "s"}, by how far away the {item.name} was.
+            {item.samples.length} photo{item.samples.length === 1 ? "" : "s"}, grouped by distance and absent examples.
           </p>
         </div>
         <button type="button" className="icon-btn" data-close aria-label="Close">
@@ -296,26 +367,41 @@ function ItemPhotos({ item, remove, onClose }: { item: TrainingItem; remove(s: T
         </button>
       </header>
       {RANGES.map((r) => {
-        const photos = newest.filter((s) => rangeOf(s.bbox) === r.key);
+        const photos = newest.filter((s) => s.bbox && rangeOf(s.bbox) === r.key);
         return (
           <section key={r.key} className="photos-range" aria-label={r.label}>
             <h3>
               {r.label} <span className="hint">· {photos.length}</span>
             </h3>
-            {photos.length ? <SampleGrid item={item.name} samples={photos} remove={remove} /> : <p className="hint">None yet: {r.tip}.</p>}
+            {photos.length ? <SampleGrid item={item.name} samples={photos} remove={remove} restore={restore} /> : <p className="hint">None yet: {r.tip}.</p>}
           </section>
         );
       })}
+      {newest.some((s) => s.annotation === "absent") && (
+        <section className="photos-range" aria-label="Item not there">
+          <h3>Item not there</h3>
+          <SampleGrid item={item.name} samples={newest.filter((s) => s.annotation === "absent")} remove={remove} restore={restore} />
+        </section>
+      )}
+      {newest.some((s) => s.annotation === "excluded") && <section className="photos-range" aria-label="Too similar">
+        <h3>Too similar</h3>
+        <SampleGrid item={item.name} samples={newest.filter((s) => s.annotation === "excluded")} remove={remove} restore={restore} />
+      </section>}
+      {newest.some((s) => s.annotation === "unreviewed") && <section className="photos-range" aria-label="Needs a label">
+        <h3>Needs a label</h3>
+        <SampleGrid item={item.name} samples={newest.filter((s) => s.annotation === "unreviewed")} remove={remove} restore={restore} />
+      </section>}
     </Dialog>
   );
 }
 
 function SampleThumb({ sample, alt }: { sample: TrainingSample; alt: string }) {
-  const [x, y, w, h] = sample.bbox;
   return (
     <figure className="sample" style={{ aspectRatio: `${sample.width} / ${sample.height}` }}>
       <img src={sample.image_url} alt={alt} loading="lazy" onError={retryPhoto} />
-      <span className="sample-box" style={{ left: `${x * 100}%`, top: `${y * 100}%`, width: `${w * 100}%`, height: `${h * 100}%` }} />
+      {sample.bbox ? (
+        <span className="sample-box" style={{ left: `${sample.bbox[0] * 100}%`, top: `${sample.bbox[1] * 100}%`, width: `${sample.bbox[2] * 100}%`, height: `${sample.bbox[3] * 100}%` }} />
+      ) : <span className="sample-absent">{sample.annotation === "excluded" ? "Too similar" : sample.annotation === "unreviewed" ? "Needs a label" : "Not there"}</span>}
     </figure>
   );
 }
@@ -389,21 +475,25 @@ function resized(from: Box, grip: Grip, [x, y]: [number, number]): Box {
   return [x0, y0, x1 - x0, y1 - y0];
 }
 
-/** One photo at a time: drag a box around the item, then save (or skip) and go to the next. With `proposed`
+/** One photo at a time: drag a box around the item, then save or exclude and go to the next. With `proposed`
  * (the detector's box, never anyone else's), it's pre-drawn so Save is one tap. Dragging a corner or edge of the
  * box resizes it; dragging anywhere else draws a new one. */
 function BoxEditor({
   item,
   files,
   upload,
+  markAbsent,
+  markExcluded,
   proposed,
   onClose,
 }: {
   item: string;
   files: File[];
   upload(photo: Prepared, box: Box): Promise<void>;
+  markAbsent(photo: Prepared): Promise<void>;
+  markExcluded(photo: Prepared): Promise<void>;
   proposed?: Box;
-  onClose(): void;
+  onClose(remaining: File[]): void;
 }) {
   const [index, setIndex] = useState(0);
   const [photo, setPhoto] = useState<Prepared | null>(null);
@@ -461,7 +551,16 @@ function BoxEditor({
   };
   const tooSmall = !box || box[2] < 0.02 || box[3] < 0.02;
 
-  const next = () => (index + 1 < files.length ? setIndex(index + 1) : onClose());
+  const next = () => (index + 1 < files.length ? setIndex(index + 1) : onClose([]));
+  const close = () => onClose(files.slice(index));
+  const exclude = async () => {
+    if (!photo) return;
+    setBusy(true);
+    setError("");
+    try { await markExcluded(photo); next(); }
+    catch (err) { setError(err instanceof ApiError ? err.detail : (err as Error).message); }
+    finally { setBusy(false); }
+  };
   const save = async () => {
     if (!photo || !box || tooSmall) return;
     setBusy(true);
@@ -476,9 +575,23 @@ function BoxEditor({
       setBusy(false);
     }
   };
+  const absent = async () => {
+    if (!photo) return;
+    setBusy(true);
+    setError("");
+    try {
+      await markAbsent(photo);
+      setSaved((n) => n + 1);
+      next();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : (err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
-    <Dialog open onClose={onClose} className="box-dialog" labelledBy="box-title">
+    <Dialog open onClose={close} className="box-dialog" labelledBy="box-title">
       <header className="box-head">
         <div>
           <h2 id="box-title">Draw a box around the {item}</h2>
@@ -556,12 +669,15 @@ function BoxEditor({
       </div>
       {error && <p className="form-msg error">{error}</p>}
       <footer className="box-actions">
-        <button type="button" className="pill quiet" disabled={!photo} onClick={() => own([0, 0, 1, 1])}>
+        <button type="button" className="pill quiet" disabled={!photo || busy} onClick={() => own([0, 0, 1, 1])}>
           Item fills the photo
         </button>
         <span className="box-actions-end">
-          <button type="button" className="pill" onClick={next} disabled={busy}>
-            Skip
+          <button type="button" className="pill quiet" onClick={absent} disabled={busy || !photo}>
+            It's not there
+          </button>
+          <button type="button" className="pill quiet" onClick={exclude} disabled={busy || !photo}>
+            Too similar
           </button>
           <button type="button" className="primary" onClick={save} disabled={busy || !photo || tooSmall}>
             {busy ? "Saving…" : index + 1 < files.length ? "Save and next" : "Save"}
@@ -574,7 +690,7 @@ function BoxEditor({
 
 /** How the item's photos spread over distance, and which distance to add next. */
 function DistanceSpread({ samples }: { samples: TrainingSample[] }) {
-  const { counts, missing } = spread(samples.map((x) => x.bbox), PER_RANGE);
+  const { counts, missing } = spread(samples.flatMap((x) => x.bbox ? [x.bbox] : []), PER_RANGE);
   return (
     <div className="distance">
       <ul className="distance-ranges" aria-label="Photos by distance">
@@ -582,14 +698,12 @@ function DistanceSpread({ samples }: { samples: TrainingSample[] }) {
           const done = counts[r.key] >= PER_RANGE;
           return (
             <li key={r.key} className={done ? "done" : ""}>
-              <span className="distance-count" aria-hidden="true">
-                {done ? <Icon name="check" /> : counts[r.key]}
-              </span>
+              <span className="distance-count" aria-hidden="true">{counts[r.key]}/{PER_RANGE}</span>
               <span>
                 {r.label}
                 <span className="sr-only">
                   : {counts[r.key]} photo{counts[r.key] === 1 ? "" : "s"}
-                  {done ? ", covered" : ""}
+                  {done ? ", goal reached" : ""}
                 </span>
               </span>
             </li>
@@ -600,7 +714,7 @@ function DistanceSpread({ samples }: { samples: TrainingSample[] }) {
         <p className="hint distance-next">
           {missing
             ? `Next: ${PER_RANGE - counts[missing.key] === 1 ? "one more" : PER_RANGE - counts[missing.key]} ${missing.label.toLowerCase()}, ${missing.tip}.`
-            : "Good spread of distances."}
+            : "Good spread of distances. A fourth different view at each distance can help too."}
         </p>
       )}
     </div>
@@ -627,7 +741,7 @@ function ModelLine({ status }: { status: ModelStatus }) {
 const cardKey = (c: ReviewCandidate) => `${c.item_id}:${c.memory_id}`;
 
 /** "Needs a look": one photo at a time that the camera was unsure about, or that names an item with no box.
- * Yes and Fix make it a training photo (same limits as Add photos); Not is remembered; Skip is for now only. */
+ * Yes and Fix make it a training photo; Not records an absent review; Skip is for now only. */
 function NeedsALook({ queue, base, api, onChange }: { queue: ReviewQueue; base: string; api: Api; onChange(): void }) {
   const [skipped, setSkipped] = useState<string[]>([]);
   const card = queue.candidates.find((c) => !skipped.includes(cardKey(c)));
@@ -636,7 +750,7 @@ function NeedsALook({ queue, base, api, onChange }: { queue: ReviewQueue; base: 
       <header className="teach-head">
         <div>
           <h2 id="review-title">Needs a look</h2>
-          <p className="hint">The camera wasn't sure about these. Each answer teaches it.</p>
+          <p className="hint">The camera wasn't sure about these. Draw a box if your item is there, mark it absent if it isn't, or skip for now.</p>
         </div>
         <span className="chip attention">
           {queue.count} photo{queue.count === 1 ? "" : "s"}
@@ -644,14 +758,24 @@ function NeedsALook({ queue, base, api, onChange }: { queue: ReviewQueue; base: 
       </header>
       {card ? (
         <ReviewCard key={cardKey(card)} card={card} base={base} api={api} onSkip={() => setSkipped((s) => [...s, cardKey(card)])} onChange={onChange} />
-      ) : (
+      ) : queue.count > 0 ? (
         <p className="hint">
           Skipped for now.{" "}
           <button type="button" className="pill quiet" onClick={() => setSkipped([])}>
             Show them again
           </button>
         </p>
-      )}
+      ) : null}
+      {!!queue.excluded?.length && <details>
+        <summary>{queue.excluded.length} photo{queue.excluded.length === 1 ? "" : "s"} marked too similar</summary>
+        {queue.excluded.map((c) => <div key={cardKey(c)} className="review-actions">
+          <span>{c.item_name} · {timeAgo(c.captured_at)}</span>
+          <button type="button" className="pill quiet" onClick={async () => {
+            await api(`${base}/review/${c.item_id}/${c.memory_id}`, { method: "DELETE" });
+            onChange();
+          }}>Restore to review</button>
+        </div>)}
+      </details>}
     </section>
   );
 }
@@ -666,7 +790,7 @@ function ReviewCard({ card, base, api, onSkip, onChange }: { card: ReviewCandida
   const [error, setError] = useState("");
   const item = card.item_name;
 
-  const decide = async (decision: "yes" | "fix" | "not", bbox: Box | null = null) => {
+  const decide = async (decision: "yes" | "fix" | "not" | "excluded", bbox: Box | null = null) => {
     const body = { item_id: card.item_id, memory_id: card.memory_id, decision, bbox, width: size?.width, height: size?.height };
     await api(`${base}/review`, { method: "POST", body });
   };
@@ -727,8 +851,8 @@ function ReviewCard({ card, base, api, onSkip, onChange }: { card: ReviewCandida
           <button type="button" className={box ? "pill" : "primary"} disabled={busy} onClick={fix}>
             {box ? "Fix the box" : "Draw the box"}
           </button>
-          <button type="button" className="pill" disabled={busy} onClick={() => run("not")}>
-            Not the {item}
+          <button type="button" className="pill" disabled={busy || !size} onClick={() => run("not")}>
+            It's not there
           </button>
           <button type="button" className="pill quiet" disabled={busy} onClick={onSkip}>
             Skip
@@ -745,6 +869,11 @@ function ReviewCard({ card, base, api, onSkip, onChange }: { card: ReviewCandida
             await decide("fix", drawn);
             onChange();
           }}
+          markAbsent={async () => {
+            await decide("not");
+            onChange();
+          }}
+          markExcluded={async () => { await decide("excluded"); onChange(); }}
           onClose={() => setFixing(null)}
         />
       )}

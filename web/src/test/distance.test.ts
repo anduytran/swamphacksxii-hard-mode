@@ -22,4 +22,10 @@ describe("distance", () => {
     expect(done.missing).toBeUndefined();
     expect(done.counts).toEqual({ close: 2, step: 2, far: 2 });
   });
+
+  it("requires three views at each distance for the Teach guidance goal", () => {
+    const almost = spread([close, close, close, step, step, step, far, far], 3);
+    expect(almost.missing?.key).toBe("far");
+    expect(spread([close, close, close, step, step, step, far, far, far], 3).missing).toBeUndefined();
+  });
 });

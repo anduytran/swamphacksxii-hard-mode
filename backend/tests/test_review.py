@@ -66,6 +66,13 @@ class FakeReviewDB(FakeTrainingDB):
         if old and self.sample_ids.get((item_id, memory_id)) is None:
             self.answers[(item_id, memory_id)] = Review(item_id, memory_id, None, old.bbox)
 
+    async def restore_excluded_review(self, household_id, item_id, memory_id):
+        old = self.answers.get((item_id, memory_id))
+        if not old or old.decision != "excluded" or self.training.get(item_id, (None,))[0] != household_id:
+            return False
+        self.answers[(item_id, memory_id)] = Review(item_id, memory_id, None, old.bbox)
+        return True
+
 
 @pytest.fixture
 def api(client):  # noqa: F811
@@ -155,12 +162,13 @@ def test_yes_and_fix_become_training_samples(api, keys):
     assert answer(api, keys, a, "yes", bbox=[0.1, 0.1, 0.2, 0.2], width=640, height=480).status_code == 409  # once
 
 
-def test_not_is_remembered_and_adds_no_sample(api, keys):
+def test_not_is_remembered_as_an_absent_sample(api, keys):
     db = api.app_state.db
     a = db.photo(detections=[("keys", 0.4, [0.1, 0.1, 0.2, 0.2])])
-    resp = answer(api, keys, a, "not")
-    assert resp.status_code == 200 and resp.json() == {"decision": "not", "sample": None}
-    assert db.answers[(keys, a)].decision == "not" and db.sample_images == {}
+    resp = answer(api, keys, a, "not", width=640, height=480)
+    assert resp.status_code == 200 and resp.json()["sample"]["annotation"] == "absent"
+    assert db.answers[(keys, a)].decision == "not"
+    assert len(db.sample_images) == 1
     assert api.get(review_url(), headers=CAREGIVER).json()["count"] == 0
 
 
@@ -191,7 +199,18 @@ def test_answers_are_for_members_and_their_own_photos(api, keys):
     assert answer(api, keys, theirs, "not").status_code == 404
     mine = db.photo(names=["keys"])
     assert api.post(review_url(OTHER), headers=CAREGIVER, json={"item_id": keys, "memory_id": mine, "decision": "not"}).status_code == 404
-    assert answer(api, str(uuid.uuid4()), mine, "not").status_code == 404
+    assert answer(api, str(uuid.uuid4()), mine, "not", width=640, height=480).status_code == 404
+
+
+def test_too_similar_review_can_be_restored_without_a_training_sample(api, keys):
+    db = api.app_state.db
+    memory_id = db.photo(detections=[("keys", 0.4, [0.1, 0.1, 0.2, 0.2])])
+    assert answer(api, keys, memory_id, "excluded").json() == {"decision": "excluded", "sample": None}
+    queue = api.get(review_url(), headers=CAREGIVER).json()
+    assert queue["count"] == 0 and queue["excluded"][0]["memory_id"] == memory_id
+    assert db.sample_images == {}
+    assert api.delete(f"{review_url()}/{keys}/{memory_id}", headers=CAREGIVER).status_code == 200
+    assert api.get(review_url(), headers=CAREGIVER).json()["count"] == 1
 
 
 def test_a_double_tap_makes_one_sample(api, keys):

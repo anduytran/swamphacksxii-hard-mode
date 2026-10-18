@@ -1576,6 +1576,7 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
 .distance-ranges li.done .distance-count { background: var(--good-bg); border-color: color-mix(in srgb, var(--good) 30%, transparent); color: var(--good-ink); }
 .distance-count .i { width: 13px; height: 13px; }
 .distance-next { margin: 0; }
+.teach-tip { margin: 0; }
 .box-range { min-height: 1.4em; }
 .sample-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
 .sample-grid li { position: relative; }
@@ -1586,6 +1587,7 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
 .sample { position: relative; margin: 0; border-radius: 8px; overflow: hidden; background: var(--surface-3); max-height: 120px; }
 .sample img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .sample-box { position: absolute; border: 2px solid var(--gold); border-radius: 3px; box-shadow: 0 0 0 1px rgba(20, 19, 43, 0.6); pointer-events: none; }
+.sample-absent { position: absolute; bottom: 4px; left: 4px; padding: 3px 6px; border-radius: 5px; background: var(--overlay); color: var(--on-overlay); font-size: 0.75rem; }
 .sample-delete { position: absolute; top: 2px; right: 2px; width: 32px; height: 32px; background: var(--overlay); color: var(--on-overlay); border-radius: 8px; }
 .sample-delete:hover { background: var(--overlay); color: var(--on-overlay); border-color: transparent; }
 .sample-delete .i { width: 16px; height: 16px; }
@@ -1608,7 +1610,8 @@ th[aria-sort="descending"] .sort-btn::after { opacity: 1; }
 .box-frame img { display: block; width: 100%; height: 100%; pointer-events: none; }
 .sample-box.drawing { border-width: 3px; background: color-mix(in srgb, var(--gold) 14%, transparent); }
 .box-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; }
-.box-actions-end { display: inline-flex; gap: 10px; }
+.box-actions-end { display: inline-flex; flex-wrap: wrap; gap: 10px; }
+@media (max-width: 540px) { .box-actions-end { width: 100%; } .box-actions-end button { flex: 1 1 auto; } }
 .sample-box.suggested { border-style: dashed; }
 .box-grip { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 2px rgba(20, 19, 43, 0.7); }
 .box-grip.n, .box-grip.s { left: 50%; width: 18px; height: 8px; margin: -4px 0 0 -9px; border-radius: 4px; }

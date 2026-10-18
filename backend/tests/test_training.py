@@ -71,8 +71,8 @@ class FakeTrainingDB(FakeDB):
         found = self.training.get(item_id)
         return len(found[1].samples) if found and found[0] == household_id else None
 
-    async def add_training_sample(self, item_id, image, image_type, width, height, bbox):
-        sample = TrainingSample(str(uuid.uuid4()), item_id, bbox, width, height, datetime.now(timezone.utc))
+    async def add_training_sample(self, item_id, image, image_type, width, height, bbox, annotation="present"):
+        sample = TrainingSample(str(uuid.uuid4()), item_id, bbox, width, height, datetime.now(timezone.utc), annotation)
         self.training[item_id][1].samples.append(sample)
         self.sample_images[sample.id] = (image, image_type)
         return sample
@@ -82,6 +82,15 @@ class FakeTrainingDB(FakeDB):
             for s in item.samples:
                 if s.id == sample_id and h == household_id:
                     item.samples.remove(s)
+                    return True
+        return False
+
+    async def restore_training_sample(self, household_id, sample_id, bbox, annotation):
+        for h, item in self.training.values():
+            for sample in item.samples:
+                if h == household_id and sample.id == sample_id and sample.annotation in ("excluded", "unreviewed"):
+                    sample.annotation = annotation
+                    sample.bbox = bbox
                     return True
         return False
 
@@ -161,6 +170,74 @@ def test_members_add_items_and_photos(api):
     (sample,) = listed["samples"]
     image = api.get(sample["image_url"])  # a signed link: no token needed
     assert image.status_code == 200 and image.content == b"\xff\xd8jpeg"
+
+
+def test_present_absent_and_unsubmitted_photos_stay_distinct(api):
+    item = api.post(items_url(), headers=CAREGIVER, json={"name": "keys"}).json()
+    item_id = item["id"]
+    absent = api.post(
+        f"{items_url()}/{item_id}/samples", headers=CAREGIVER,
+        files={"image": ("empty.jpg", b"\xff\xd8empty", "image/jpeg")},
+        data={"annotation": "absent", "width": "640", "height": "480"},
+    )
+    assert absent.status_code == 201
+    assert absent.json()["annotation"] == "absent" and absent.json()["bbox"] is None
+    assert add_photo(api, item_id).status_code == 201  # legacy positive uploads still work
+    samples = api.get(items_url(), headers=CAREGIVER).json()["items"][0]["samples"]
+    assert [s["annotation"] for s in samples] == ["absent", "present"]
+    assert samples[1]["bbox"] == [0.1, 0.2, 0.5, 0.4]
+    # Skip makes no API request, so there is no third sample or inferred absence.
+    assert len(samples) == 2
+    exported = api.get("/api/v1/training/dataset", headers=DEVICE).json()["samples"]
+    assert exported[0]["yolo"] == "" and exported[0]["bbox_xyxy_px"] is None
+    assert exported[1]["yolo"].startswith("0 ")
+    assert api.get("/api/v1/training/vocabulary", headers=DEVICE).json()["items"][0]["samples"] == 1
+
+
+def test_absent_and_present_upload_validation(api):
+    item_id = api.post(items_url(), headers=CAREGIVER, json={"name": "keys"}).json()["id"]
+    def upload(data):
+        return api.post(f"{items_url()}/{item_id}/samples", headers=CAREGIVER,
+                        files={"image": ("photo.jpg", b"\xff\xd8jpeg", "image/jpeg")}, data=data)
+    assert upload({"annotation": "absent", "bbox": "[0,0,1,1]", "width": "640", "height": "480"}).status_code == 422
+    assert upload({"annotation": "present", "width": "640", "height": "480"}).status_code == 422
+    assert upload({"annotation": "skipped", "width": "640", "height": "480"}).status_code == 422
+    assert api.get(items_url(), headers=CAREGIVER).json()["items"][0]["samples"] == []
+
+
+def test_excluded_photo_is_retained_but_not_exported_until_boxed(api):
+    item_id = api.post(items_url(), headers=CAREGIVER, json={"name": "keys"}).json()["id"]
+    response = api.post(f"{items_url()}/{item_id}/samples", headers=CAREGIVER,
+                        files={"image": ("same.jpg", b"\xff\xd8same", "image/jpeg")},
+                        data={"annotation": "excluded", "width": "640", "height": "480"})
+    assert response.status_code == 201
+    sample = response.json()
+    assert sample["bbox"] is None
+    assert api.get("/api/v1/training/dataset", headers=DEVICE).json()["samples"] == []
+    version_before = api.get("/api/v1/training/vocabulary", headers=DEVICE).json()["version"]
+    assert api.get(items_url(), headers=CAREGIVER).json()["items"][0]["samples"][0]["annotation"] == "excluded"
+    assert api.patch(f"/api/v1/households/{OTHER}/training/samples/{sample['id']}",
+                     headers=CAREGIVER, json={"bbox": [0.1, 0.2, 0.5, 0.4]}).status_code == 404
+    assert api.patch(f"/api/v1/households/{HOUSEHOLD}/training/samples/{sample['id']}",
+                     headers=CAREGIVER, json={"bbox": [0.1, 0.2, 0.5, 0.4]}).status_code == 200
+    exported = api.get("/api/v1/training/dataset", headers=DEVICE).json()["samples"]
+    assert len(exported) == 1 and exported[0]["annotation"] == "present"
+    assert api.get("/api/v1/training/vocabulary", headers=DEVICE).json()["version"] != version_before
+
+
+def test_closed_unlabeled_photo_survives_and_is_not_training_data(api):
+    item_id = api.post(items_url(), headers=CAREGIVER, json={"name": "keys"}).json()["id"]
+    response = api.post(f"{items_url()}/{item_id}/samples", headers=CAREGIVER,
+                        files={"image": ("later.jpg", b"\xff\xd8later", "image/jpeg")},
+                        data={"annotation": "unreviewed", "width": "640", "height": "480"})
+    assert response.status_code == 201
+    sample_id = response.json()["id"]
+    assert api.get(items_url(), headers=CAREGIVER).json()["items"][0]["samples"][0]["annotation"] == "unreviewed"
+    assert api.get("/api/v1/training/dataset", headers=DEVICE).json()["samples"] == []
+    restored = api.patch(f"/api/v1/households/{HOUSEHOLD}/training/samples/{sample_id}",
+                         headers=CAREGIVER, json={"annotation": "absent"})
+    assert restored.status_code == 200
+    assert api.get("/api/v1/training/dataset", headers=DEVICE).json()["samples"][0]["annotation"] == "absent"
 
 
 def test_duplicate_names_and_strangers_are_refused(api):
@@ -247,14 +324,20 @@ def test_fetch_script_writes_a_yolo_folder(tmp_path, monkeypatch):
         "version": "abc",
         "names": {"0": "glasses", "1": "keys"},
         "samples": [{"id": "s1", "class_id": 1, "name": "keys", "image_url": "https://x/s1",
-                     "yolo": "1 0.5 0.6 0.5 0.25", "bbox_xyxy_px": [160, 240, 480, 360]}],
+                     "yolo": "1 0.5 0.6 0.5 0.25", "bbox_xyxy_px": [160, 240, 480, 360]},
+                    {"id": "s2", "class_id": 1, "name": "keys", "image_url": "https://x/s2",
+                     "annotation": "absent", "yolo": "", "bbox_xyxy_px": None}],
     }
     (tmp_path / "images" / "train").mkdir(parents=True)
     (tmp_path / "images" / "train" / "gone.jpg").write_bytes(b"old")  # deleted on the dashboard since
     http = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(200, content=b"jpeg", headers={"content-type": "image/jpeg"})))
-    assert write_dataset(data, tmp_path, http) == 1
+    assert write_dataset(data, tmp_path, http) == 2
     assert (tmp_path / "images" / "train" / "s1.jpg").read_bytes() == b"jpeg"
     assert (tmp_path / "labels" / "train" / "s1.txt").read_text() == "1 0.5 0.6 0.5 0.25\n"
+    assert not (tmp_path / "labels" / "train" / "s2.txt").exists()
+    assert not (tmp_path / "images" / "train" / "s2.jpg").exists()
+    assert (tmp_path / "images" / "negatives" / "s2.jpg").read_bytes() == b"jpeg"
+    assert json.loads((tmp_path / "negatives.json").read_text()) == [{"image": "images/negatives/s2.jpg", "class_id": 1, "name": "keys"}]
     assert not (tmp_path / "images" / "train" / "gone.jpg").exists()
     yaml = (tmp_path / "data.yaml").read_text()
     assert 'names:\n  0: "glasses"\n  1: "keys"\n' in yaml and "train: images/train" in yaml

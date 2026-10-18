@@ -5,7 +5,7 @@ Dashboard (household members, caregiver token):
     POST   /api/v1/households/{household_id}/training/items                    {name, aliases}
     PATCH  /api/v1/households/{household_id}/training/items/{item_id}          {name?, aliases?}
     DELETE /api/v1/households/{household_id}/training/items/{item_id}
-    POST   /api/v1/households/{household_id}/training/items/{item_id}/samples  multipart image + bbox + width + height
+    POST   /api/v1/households/{household_id}/training/items/{item_id}/samples  multipart image + annotation + optional bbox + width + height
     DELETE /api/v1/households/{household_id}/training/samples/{sample_id}
     GET    /api/v1/households/{household_id}/training/review    "Needs a look": photos the detector is unsure of
     POST   /api/v1/households/{household_id}/training/review    {item_id, memory_id, decision, bbox?, width?, height?}
@@ -118,6 +118,7 @@ def _item_json(request: Request, settings: Settings, item: TrainingItem) -> dict
             {
                 "id": s.id,
                 "bbox": s.bbox,
+                "annotation": s.annotation,
                 "width": s.width,
                 "height": s.height,
                 "image_url": _sample_url(request, settings, s.id),
@@ -225,7 +226,8 @@ async def add_sample(
     item_id: UUID,
     request: Request,
     image: UploadFile = File(...),
-    bbox: str = Form(..., description="[x, y, w, h], 0..1, top-left origin"),
+    bbox: str | None = Form(None, description="Required for present; [x, y, w, h], 0..1, top-left origin"),
+    annotation: Literal["present", "absent", "excluded", "unreviewed"] = Form("present"),
     width: int = Form(..., ge=32, le=8192),
     height: int = Form(..., ge=32, le=8192),
     user: Principal = Depends(require_caregiver),
@@ -235,12 +237,16 @@ async def add_sample(
     hid = str(household_id)
     await _require_member(db, hid, user)
     await _require_wearable(db, hid)
-    box = _parse_bbox(bbox)
+    if annotation == "present" and bbox is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Present photos need a bbox")
+    if annotation != "present" and bbox is not None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Photos without an item box cannot have a bbox")
+    box = _parse_bbox(bbox) if bbox is not None else None
     await _require_room(db, hid, str(item_id))
     if image.content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Photos must be JPEG, PNG or WebP")
     data = await _read(image, MAX_IMAGE_BYTES, "image")
-    sample = await _store_sample(db, hid, str(item_id), data, image.content_type, width, height, box)
+    sample = await _store_sample(db, hid, str(item_id), data, image.content_type, width, height, box, annotation)
     return _sample_json(request, settings, sample)
 
 
@@ -253,17 +259,18 @@ async def _require_room(db: MemoryDB, household_id: str, item_id: str) -> None:
 
 
 async def _store_sample(db: MemoryDB, household_id: str, item_id: str, data: bytes, content_type: str,
-                        width: int, height: int, box: list[float]):
+                        width: int, height: int, box: list[float] | None, annotation: str = "present"):
     """Every way a photo becomes a training sample (Add photos, a review answer) ends here."""
     if await db.training_bytes(household_id) + len(data) > MAX_TRAINING_BYTES:
         raise HTTPException(status.HTTP_409_CONFLICT, "This household's photos are full (100 MB); delete some first")
-    return await db.add_training_sample(item_id, data, content_type, width, height, box)
+    return await db.add_training_sample(item_id, data, content_type, width, height, box, annotation)
 
 
 def _sample_json(request: Request, settings: Settings, sample) -> dict:
     return {
         "id": sample.id,
         "bbox": sample.bbox,
+        "annotation": sample.annotation,
         "width": sample.width,
         "height": sample.height,
         "image_url": _sample_url(request, settings, sample.id),
@@ -279,6 +286,23 @@ async def delete_sample(
     if not await db.delete_training_sample(str(household_id), str(sample_id)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Photo not found")
     return {"deleted": True}
+
+
+class RestoreSample(BaseModel):
+    annotation: Literal["present", "absent", "excluded"] = "present"
+    bbox: list[float] | None = None
+
+
+@router.patch("/households/{household_id}/training/samples/{sample_id}")
+async def restore_sample(household_id: UUID, sample_id: UUID, body: RestoreSample,
+                         user: Principal = Depends(require_caregiver), db: MemoryDB = Depends(get_db)):
+    await _require_member(db, str(household_id), user)
+    if (body.annotation == "present") != (body.bbox is not None):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Present photos need a box; absent photos cannot have one")
+    box = _parse_bbox(json.dumps(body.bbox)) if body.bbox is not None else None
+    if not await db.restore_training_sample(str(household_id), str(sample_id), box, body.annotation):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unlabeled or excluded photo not found")
+    return {"updated": True}
 
 
 # ---------------------------------------------------------------- review
@@ -322,24 +346,38 @@ async def review_queue(
     items = [i for i in await db.training_items(hid) if len(i.samples) < MAX_SAMPLES_PER_ITEM]
     devices = await db.household_device_ids(hid)
     found: list[Candidate] = []
+    excluded: list[Candidate] = []
     if items and devices:
         hours = settings.retention_hours
+        detections = await db.review_detections(devices, settings.review_confidence_min, settings.review_confidence_max, hours)
+        photos = await db.review_memory_photos(devices, hours)
+        reviews = await db.reviews(hid)
         found = candidates(
-            items,
-            await db.review_detections(devices, settings.review_confidence_min, settings.review_confidence_max, hours),
-            await db.review_memory_photos(devices, hours),
-            await db.reviews(hid),
+            items, detections, photos, reviews,
         )
+        excluded = [c for c in candidates(items, detections, photos,
+                    {k: v for k, v in reviews.items() if v.decision != "excluded"})
+                    if (c.item.id, c.memory_id) in reviews and reviews[(c.item.id, c.memory_id)].decision == "excluded"]
     per_item: dict[str, int] = {}
     for c in found:
         per_item[c.item.id] = per_item.get(c.item.id, 0) + 1
-    return {"count": len(found), "per_item": per_item, "candidates": [_candidate_json(settings, c) for c in found[:limit]]}
+    return {"count": len(found), "per_item": per_item, "candidates": [_candidate_json(settings, c) for c in found[:limit]],
+            "excluded": [_candidate_json(settings, c) for c in excluded]}
+
+
+@router.delete("/households/{household_id}/training/review/{item_id}/{memory_id}")
+async def restore_review(household_id: UUID, item_id: UUID, memory_id: UUID,
+                         user: Principal = Depends(require_caregiver), db: MemoryDB = Depends(get_db)):
+    await _require_member(db, str(household_id), user)
+    if not await db.restore_excluded_review(str(household_id), str(item_id), str(memory_id)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Excluded review not found")
+    return {"restored": True}
 
 
 class ReviewAnswer(BaseModel):
     item_id: UUID
     memory_id: UUID
-    decision: Literal["yes", "fix", "not"]
+    decision: Literal["yes", "fix", "not", "excluded"]
     bbox: list[float] | None = Field(None, description="[x, y, w, h], 0..1: the box confirmed (yes) or drawn (fix)")
     width: int | None = Field(None, ge=32, le=8192)
     height: int | None = Field(None, ge=32, le=8192)
@@ -361,12 +399,27 @@ async def answer_review(
     data, content_type = await _memory_photo(db, hid, memory_id)
     if (done := (await db.reviews(hid)).get((item_id, memory_id))) and done.decision:
         raise HTTPException(status.HTTP_409_CONFLICT, "This photo was already answered")
-    if body.decision == "not":
+    if body.decision == "excluded":
         if await db.training_item_sample_count(hid, item_id) is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found")
+        if not await db.claim_review(item_id, memory_id, body.decision):
+            raise HTTPException(status.HTTP_409_CONFLICT, "This photo was already answered")
+        return {"decision": body.decision, "sample": None}
+    if body.decision == "not":
+        if body.bbox is not None or body.width is None or body.height is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Absent photos need a size and no box")
+        await _require_room(db, hid, item_id)
+        if content_type not in ALLOWED_IMAGE_TYPES:
+            raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "This photo's format can't be used for teaching")
         if not await db.claim_review(item_id, memory_id, "not"):
             raise HTTPException(status.HTTP_409_CONFLICT, "This photo was already answered")
-        return {"decision": "not", "sample": None}
+        try:
+            sample = await _store_sample(db, hid, item_id, data, content_type, body.width, body.height, None, "absent")
+        except BaseException:
+            await db.release_review(item_id, memory_id)
+            raise
+        await db.decide_review(item_id, memory_id, "not", None, sample.id)
+        return {"decision": "not", "sample": _sample_json(request, settings, sample)}
     if body.bbox is None or body.width is None or body.height is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Yes and Fix need the box and the photo's width and height")
     box = _parse_bbox(json.dumps(body.bbox))
@@ -399,7 +452,7 @@ async def _device_items(db: MemoryDB, device: Principal) -> tuple[str, list[Trai
 
 def _version(items: list[TrainingItem]) -> str:
     """Changes whenever a name, other word or photo does, so the pipeline knows to re-fetch."""
-    key = json.dumps([[i.id, i.name, i.aliases, [s.id for s in i.samples]] for i in items])
+    key = json.dumps([[i.id, i.name, i.aliases, [s.id for s in i.samples if s.annotation in ("present", "absent")]] for i in items])
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
@@ -411,7 +464,8 @@ async def vocabulary(device: Principal = Depends(require_device), db: MemoryDB =
         "household_id": household_id,
         "version": _version(items),
         "classes": [i.name for i in items],
-        "items": [{"class_id": n, "name": i.name, "aliases": i.aliases, "samples": len(i.samples)} for n, i in enumerate(items)],
+        "items": [{"class_id": n, "name": i.name, "aliases": i.aliases,
+                   "samples": sum(s.annotation == "present" for s in i.samples)} for n, i in enumerate(items)],
     }
 
 
@@ -422,13 +476,18 @@ async def dataset(
     db: MemoryDB = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    """Every photo with a signed link and its YOLO label line ("class cx cy w h", 0..1).
+    """Every photo with a signed link and its YOLO label line (empty for absent).
     Links expire after IMAGE_URL_TTL_SECONDS; fetch the photos right away."""
     household_id, items = await _device_items(db, device)
     samples = []
     for class_id, item in enumerate(items):
         for s in item.samples:
-            x, y, w, h = s.bbox
+            if s.annotation not in ("present", "absent"):
+                continue
+            present = s.annotation == "present"
+            if present:
+                assert s.bbox is not None
+                x, y, w, h = s.bbox
             samples.append(
                 {
                     "id": s.id,
@@ -438,8 +497,9 @@ async def dataset(
                     "width": s.width,
                     "height": s.height,
                     "bbox": s.bbox,
-                    "bbox_xyxy_px": [round(x * s.width), round(y * s.height), round((x + w) * s.width), round((y + h) * s.height)],
-                    "yolo": f"{class_id} {x + w / 2:.6f} {y + h / 2:.6f} {w:.6f} {h:.6f}",
+                    "annotation": s.annotation,
+                    "bbox_xyxy_px": [round(x * s.width), round(y * s.height), round((x + w) * s.width), round((y + h) * s.height)] if present else None,
+                    "yolo": f"{class_id} {x + w / 2:.6f} {y + h / 2:.6f} {w:.6f} {h:.6f}" if present else "",
                 }
             )
     return {
@@ -577,7 +637,7 @@ async def model_status(household_id: UUID, user: Principal = Depends(require_car
     version = _version(items)
     return {
         "dataset_version": version,
-        "photos": sum(len(i.samples) for i in items),
+        "photos": sum(s.annotation in ("present", "absent") for i in items for s in i.samples),
         "model": None
         if model is None
         else {

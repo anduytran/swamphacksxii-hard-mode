@@ -8,7 +8,9 @@
     lastscene-items/
       data.yaml                   names + paths (train and val both point at the photos)
       images/train/<id>.jpg       the photos people took
-      labels/train/<id>.txt       one line each: "class cx cy w h", 0..1
+      labels/train/<id>.txt       one line for a present item
+      images/negatives/<id>.jpg   item-specific absent photos, kept out of YOLO training
+      negatives.json             item IDs and image paths for reviewed hard negatives
       prompts.json                per photo: class + box in pixels, for visual prompts (YOLOE)
       version                     re-run only when GET /training/vocabulary's version changes
 
@@ -45,27 +47,39 @@ def get(path: str) -> dict:
 def write_dataset(data: dict, out: Path, http: httpx.Client | None = None) -> int:
     """Write the YOLO folder for a GET /training/dataset response; returns the photo count."""
     images, labels = out / "images" / "train", out / "labels" / "train"
+    negatives_dir = out / "images" / "negatives"
     images.mkdir(parents=True, exist_ok=True)
     labels.mkdir(parents=True, exist_ok=True)
-    keep = set()
+    negatives_dir.mkdir(parents=True, exist_ok=True)
+    keep_images, keep_labels, keep_negatives = set(), set(), set()
     prompts = []
+    negatives = []
     with http or httpx.Client(timeout=30) as http:
         for s in data["samples"]:
             resp = http.get(s["image_url"])  # signed link: no token needed, but it expires
             resp.raise_for_status()
             ext = mimetypes.guess_extension(resp.headers.get("content-type", "image/jpeg").split(";")[0]) or ".jpg"
             name = f"{s['id']}{'.jpg' if ext == '.jpe' else ext}"
-            (images / name).write_bytes(resp.content)
-            (labels / f"{s['id']}.txt").write_text(s["yolo"] + "\n")
-            keep |= {name, f"{s['id']}.txt"}
-            prompts.append({"image": f"images/train/{name}", "class_id": s["class_id"], "name": s["name"], "bbox_xyxy": s["bbox_xyxy_px"]})
-    for folder in (images, labels):  # photos deleted on the dashboard go here too
+            if s["yolo"]:
+                (images / name).write_bytes(resp.content)
+                (labels / f"{s['id']}.txt").write_text(s["yolo"] + "\n")
+                keep_images.add(name)
+                keep_labels.add(f"{s['id']}.txt")
+                prompts.append({"image": f"images/train/{name}", "class_id": s["class_id"], "name": s["name"], "bbox_xyxy": s["bbox_xyxy_px"]})
+            else:
+                # An item-specific absence does not prove every other taught item is absent.
+                # Keep it reviewable, but never give a multi-class YOLO trainer an empty label.
+                (negatives_dir / name).write_bytes(resp.content)
+                keep_negatives.add(name)
+                negatives.append({"image": f"images/negatives/{name}", "class_id": s["class_id"], "name": s["name"]})
+    for folder, keep in ((images, keep_images), (labels, keep_labels), (negatives_dir, keep_negatives)):
         for f in folder.iterdir():
             if f.name not in keep:
                 f.unlink()
     names = "\n".join(f"  {k}: {json.dumps(v)}" for k, v in sorted(data["names"].items(), key=lambda kv: int(kv[0])))
     (out / "data.yaml").write_text(f"path: {out.resolve()}\ntrain: images/train\nval: images/train\nnames:\n{names}\n")
     (out / "prompts.json").write_text(json.dumps(prompts, indent=2))
+    (out / "negatives.json").write_text(json.dumps(negatives, indent=2))
     (out / "version").write_text(data["version"])
     return len(data["samples"])
 
