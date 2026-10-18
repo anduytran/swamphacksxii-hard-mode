@@ -559,7 +559,27 @@ def chime(*freqs: float, ms: int = 70) -> bytes:
     return wav_bytes(b"".join(tone(f, ms)[44:] for f in freqs))
 
 
-STOPPED = chime(784, 523)  # two falling notes: "got it, I stopped listening" (rising 880 = "listening")
+SOUNDS = Path(__file__).resolve().parent / "sounds"  # README step 4 copies it to /opt/lastscene/sounds
+
+
+def wav_seconds(wav: bytes) -> float:
+    try:
+        with wave.open(io.BytesIO(wav)) as w:
+            return w.getnframes() / w.getframerate()
+    except (wave.Error, EOFError):
+        return 0.0
+
+
+def sound(name: str, fallback: bytes) -> bytes:
+    """A sound from sounds/, or the beep it replaces if the file isn't there."""
+    try:
+        return (SOUNDS / name).read_bytes()
+    except OSError:
+        return fallback
+
+
+LISTENING = sound("listening.wav", tone(880))  # a curious bird chirp: "I'm listening"
+STOPPED = sound("stopped.wav", chime(784, 523))  # a happy bird twitter: "got it, I stopped listening"
 
 
 def rms(frame: bytes) -> float:
@@ -579,7 +599,7 @@ class Endpointer:
 
     def __init__(self, max_s: float = 10, silence_s: float = 0.9, timeout_s: float = 4, floor: float = 300.0,
                  drop_db: float | None = None, drop_s: float = 0.5, min_speech_s: float = 1.0, ignore_s: float = 0.0,
-                 ignoring=None, min_s: float = 0.0):
+                 ignoring=None, min_s: float = 0.0, over_beep_s: float = 0.32):
         self.frame_s = FRAME_SAMPLES / RATE
         self.max_frames = int(max_s / self.frame_s)
         self.silence_frames = int(silence_s / self.frame_s)
@@ -589,6 +609,7 @@ class Endpointer:
         self.ignore_frames = round(ignore_s / self.frame_s)
         self.ignoring = ignoring or (lambda: False)
         self.min_frames = round(min_s / self.frame_s)  # neither silence nor a drop ends it before this
+        self.over_beep_frames = math.ceil(over_beep_s / self.frame_s)  # loud for longer than the beep = speech
         self.floor = floor  # a starting guess; follows the room while nobody speaks
         self.frames = 0
         self.quiet = 0
@@ -602,7 +623,7 @@ class Endpointer:
     def _nothing(self) -> str:
         """No speech after the beep. If they spoke over it (all of "Last Scene, where are my keys" said at once),
         that was the command: done, not nothing."""
-        if self.early_loud >= 4:  # 320 ms: longer than the beep itself
+        if self.early_loud >= self.over_beep_frames:  # loud for longer than the beep itself
             self.reason = "said over the beep"
             return "done"
         self.reason = "nothing"
@@ -1402,7 +1423,7 @@ class Device:
                 return self._wake_command(preroll)
             # Without device speech-to-text the words come too late to choose: photograph now, as before.
             photo = self.camera.capture_jpeg() if self.stt is None else None
-            play_wav(self.cfg.audio_out, tone(880))  # "I'm listening" (before recording, so it isn't heard)
+            play_wav(self.cfg.audio_out, LISTENING)  # before recording, so it isn't heard
             pcm = self.voice.listen(Endpointer(max_s=self.cfg.wake_max_seconds), self.cfg.wake_max_seconds + 3)
             if pcm is None:
                 log.info("Wake phrase heard, but nothing said after it")
@@ -1517,14 +1538,15 @@ class Device:
 
         def beep() -> None:
             try:
-                play_wav(self.cfg.audio_out, tone(880))
+                play_wav(self.cfg.audio_out, LISTENING)
             finally:
                 time.sleep(0.1)  # its echo
                 beeped.set()
 
         threading.Thread(target=beep, daemon=True).start()
         ep = Endpointer(max_s=self.cfg.wake_max_seconds, timeout_s=3, ignore_s=0.2, min_s=self.cfg.wake_min_seconds,
-                        drop_db=self.cfg.wake_drop_db or None, ignoring=lambda: not beeped.is_set())
+                        drop_db=self.cfg.wake_drop_db or None, ignoring=lambda: not beeped.is_set(),
+                        over_beep_s=wav_seconds(LISTENING) + 0.25)
         pcm = self.voice.listen(ep, self.cfg.wake_max_seconds + 3, keep_all=True)
         recorded = time.monotonic() - t0
         timeline = {"speech_end": round(recorded, 2)}

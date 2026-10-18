@@ -111,7 +111,7 @@ def test_a_question_takes_no_photos_after_speaking(quiet):
 
 def test_a_false_wake_is_silent(quiet):
     device(Api(answer=("ignored", {"intent": "ignored"})))._wake_command(b"")
-    assert quiet == [dev.tone(880), dev.STOPPED]  # listening, stopped; nothing after a false wake
+    assert quiet == [dev.LISTENING, dev.STOPPED]  # listening, stopped; nothing after a false wake
 
 
 def test_answers_and_found_are_played(quiet):
@@ -330,3 +330,13 @@ def test_a_command_said_entirely_over_the_beep_still_counts():
     quiet = dev.Endpointer(max_s=7, timeout_s=1, ignoring=lambda: quiet.frames <= 2)
     feed(quiet, [8000] * 2 + [50] * 40)  # just the beep: nothing said
     assert quiet.reason == "nothing"
+
+
+def test_the_listening_and_stopped_sounds_ship_with_the_device():
+    import wave, io
+
+    for clip in (dev.LISTENING, dev.STOPPED):
+        with wave.open(io.BytesIO(clip)) as w:  # mono 16-bit, so the speaker EQ applies to them too
+            assert w.getnchannels() == 1 and w.getsampwidth() == 2 and w.getnframes() / w.getframerate() < 0.6
+    assert dev.LISTENING != dev.tone(880) and dev.STOPPED != dev.chime(784, 523)
+    assert dev.sound("missing.wav", b"RIFFbeep") == b"RIFFbeep"

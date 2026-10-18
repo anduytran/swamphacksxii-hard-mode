@@ -119,7 +119,7 @@ The Pi is a thin client: it captures a photo and voice, sends them to the API, a
    sudo useradd --system --groups gpio,video,audio lastscene
    sudo mkdir -p /opt/lastscene /etc/lastscene /var/lib/lastscene/spool
    sudo chown lastscene /var/lib/lastscene/spool
-   sudo cp -r lastscene_device.py speaker_eq.py wake /opt/lastscene/
+   sudo cp -r lastscene_device.py speaker_eq.py wake sounds /opt/lastscene/
    sudo install -m 640 -g lastscene device.env.example /etc/lastscene/device.env
    ```
    Fill in `/etc/lastscene/device.env` with the **Wearable** M2M app's Client ID/Secret and your API's HTTPS URL.
