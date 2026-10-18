@@ -211,6 +211,8 @@ def test_parse_context_normalises_json_and_falls_back_to_the_sentence():
     assert chunks_for("pin", plain)[0] == ("item", "pin: On the desk, next to a mug.")
     only_surface = parse_context('{"visible": true, "surface": "chair"}')
     assert only_surface["summary"] == "on the chair"
+    filler = parse_context('{"visible": true, "where": "on the desk", "room": "room", "visible_text": "None", "summary": "x"}')
+    assert filler["room"] == "" and filler["visible_text"] == ""
 
 
 def test_prompt_asks_for_the_json_fields():

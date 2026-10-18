@@ -46,6 +46,8 @@ RETRY_MINUTES = 2  # after a failed read (raia down, a bad key), the item may be
 MAX_CONTEXT_CHARS = 300
 MAX_NEARBY = 4
 EXTENSIONS = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+# Filler the agent puts in a field it can't fill (seen live: "room": "room").
+NO_VALUE = {"room", "a room", "unknown", "none", "n/a", "na", "not visible", "unclear", "indoors"}
 
 
 class RaiaError(Exception):
@@ -79,7 +81,8 @@ def prompt(label: str, bbox: list[float] | None, scene_label: str | None) -> str
 
 
 def _text(v, limit: int = 120) -> str:
-    return " ".join(str(v).split())[:limit] if isinstance(v, (str, int, float)) and not isinstance(v, bool) else ""
+    text = " ".join(str(v).split())[:limit] if isinstance(v, (str, int, float)) and not isinstance(v, bool) else ""
+    return "" if text.lower().strip(" .") in NO_VALUE else text
 
 
 def clean(reply: str) -> str | None:
