@@ -355,3 +355,11 @@ def test_fillers_are_fetched_again_when_the_server_changes_them(tmp_path):
     offline = dev.Fillers(folder, fetch, lambda: (_ for _ in ()).throw(OSError("offline")))
     offline.load()
     assert len(offline.clips) == 2  # can't check: keeps what it has
+
+
+def test_with_no_fillers_on_the_server_the_saved_ones_are_deleted(tmp_path):
+    folder = tmp_path / "fillers"
+    dev.Fillers(folder, lambda i: ("Let me check.", b"RIFF") if i == 0 else None, lambda: ["Let me check."]).load()
+    f = dev.Fillers(folder, lambda i: None, lambda: [])
+    f.load()
+    assert f.clips == [] and f.pick() is None and list(folder.glob("*.wav")) == []

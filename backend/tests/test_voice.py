@@ -533,13 +533,14 @@ def test_a_sure_wake_counts_when_speech_to_text_misses_the_phrase(client):  # no
     assert unsure.json()["intent"] == "ignored"
 
 
-def test_fillers_are_spoken_phrases_for_the_device_to_keep(client):  # noqa: F811
-    from app.ai import FILLERS
+def test_fillers_are_spoken_phrases_for_the_device_to_keep(client, monkeypatch):  # noqa: F811
+    from app.routers import memory
 
+    monkeypatch.setattr(memory, "FILLERS", ("Let me check.",))
     first = client.get("/api/v1/memory/fillers/0", headers=DEVICE)
     assert first.status_code == 200 and first.headers["content-type"].startswith("audio/")
-    assert unquote(first.headers["x-text"]) == FILLERS[0]
-    assert client.get(f"/api/v1/memory/fillers/{len(FILLERS)}", headers=DEVICE).status_code == 404
+    assert unquote(first.headers["x-text"]) == "Let me check."
+    assert client.get("/api/v1/memory/fillers/1", headers=DEVICE).status_code == 404
     assert client.get("/api/v1/memory/fillers/0", headers=CAREGIVER).status_code == 403
 
 
@@ -594,5 +595,5 @@ def test_a_false_wake_leaves_nothing_on_the_server(client, caplog):  # noqa: F81
 def test_the_device_can_see_which_fillers_are_in_use(client):  # noqa: F811
     from app.ai import FILLERS
 
-    assert client.get("/api/v1/memory/fillers", headers=DEVICE).json() == {"texts": list(FILLERS)}
-    assert "Okay, let me think." not in FILLERS
+    assert client.get("/api/v1/memory/fillers", headers=DEVICE).json() == {"texts": list(FILLERS)} == {"texts": []}
+    assert client.get("/api/v1/memory/fillers/0", headers=DEVICE).status_code == 404  # no fillers in use
