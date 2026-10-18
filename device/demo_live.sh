@@ -22,7 +22,7 @@ CAMERA_HOST="${2:-faker@100.89.232.47}"
 API="https://www.lastscene.photo"
 VIEW_PORT=8766
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SOCKETS="$(mktemp -d)"
+SOCKETS="$(mktemp -d /tmp/lsd.XXXX)"  # short: macOS caps a socket path at 104 characters
 trap 'rm -rf "$SOCKETS"' EXIT
 ssh_to() {  # one login per Pi for the whole run
   ssh -o ControlMaster=auto -o ControlPath="$SOCKETS/%C" -o ControlPersist=120 "$@"
