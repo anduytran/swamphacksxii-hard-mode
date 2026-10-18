@@ -152,7 +152,7 @@ class FakeAI:
     def __init__(self):
         self.answered_with = None
 
-    async def transcribe(self, filename, audio, content_type):
+    async def transcribe(self, filename, audio, content_type, hints=None):
         return audio.decode()
 
     speech_media_type = "audio/wav"

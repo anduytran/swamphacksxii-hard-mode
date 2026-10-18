@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     image_url_ttl_seconds: int = 900
 
     # AI providers. Each stage can run on Gemini (default) or the original provider.
-    stt_provider: str = "gemini"  # gemini | openai
+    stt_provider: str = "gemini"  # gemini | openai | elevenlabs (Scribe; falls back to Gemini)
     embedding_provider: str = "gemini"  # gemini | openai  (changing it invalidates stored vectors)
     llm_provider: str = "gemini"  # gemini | claude      (answers, item extraction, summaries)
     tts_provider: str = "gemini"  # gemini | openai | elevenlabs (falls back to Gemini speech)
@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     elevenlabs_monthly_chars: int = 120000  # Creator plan: 131,000 a month, no overage
     elevenlabs_reserve_chars: int = 500
     elevenlabs_rpm: int = 20
+    # ElevenLabs speech-to-text (STT_PROVIDER=elevenlabs): Scribe v2, billed per hour of audio (separate
+    # from the voice's characters). Capped in seconds of audio per month; any failure falls back to Gemini.
+    elevenlabs_stt_model: str = "scribe_v2"
+    elevenlabs_stt_monthly_seconds: int = 36000  # 10 hours of audio
+    elevenlabs_stt_rpm: int = 30
+    # Hints for speech-to-text (both providers): "Last Scene" and the household's Teach items and aliases,
+    # so names like "swamphacks pins" aren't heard as "Swampfax pins".
+    stt_hints: bool = True
     llm_model: str = "claude-opus-5-5"
     llm_effort: str = "low"
 

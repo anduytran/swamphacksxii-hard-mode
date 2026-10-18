@@ -224,6 +224,20 @@ def template_answer(question: str, memories: list[RetrievedMemory], now: datetim
             f"You put {'them' if plural else 'it'} there {humanize_ago(top.created_at, now)}.")
 
 
+def audio_seconds(audio: bytes) -> int:
+    """Whole seconds of audio, rounded up (at least 1): from the WAV header, else as 16 kHz 16-bit mono."""
+    import io
+    import math
+    import wave
+
+    try:
+        with wave.open(io.BytesIO(audio)) as w:
+            seconds = w.getnframes() / w.getframerate()
+    except Exception:
+        seconds = len(audio) / 32000
+    return max(1, math.ceil(seconds))
+
+
 def humanize_ago(then: datetime, now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
     minutes = int((now - then).total_seconds() // 60)
@@ -311,9 +325,11 @@ class AIServices:
 
     def _provider(self, stage: str) -> str:
         s = self.s
-        # ElevenLabs speech is limited on its own (_speak_elevenlabs); the "tts" stage is its Gemini fallback.
+        # ElevenLabs is limited on its own (_speak_elevenlabs, _transcribe_elevenlabs); "tts" / "stt" are
+        # its Gemini fallbacks.
         tts = "gemini" if s.tts_provider == "elevenlabs" else s.tts_provider
-        return {"stt": s.stt_provider, "tts": tts, "embed": s.embedding_provider,
+        stt = "gemini" if s.stt_provider == "elevenlabs" else s.stt_provider
+        return {"stt": stt, "tts": tts, "embed": s.embedding_provider,
                 "text": s.llm_provider, "vision": s.vision_provider, "maps": "gemini"}[stage]
 
     def models(self, stage: str) -> list[str]:
@@ -375,13 +391,38 @@ class AIServices:
 
     # ---------------------------------------------------------------- speech in/out
 
+    async def transcribe(self, filename: str, audio: bytes, content_type: str | None,
+                         hints: list[str] | None = None) -> str:
+        """Speech to text. ElevenLabs Scribe when chosen and configured, else (or when it fails) Gemini /
+        OpenAI. `hints`: names and words likely to come up (see routers/memory.py)."""
+        if self.s.stt_provider == "elevenlabs" and self.s.elevenlabs_api_key:
+            try:
+                return await self._transcribe_elevenlabs(filename, audio, content_type, hints)
+            except Exception as exc:  # its limit, its plan, an outage: Gemini still hears it
+                log.warning("ElevenLabs speech-to-text unavailable (%s); using Gemini", type(exc).__name__)
+        return await self._transcribe_fallback(filename, audio, content_type, hints)
+
+    async def _transcribe_elevenlabs(self, filename, audio, content_type, hints) -> str:
+        s = self.s
+        if self.limiter:
+            await self.limiter.take(per("elevenlabs-stt", s.elevenlabs_stt_rpm))
+            await self.limiter.take([Rule("elevenlabs-stt:seconds", s.elevenlabs_stt_monthly_seconds, "month")],
+                                    cost=audio_seconds(audio))
+        try:
+            return await self.elevenlabs.transcribe(audio, filename, content_type, hints)
+        except Exception as exc:
+            if self.limiter and (wait := provider_busy(exc)) is not None:
+                await self.limiter.cool_down("elevenlabs-stt", wait)
+            raise
+
     @limited("stt")
-    async def transcribe(self, filename: str, audio: bytes, content_type: str | None) -> str:
-        if self.s.stt_provider == "gemini":
-            return await self.gemini.transcribe(audio, content_type)
+    async def _transcribe_fallback(self, filename, audio, content_type, hints) -> str:
+        if self.s.stt_provider in ("gemini", "elevenlabs"):
+            return await self.gemini.transcribe(audio, content_type, hints)
         result = await self.openai.audio.transcriptions.create(
             model=self.s.stt_model,
             file=(filename or "audio.wav", audio, content_type or "audio/wav"),
+            **({"prompt": ", ".join(hints)} if hints else {}),
         )
         return result.text.strip()
 

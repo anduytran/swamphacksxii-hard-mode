@@ -1,4 +1,5 @@
-"""ElevenLabs text-to-speech for the wearable's spoken answers (TTS_PROVIDER=elevenlabs).
+"""ElevenLabs for the wearable's voice: text-to-speech for spoken answers (TTS_PROVIDER=elevenlabs) and
+Scribe speech-to-text for what it hears (STT_PROVIDER=elevenlabs, with hints as keyterms).
 
 POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}, `xi-api-key` header, WAV out
 (output_format=wav_24000), which the Pi plays with aplay as is. eleven_flash_v2_5 by default:
@@ -10,6 +11,7 @@ a few minutes), so a request that would go past the plan is never sent. Any fail
 Gemini speech.
 """
 
+import re
 import time
 
 import httpx
@@ -18,6 +20,18 @@ from .config import Settings
 
 API = "https://api.elevenlabs.io/v1"
 SUBSCRIPTION_TTL_S = 300
+STT_URL = f"{API}/speech-to-text"
+MAX_KEYTERMS = 100
+
+
+def keyterms(hints: list[str] | None) -> list[str]:
+    """Hints in the shape Scribe accepts: under 50 characters, at most 5 words, none of < > { } [ ] \\."""
+    out: list[str] = []
+    for h in hints or []:
+        term = " ".join(re.sub(r"[<>{}\[\]\\]", " ", h).split())
+        if term and len(term) < 50 and len(term.split()) <= 5 and term.lower() not in {t.lower() for t in out}:
+            out.append(term)
+    return out[:MAX_KEYTERMS]
 
 
 class ElevenLabsError(Exception):
@@ -57,6 +71,20 @@ class ElevenLabs:
             left = body["character_limit"] - body["character_count"]
         self._left = (self.clock(), left)
         return left
+
+    async def transcribe(self, audio: bytes, filename: str | None, content_type: str | None,
+                         hints: list[str] | None = None) -> str:
+        """Scribe speech-to-text; "" when nothing was said. Hints go in as keyterms."""
+        data: dict = {"model_id": self.s.elevenlabs_stt_model, "tag_audio_events": "false"}
+        if terms := keyterms(hints):
+            data["keyterms"] = terms
+        resp = await self._client().post(
+            STT_URL, headers=self._headers, data=data,
+            files={"file": (filename or "clip.wav", audio, content_type or "audio/wav")},
+        )
+        if resp.status_code >= 400:
+            raise ElevenLabsError(resp)
+        return (resp.json().get("text") or "").strip()
 
     async def speak(self, text: str) -> bytes:
         left = await self.characters_left()

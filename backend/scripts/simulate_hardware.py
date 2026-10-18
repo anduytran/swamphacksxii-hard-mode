@@ -169,7 +169,7 @@ class SimulatedAI:
     dims: int = 1536
     speech_media_type: str = "audio/wav"
 
-    async def transcribe(self, filename, audio, content_type) -> str:
+    async def transcribe(self, filename, audio, content_type, hints=None) -> str:
         return wav_transcript(audio)
 
     async def embed(self, text: str, *, query: bool = False) -> list[float]:

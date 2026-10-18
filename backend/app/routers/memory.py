@@ -52,8 +52,27 @@ TRANSCRIPT_FORM = Form(None, description="what was said, transcribed on the devi
                        "sent instead of audio, so the recording never leaves the wearable")
 
 
-async def _heard(ai: AIServices, audio: UploadFile | None, transcript: str | None) -> str:
-    """The words: the device's own transcript when it sent one, else speech-to-text on the audio."""
+WAKE_HINT = "Last Scene"
+
+
+async def stt_hints(db: MemoryDB, device_id: str) -> list[str]:
+    """Words the wearer is likely to say that speech-to-text tends to get wrong: the wake phrase and the
+    household's Teach items and their aliases ("swamphacks pins", not "Swampfax pins")."""
+    hints = [WAKE_HINT]
+    try:
+        household = await db.household_of_device(device_id)
+        if household:
+            for item in await db.training_items(household[0]):
+                hints += [item.name, *item.aliases]
+    except Exception:  # hints are a nicety: transcribe without them
+        log.warning("Speech-to-text hints unavailable for this device")
+    return hints
+
+
+async def _heard(ai: AIServices, audio: UploadFile | None, transcript: str | None,
+                 hints=None) -> str:
+    """The words: the device's own transcript when it sent one, else speech-to-text on the audio.
+    `hints`: a function giving the hint list, only called when audio is transcribed here."""
     if transcript is not None and transcript.strip():
         if len(transcript) > MAX_TRANSCRIPT_CHARS:
             raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, f"transcript exceeds {MAX_TRANSCRIPT_CHARS} characters")
@@ -61,7 +80,7 @@ async def _heard(ai: AIServices, audio: UploadFile | None, transcript: str | Non
     if audio is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Send audio or a transcript")
     audio_bytes = await _read(audio, MAX_AUDIO_BYTES, "audio")
-    return await ai.transcribe(audio.filename, audio_bytes, audio.content_type)
+    return await ai.transcribe(audio.filename, audio_bytes, audio.content_type, await hints() if hints else None)
 
 
 # Image-to-text indexing, positioning and question logging run after the response by
@@ -233,7 +252,7 @@ async def log_memory(
     settings: Settings = Depends(get_settings),
 ):
     image_bytes = await _read(image, MAX_IMAGE_BYTES, "image")
-    transcript = await _heard(ai, audio, transcript)
+    transcript = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub)))
     await _note_pairing(db, device.sub, pairing_code)
     if not transcript:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "No speech detected")
@@ -253,7 +272,7 @@ async def query_memory(
     geo: Geolocator = Depends(get_geo),
     settings: Settings = Depends(get_settings),
 ):
-    question = await _heard(ai, audio, transcript)
+    question = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub)))
     await _note_pairing(db, device.sub, pairing_code)
     return await _spoken_answer(background, db, ai, geo, settings, device.sub, question, where)
 
@@ -275,7 +294,7 @@ async def voice(
     """Wake phrase, no button: the words decide. A statement is saved like /log (JSON back, with
     "intent": "remember"); a question is answered like /query (spoken audio back, X-Intent: ask)."""
     image_bytes = await _read(image, MAX_IMAGE_BYTES, "image") if image is not None else None
-    heard = await _heard(ai, audio, transcript)
+    heard = await _heard(ai, audio, transcript, settings.stt_hints and (lambda: stt_hints(db, device.sub)))
     await _note_pairing(db, device.sub, pairing_code)
     if not heard:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "No speech detected")

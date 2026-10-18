@@ -34,7 +34,7 @@ class FixedGeo:
 class OfflineAI:
     speech_media_type = "audio/wav"
 
-    async def transcribe(self, f, audio, ct):
+    async def transcribe(self, f, audio, ct, hints=None):
         return audio.decode()
 
     async def embed(self, t, *, query=False):

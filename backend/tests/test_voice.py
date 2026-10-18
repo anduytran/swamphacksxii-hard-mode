@@ -100,3 +100,28 @@ def test_neither_audio_nor_transcript_is_rejected(client):  # noqa: F811
     resp = client.post("/api/v1/memory/log", headers=DEVICE, data={"transcript": "x" * 2001},
                        files={"image": ("s.jpg", JPEG, "image/jpeg")})
     assert resp.status_code == 413
+
+
+def test_speech_to_text_gets_the_wake_phrase_and_teach_items_as_hints(client):  # noqa: F811
+    from app.db_training import TrainingItem
+
+    heard = []
+
+    async def transcribe(filename, audio, content_type, hints=None):
+        heard.append(hints)
+        return "where are my swamphacks pins?"
+
+    async def household_of_device(device_id):
+        return ("h1", False)
+
+    async def training_items(household_id):
+        return [TrainingItem(id="i1", name="swamphacks pins", aliases=["pins"], samples=[], created_at=None)]
+
+    client.app_state.ai.transcribe = transcribe
+    client.app_state.db.household_of_device = household_of_device
+    client.app_state.db.training_items = training_items
+    client.post("/api/v1/memory/query", headers=DEVICE, files={"audio": ("q.wav", b"x", "audio/wav")})
+    assert heard == [["Last Scene", "swamphacks pins", "pins"]]
+    heard.clear()  # the device sent its own words: no transcription, so no hint lookup either
+    client.post("/api/v1/memory/query", headers=DEVICE, data={"transcript": "where are my keys?"})
+    assert heard == []

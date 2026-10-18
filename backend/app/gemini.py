@@ -75,14 +75,13 @@ class GeminiAI:
             ),
         )
 
-    async def transcribe(self, audio: bytes, content_type: str | None) -> str:
+    async def transcribe(self, audio: bytes, content_type: str | None, hints: list[str] | None = None) -> str:
+        ask = "Transcribe this speech verbatim. Reply with only the words spoken, or nothing at all if there is no speech."
+        if hints:
+            ask += " Names and words that may come up, spelled like this: " + "; ".join(hints[:100]) + "."
         response = await self.client.aio.models.generate_content(
             model=self._model(),
-            contents=[
-                types.Part.from_bytes(data=audio, mime_type=content_type or "audio/wav"),
-                "Transcribe this speech verbatim. Reply with only the words spoken, "
-                "or nothing at all if there is no speech.",
-            ],
+            contents=[types.Part.from_bytes(data=audio, mime_type=content_type or "audio/wav"), ask],
         )
         return (response.text or "").strip()
 
