@@ -263,10 +263,11 @@ async def save_context(db: MemoryDB, ai: AIServices, device_id: str, label: str,
 async def read_item(
     db: MemoryDB, ai: AIServices, raia: Raia, settings: Settings, device_id: str, scope: str, label: str,
     confidence: float, bbox: list[float] | None, scene_label: str | None, image: bytes, image_type: str,
-    captured_at: datetime, via: str, locate=None,
+    captured_at: datetime, via: str, locate=None, observation_id: str | None = None,
 ) -> str | None:
     """One item's frame to raia, if it isn't in its cooldown: the saved memory's id, or None.
-    `locate(memory_id)`: gives the saved memory the location of the save that triggered it."""
+    `locate(memory_id)`: gives the saved memory the location of the save that triggered it. The context also goes
+    into the item's sightings (db_history): onto the observation's, or as a sighting of its own."""
     if not await db.claim_raia_context(scope, label, None, settings.raia_cooldown_minutes):
         log.info("RAIA skip %s (%.2f, %s): read in the last %g min", label, confidence, via,
                  settings.raia_cooldown_minutes)
@@ -290,9 +291,20 @@ async def read_item(
         return None
     memory_id = await save_context(db, ai, device_id, label, ctx, image, image_type)
     await db.finish_raia_context(scope, label, json.dumps(ctx), None, memory_id, conversation_id)
+    sighting = None
+    try:
+        if observation_id and hasattr(db, "add_sighting_context"):
+            await db.add_sighting_context(scope, label, observation_id, ctx)
+        elif hasattr(db, "add_sighting"):
+            sighting = await db.add_sighting(scope, label, captured_at, "raia", memory_id, None, image, image_type,
+                                             None, bbox, confidence, scene_label, ctx)
+    except Exception:
+        log.exception("Recording the raia sighting of %s failed", label)
     if locate is not None:
         try:
             await locate(memory_id)
+            if sighting:
+                await db.locate_sighting_like_memory(sighting)
         except Exception:
             log.exception("Locating the raia memory %s failed", memory_id)
     log.info("RAIA reply: %s (%s), %.1f s, saved memory %s: %s", label, via, seconds, memory_id, json.dumps(ctx))
@@ -327,7 +339,7 @@ async def extract_contexts(
                 continue
             if await read_item(db, ai, raia, settings, device_id, scope, label, o.confidence, o.bbox,
                                obs.scene.label if obs.scene else None, image, image_type, obs.captured_at,
-                               f"observation {memory_id}", locate):
+                               f"observation {memory_id}", locate, str(obs.observation_id)):
                 saved.append(label)
         return saved
     except Exception:

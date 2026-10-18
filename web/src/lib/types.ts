@@ -300,3 +300,28 @@ export interface Health {
     audio_seconds_this_month?: number;
   };
 }
+
+/** One of an item's last few passive sightings (GET /api/v1/dashboard/items/{name}/sightings). */
+export interface Sighting {
+  id: string;
+  captured_at: string;
+  source: "auto" | "raia";
+  confidence: number | null;
+  maybe: boolean;
+  bbox: BBox | null;
+  image_size: { width: number; height: number } | null;
+  image_url: string | null;
+  where: string | null;
+  summary: string | null;
+  nearby: string[];
+  room: string | null;
+  scene: string | null;
+  location: { lat: number; lng: number; accuracy_m: number | null } | null;
+  place: { id: string; label: string | null } | null;
+  last_seen: boolean;
+}
+
+export interface SightingsResponse {
+  item: string;
+  sightings: Sighting[];
+}

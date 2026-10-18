@@ -3,7 +3,7 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import signing
 from ..ai import AIServices
@@ -453,3 +453,80 @@ async def live(
         if e.get("memory_id"):
             e["image_url"] = _image_url(settings, e["memory_id"])
     return {"events": events}
+
+
+# ---------------------------------------------------------------- an item's last few sightings (db_history)
+
+def _label(raw: str) -> str:
+    return " ".join(raw.strip().lower().split())
+
+
+async def _scopes_and_places(db: MemoryDB, caregiver: Principal) -> tuple[list[str], list[str], dict[str, str]]:
+    """(the caregiver's household ids, every scope they may see: those and their devices, place id -> label)."""
+    households = await db.households_for(caregiver.sub)
+    labels: dict[str, str] = {}
+    for h in households:
+        places = await db.places_for(h.id)
+        home = home_place_id(places)
+        labels |= {p.id: place_label(p, home, i) for i, p in enumerate(places, 1)}
+    ids = [h.id for h in households]
+    return ids, ids + await db.device_ids_for(caregiver.sub), labels
+
+
+@router.get("/items/{label}/sightings")
+async def item_sightings(
+    label: str,
+    caregiver: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """The item's last few passive sightings, newest first, with raia's context and the place, so a wrong
+    one can be trashed. "last_seen" marks the one the item's last-seen comes from."""
+    item = _label(label)
+    _, scopes, places = await _scopes_and_places(db, caregiver)
+    sightings = await db.sightings(scopes, item)
+    current = await db.last_seen_keys(scopes, item)
+    return {
+        "item": item,
+        "sightings": [
+            {
+                "id": s.id,
+                "captured_at": s.captured_at.isoformat(),
+                "source": s.source,
+                "confidence": s.confidence,
+                "maybe": s.confidence is not None and s.confidence < settings.maybe_confidence,
+                "bbox": s.bbox,
+                "image_size": {"width": s.image_width, "height": s.image_height} if s.image_width else None,
+                "image_url": signing.image_url(settings.image_url_secret, f"ih-{s.id}", settings.image_url_ttl_seconds)
+                if s.has_image else None,
+                "where": (s.context or {}).get("where") or None,
+                "summary": (s.context or {}).get("summary") or None,
+                "nearby": (s.context or {}).get("nearby") or [],
+                "room": (s.context or {}).get("room") or None,
+                "scene": s.scene_label,
+                "location": {"lat": s.lat, "lng": s.lng, "accuracy_m": s.accuracy_m} if s.lat is not None else None,
+                "place": {"id": s.place_id, "label": places.get(s.place_id)} if s.place_id else None,
+                "last_seen": (s.observation_id or s.captured_at.isoformat()) in current,
+            }
+            for s in sightings
+        ],
+    }
+
+
+@router.delete("/items/{label}/sightings/{sighting_id}")
+async def trash_item_sighting(
+    label: str,
+    sighting_id: str,
+    caregiver: Principal = Depends(require_caregiver),
+    db: MemoryDB = Depends(get_db),
+):
+    """Trash a wrong sighting: it and the memory it alone stands for go, and the item's last-seen points at the
+    newest sighting left."""
+    item = _label(label)
+    households, scopes, _ = await _scopes_and_places(db, caregiver)
+    gone = await db.trash_sighting(scopes, item, sighting_id)
+    if gone is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such sighting of that item")
+    devices = await db.household_device_ids(gone.scope) if gone.scope in households else [gone.scope]
+    await db.restore_last_seen(gone.scope, item, devices)
+    return {"trashed": sighting_id, "item": item, "remaining": len(await db.sightings(scopes, item))}

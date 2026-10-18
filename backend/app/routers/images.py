@@ -21,9 +21,12 @@ async def get_image(
     if not signing.verify(settings.image_url_secret, record_id, exp, sig):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Link expired or invalid")
     # "ls-<id>" = an item's last-seen frame (kept apart from memories; see db_observations);
-    # "tr-<id>" = a photo someone added to teach the pipeline an item (see db_training).
+    # "tr-<id>" = a photo someone added to teach the pipeline an item (see db_training);
+    # "ih-<id>" = one of an item's last few sightings (see db_history).
     if record_id.startswith("ls-"):
         found = await db.last_seen_image(record_id.removeprefix("ls-"))
+    elif record_id.startswith("ih-"):
+        found = await db.sighting_image(record_id.removeprefix("ih-"))
     elif record_id.startswith("tr-"):
         found = await db.training_sample_image(record_id.removeprefix("tr-"))
     else:

@@ -183,6 +183,12 @@ async def store_observation(
             obs.scene.id if obs.scene else None, obs.scene.label if obs.scene else None,
             o.bbox, o.confidence, image, image_type, obs.image_size.width, obs.image_size.height,
         )
+        if hasattr(db, "add_sighting"):  # the item's last few sightings, so a wrong one can be trashed
+            await db.add_sighting(
+                scope, label, obs.captured_at, "auto", memory_id, str(obs.observation_id), image, image_type,
+                (obs.image_size.width, obs.image_size.height), o.bbox, o.confidence,
+                obs.scene.label if obs.scene else None,
+            )
     return Stored(memory_id, sorted({o.label for o in kept}), not merge_into)
 
 

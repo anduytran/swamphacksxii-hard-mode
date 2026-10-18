@@ -62,6 +62,7 @@ def c():
         yield client
         db, run = app.state.db, client.portal.call
         run(db.pool.execute, "DELETE FROM raia_contexts WHERE scope LIKE $1", f"it-{RUN}-%")
+        run(db.pool.execute, "DELETE FROM item_history WHERE scope LIKE $1 OR scope IN (SELECT id::text FROM households WHERE created_by LIKE $1)", f"it-{RUN}-%")
         run(db.pool.execute, "DELETE FROM item_last_seen WHERE scope LIKE $1 OR scope IN (SELECT id::text FROM households WHERE created_by LIKE $1)", f"it-{RUN}-%")
         run(db.pool.execute, "DELETE FROM query_logs WHERE device_id LIKE $1", f"it-{RUN}-%")
         run(db.pool.execute, "DELETE FROM memory_logs WHERE device_id LIKE $1", f"it-{RUN}-%")
@@ -301,3 +302,32 @@ def test_every_passive_sighting_gets_a_location(c):
     for memory in (own, borrowed):
         row = rows[memory.json()["memory_id"]]
         assert (round(row["lat"], 4), round(row["lng"], 4)) == (29.6465, -82.3475)
+
+
+def test_an_items_last_five_sightings_can_be_trashed(c):
+    """Every passive sighting is kept (newest 5 per item) even when memories merge; trashing a wrong one
+    removes it and its memory, and the item's last-seen falls back to the newest left."""
+    c.settings.passive_merge_minutes = 30
+    hh = c.post("/api/v1/households", json={"name": f"Hist {RUN}"}).json()["id"]
+    assert post(c, obs(minutes_ago=30, label="banana"), headers={"X-Pairing-Code": "CAM-H"}).status_code == 201
+    assert c.post(f"/api/v1/households/{hh}/devices", json={"client_id": DEVICE, "pairing_code": "CAM-H"}).status_code == 200
+    scenes = ["desk", "chair", "shelf", "sink", "bed", "floor"]
+    for n, scene in enumerate(scenes):  # 6 sightings, 5 to 0 minutes ago
+        assert post(c, obs(minutes_ago=5 - n, label="banana", scene=scene, conf=0.6 + n / 20)).status_code in (200, 201)
+
+    listed = c.get("/api/v1/dashboard/items/banana/sightings").json()["sightings"]
+    assert [s["scene"] for s in listed] == ["floor", "bed", "sink", "shelf", "chair"]  # newest 5
+    assert listed[0]["last_seen"] and not any(s["last_seen"] for s in listed[1:])
+    assert all(s["image_url"].startswith("/api/v1/images/ih-") for s in listed)
+    photo = c.get(listed[1]["image_url"])
+    assert photo.status_code == 200 and photo.content.startswith(b"\xff\xd8")
+
+    # The newest was a mistake: trash it. Last-seen goes back to "bed", with that sighting's photo.
+    gone = c.delete(f"/api/v1/dashboard/items/banana/sightings/{listed[0]['id']}")
+    assert gone.status_code == 200 and gone.json()["remaining"] == 5
+    assert c.get("/api/v1/items/banana/last-seen").json()["scene"]["label"] == "bed"
+    after = c.get("/api/v1/dashboard/items/banana/sightings").json()["sightings"]
+    # The sighting from before the camera joined the household (kept under the device) is next in line.
+    assert [s["scene"] for s in after] == ["bed", "sink", "shelf", "chair", "kitchen counter"] and after[0]["last_seen"]
+    assert c.delete(f"/api/v1/dashboard/items/banana/sightings/{listed[0]['id']}").status_code == 404
+    assert c.delete(f"/api/v1/dashboard/items/orange/sightings/{after[0]['id']}").status_code == 404  # wrong item

@@ -146,7 +146,10 @@ async def _after_observation(db, ai, geo, raia: Raia | None, settings: Settings,
     try:
         loc = await observation_location(geo, db, device_id, obs, settings)
         if loc is not None:
-            await locate_and_record(db, device_id, "memory_logs", memory_id, loc)
+            place, _ = await locate_and_record(db, device_id, "memory_logs", memory_id, loc)
+            if hasattr(db, "locate_sightings"):
+                await db.locate_sightings(str(obs.observation_id), loc.lat, loc.lng, loc.accuracy_m,
+                                          place.id if place else None)
     except Exception:
         log.exception("Locating observation %s failed", memory_id)
 

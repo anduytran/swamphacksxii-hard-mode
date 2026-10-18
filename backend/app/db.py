@@ -18,6 +18,7 @@ from .db_maps import MapsNamesMixin
 from .db_limits import LimitsMixin
 from .db_mcp import McpMixin
 from .db_observations import ObservationsMixin
+from .db_history import HistoryMixin
 from .db_places import PlacesMixin
 from .db_raia import RaiaMixin
 from .db_review import ReviewMixin
@@ -69,7 +70,7 @@ _COLUMNS = "id, device_id, created_at, transcript, scene, source, image IS NOT N
 
 
 class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixin, MapsNamesMixin, ReviewMixin, McpMixin, LimitsMixin,
-               VoiceEventsMixin, RaiaMixin):
+               VoiceEventsMixin, RaiaMixin, HistoryMixin):
     def __init__(self, settings: Settings):
         self.dsn = settings.database_url
         self.dims = settings.embedding_dimensions
@@ -214,6 +215,7 @@ class MemoryDB(PlacesMixin, ObservationsMixin, TrainingMixin, TrainingModelsMixi
             await self.init_limits_schema(conn)
             await self.init_voice_events_schema(conn)
             await self.init_raia_schema(conn)
+            await self.init_history_schema(conn)
             # Anonymous hourly counts that outlive the 72-hour purge (see delete_older_than):
             # no words, photos or item names, just how many questions / put-downs per hour.
             await conn.execute(
