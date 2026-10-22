@@ -8,6 +8,8 @@ Same folder layout as backend/scripts/fetch_training_set.py, plus classes.json a
     images/train/<sample id>.jpg each photo as uploaded
     labels/train/<sample id>.txt "class cx cy w h", 0..1 (the API's yolo field)
     prompts.json                 per photo: image, class_id, name, bbox_xyxy (pixels)
+    images/negatives/            item-specific absent photos, excluded from YOLO training
+    negatives.json              absent photo paths and their item class ids
     classes.json                 the vocabulary response as received
     version                      the dataset's version (written last: a failed sync never looks complete)
 
@@ -37,11 +39,14 @@ def write_dataset(vocab: dict, data: dict, out: Path, http=None) -> int:
     """Download every photo (signed links expire after ~15 min: fetch right away), write the folder.
     Returns the photo count."""
     images, labels = out / "images" / "train", out / "labels" / "train"
+    negatives_dir = out / "images" / "negatives"
     images.mkdir(parents=True, exist_ok=True)
     labels.mkdir(parents=True, exist_ok=True)
+    negatives_dir.mkdir(parents=True, exist_ok=True)
     (out / "version").unlink(missing_ok=True)  # until everything below is written
     http = http or requests.Session()
-    keep, prompts = set(), []
+    keep_images, keep_labels, keep_negatives = set(), set(), set()
+    prompts, negatives = [], []
     for s in data["samples"]:
         try:
             resp = http.get(s["image_url"], timeout=30)  # signed link: no token
@@ -51,12 +56,19 @@ def write_dataset(vocab: dict, data: dict, out: Path, http=None) -> int:
             raise PipelineError(EXIT_NETWORK, f"photo {s['id']}: HTTP {resp.status_code} (signed link expired? re-run sync)")
         ext = mimetypes.guess_extension(resp.headers.get("content-type", "image/jpeg").split(";")[0]) or ".jpg"
         name = f"{s['id']}{'.jpg' if ext in ('.jpe', '.jpeg') else ext}"
-        (images / name).write_bytes(resp.content)
-        (labels / f"{s['id']}.txt").write_text(s["yolo"] + "\n", encoding="utf-8")
-        keep |= {name, f"{s['id']}.txt"}
-        prompts.append({"image": f"images/train/{name}", "class_id": s["class_id"], "name": s["name"],
-                        "bbox_xyxy": s["bbox_xyxy_px"]})
-    for folder in (images, labels):  # photos deleted on the dashboard
+        if s["yolo"]:
+            (images / name).write_bytes(resp.content)
+            (labels / f"{s['id']}.txt").write_text(s["yolo"] + "\n", encoding="utf-8")
+            keep_images.add(name)
+            keep_labels.add(f"{s['id']}.txt")
+            prompts.append({"image": f"images/train/{name}", "class_id": s["class_id"], "name": s["name"],
+                            "bbox_xyxy": s["bbox_xyxy_px"]})
+        else:
+            # Absent is scoped to one item; an empty YOLO label would mark every class absent.
+            (negatives_dir / name).write_bytes(resp.content)
+            keep_negatives.add(name)
+            negatives.append({"image": f"images/negatives/{name}", "class_id": s["class_id"], "name": s["name"]})
+    for folder, keep in ((images, keep_images), (labels, keep_labels), (negatives_dir, keep_negatives)):
         for f in folder.iterdir():
             if f.name not in keep:
                 f.unlink()
@@ -68,6 +80,7 @@ def write_dataset(vocab: dict, data: dict, out: Path, http=None) -> int:
     (out / "data.yaml").write_text(f"path: {out.resolve().as_posix()}\ntrain: images/train\nval: images/train\n"
                                    f"names:\n{lines}\n", encoding="utf-8")
     (out / "prompts.json").write_text(json.dumps(prompts, indent=2), encoding="utf-8")
+    (out / "negatives.json").write_text(json.dumps(negatives, indent=2), encoding="utf-8")
     (out / "classes.json").write_text(json.dumps(vocab, indent=2), encoding="utf-8")
     (out / "version").write_text(data["version"], encoding="utf-8")
     return len(data["samples"])

@@ -1,9 +1,8 @@
 """Items a household teaches the vision pipeline to recognise (mixed into MemoryDB).
 
-A training item is a name ("keys"), other words for it ("car keys"), and photos of that
-exact object, each with one box drawn around it ([x, y, w, h], 0..1, top-left origin: the
-same box format as observations). The pipeline uses the names as its vocabulary and the
-photos as a small dataset to fine-tune on or as visual prompts.
+A training item has a name, aliases, and confirmed present or absent photos. Present photos
+have one box ([x, y, w, h], 0..1, top-left origin); absent photos have no box. The pipeline
+uses names as its vocabulary and only present photos as ordinary YOLO training examples.
 
 Unlike memories these are reference photos someone chose to add, so the 72-hour purge
 leaves them alone; they go when someone deletes them, or with the household.
@@ -22,10 +21,11 @@ MAX_TRAINING_BYTES = 100 * 1024 * 1024  # per household, all photos together
 class TrainingSample:
     id: str
     item_id: str
-    bbox: list[float]
+    bbox: list[float] | None
     width: int
     height: int
     created_at: datetime
+    annotation: str = "present"
 
 
 @dataclass
@@ -63,11 +63,15 @@ class TrainingMixin:
                 image_type  text NOT NULL,
                 width       integer NOT NULL,
                 height      integer NOT NULL,
-                bbox        real[] NOT NULL,   -- [x, y, w, h], 0..1, top-left origin
+                bbox        real[],            -- NULL for absent, excluded, and unreviewed photos
+                annotation  text NOT NULL DEFAULT 'present', -- present | absent | excluded | unreviewed
                 created_at  timestamptz NOT NULL DEFAULT now()
             )
             """
         )
+        # Existing installations have positive-only rows and a NOT NULL bbox.
+        await conn.execute("ALTER TABLE training_samples ALTER COLUMN bbox DROP NOT NULL")
+        await conn.execute("ALTER TABLE training_samples ADD COLUMN IF NOT EXISTS annotation text NOT NULL DEFAULT 'present'")
         await conn.execute("CREATE INDEX IF NOT EXISTS training_samples_item_idx ON training_samples (item_id)")
 
     async def training_items(self, household_id: str) -> list[TrainingItem]:
@@ -77,7 +81,7 @@ class TrainingMixin:
         )
         samples = await self.pool.fetch(
             """
-            SELECT s.id, s.item_id, s.bbox, s.width, s.height, s.created_at
+            SELECT s.id, s.item_id, s.bbox, s.width, s.height, s.created_at, s.annotation
             FROM training_samples s JOIN training_items i ON i.id = s.item_id
             WHERE i.household_id = $1::uuid ORDER BY s.created_at
             """,
@@ -88,7 +92,8 @@ class TrainingMixin:
         }
         for s in samples:
             by_item[str(s["item_id"])].samples.append(
-                TrainingSample(str(s["id"]), str(s["item_id"]), list(s["bbox"]), s["width"], s["height"], s["created_at"])
+                TrainingSample(str(s["id"]), str(s["item_id"]), list(s["bbox"]) if s["bbox"] is not None else None,
+                               s["width"], s["height"], s["created_at"], s["annotation"])
             )
         return list(by_item.values())
 
@@ -134,19 +139,22 @@ class TrainingMixin:
         return row["n"] if row else None
 
     async def add_training_sample(
-        self, item_id: str, image: bytes, image_type: str, width: int, height: int, bbox: list[float]
+        self, item_id: str, image: bytes, image_type: str, width: int, height: int,
+        bbox: list[float] | None, annotation: str = "present"
     ) -> TrainingSample:
         r = await self.pool.fetchrow(
-            "INSERT INTO training_samples (item_id, image, image_type, width, height, bbox) "
-            "VALUES ($1::uuid, $2, $3, $4, $5, $6) RETURNING id, item_id, bbox, width, height, created_at",
+            "INSERT INTO training_samples (item_id, image, image_type, width, height, bbox, annotation) "
+            "VALUES ($1::uuid, $2, $3, $4, $5, $6, $7) RETURNING id, item_id, bbox, width, height, created_at, annotation",
             item_id,
             image,
             image_type,
             width,
             height,
             bbox,
+            annotation,
         )
-        return TrainingSample(str(r["id"]), str(r["item_id"]), list(r["bbox"]), r["width"], r["height"], r["created_at"])
+        return TrainingSample(str(r["id"]), str(r["item_id"]), list(r["bbox"]) if r["bbox"] is not None else None,
+                              r["width"], r["height"], r["created_at"], r["annotation"])
 
     async def delete_training_sample(self, household_id: str, sample_id: str) -> bool:
         status = await self.pool.execute(
@@ -154,6 +162,15 @@ class TrainingMixin:
             "WHERE s.id = $2::uuid AND s.item_id = i.id AND i.household_id = $1::uuid",
             household_id,
             sample_id,
+        )
+        return status.endswith(" 1")
+
+    async def restore_training_sample(self, household_id: str, sample_id: str, bbox: list[float] | None, annotation: str) -> bool:
+        status = await self.pool.execute(
+            "UPDATE training_samples s SET annotation = $3, bbox = $4 "
+            "FROM training_items i WHERE s.id = $2::uuid AND s.item_id = i.id "
+            "AND i.household_id = $1::uuid AND s.annotation IN ('excluded', 'unreviewed')",
+            household_id, sample_id, annotation, bbox,
         )
         return status.endswith(" 1")
 
